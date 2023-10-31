@@ -4,8 +4,6 @@ Author: Edis Devin Tireli, M.Sc, Ph.D. student
 
 Affiliation: Copenhagen University
 
-Contact: edis.devin.tireli@regionh.dk
-
 # Table of Contents
 1. Introduction
 2. Directory Structure
