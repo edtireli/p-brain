@@ -1,12 +1,10 @@
-p-Brain: Advanced Neuroimaging Analysis Tool
+# p-Brain: Advanced Neuroimaging Analysis Tool
 
 Author: Edis Devin Tireli, M.Sc, Ph.D. student
 Affiliation: Copenhagen University
 Contact: edis.devin.tireli@regionh.dk
 
-===================================================================
-Table of Contents
-===================================================================
+# Table of Contents
 1. Introduction
 2. Directory Structure
 3. Installation
@@ -16,9 +14,8 @@ Table of Contents
 7. License
 8. Acknowledgments
 
-===================================================================
-1. Introduction
-===================================================================
+
+# 1. Introduction
 p-Brain is a state-of-the-art neuroimaging tool developed for in-depth analysis of .PAR/.REC MRI data. The application is engineered to perform critical tasks such as T1/M0 fitting, creation of signal time curves, and plotting concentration curves for arteries and tissues. Additionally, the tool offers sophisticated methods for Grey Matter/White Matter (GM/WM) segmentation and Blood-Brain Barrier (BBB) permeability estimation, utilizing both the Patlak and ETofts models. GUI modules are incorporated for high-precision drawing of Regions of Interest (ROIs) across tissue and arterial/venous structures.
 
 ===================================================================
