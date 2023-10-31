@@ -5,42 +5,8 @@ from tqdm import tqdm
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
-from modules.fonts import *
-
-
-def save_as_pickle(matrix, file_path):
-    with open(file_path, 'wb') as file:
-        pickle.dump(matrix, file)
-
-
-def load_from_pickle(file_path):
-    with open(file_path, 'rb') as file:
-        matrix = pickle.load(file)
-    return matrix
-
-
-def first_existing_file(directory, patterns, time, suffix):
-    for pattern in patterns:
-        file_path = os.path.join(directory, f"{pattern}{time}{suffix}")
-        if os.path.exists(file_path):
-            return file_path
-    return None
-
-def first_existing_dce_file(directory, filenames, preferred_filename='WIPDelRec-hperf120long.nii'):
-    # Check the preferred filename first
-    preferred_file_path = os.path.join(directory, preferred_filename)
-    if os.path.exists(preferred_file_path):
-        return preferred_file_path
-    
-    for fname in filenames:
-        if fname == preferred_filename:
-            continue 
-        file_path = os.path.join(directory, fname)
-        if os.path.exists(file_path):
-            return file_path
-            
-    return None
-
+from utils.fonts import *
+from utils.loading import *
 
 
 def build_voxel_matrix(dce_data):
@@ -142,7 +108,7 @@ def plot_histograms(M0_matrix, T1_matrix, image_directory):
     axes[1].set_yscale('log')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(image_directory, 'M0+T1_Histogram.png'), dpi=200)
+    plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Histogram.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
     plt.show()
 
@@ -175,10 +141,9 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     cbar_m0.set_label('Equilibrium Magnetization [M0]', fontproperties=prop, fontsize=9)
 
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    plt.savefig(os.path.join(image_directory, 'M0+T1_Maps.png'), dpi=200)
+    plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Maps.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
     plt.show()
-
 
 
 

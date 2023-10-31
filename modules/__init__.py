@@ -10,8 +10,13 @@ __affiliation__ = "Copenhagen University"
 __email__ = "edis.devin.tireli@regionh.dk"
 
 # modules/__init__.py
-from .start import *
-from .T1_fit import *
-from .images import *
-from .fonts import *
+from utils.fonts import *
 from config import *
+from utils.loading import *
+
+from .start import * #welcome screen
+from .images import * #option 0
+from .T1_fit import * #option 1
+from .input_functions import * #option 2
+from utils.mapping import *
+from utils.plotting import *
