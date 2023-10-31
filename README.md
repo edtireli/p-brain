@@ -1,8 +1,6 @@
-===================================================================
 p-Brain: Advanced Neuroimaging Analysis Tool
-===================================================================
 
-Author: Edis Devin Tireli
+Author: Edis Devin Tireli, M.Sc, Ph.D. student
 Affiliation: Copenhagen University
 Contact: edis.devin.tireli@regionh.dk
 
