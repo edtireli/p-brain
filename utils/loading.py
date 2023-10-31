@@ -4,77 +4,8 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import json
-
-
-
-def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_, choice = 1):
-    num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
-    gs = gridspec.GridSpec(3, num_rois, height_ratios=[1, 1.5, 1])
-    fig = plt.figure(figsize=(20, 12))
-    idx = 0
-    for slice_index, roi_voxels_list in selected_voxels.items():
-        for roi_num, roi_voxels in enumerate(roi_voxels_list):
-            all_C_t = []
-            all_unnormalized_C_t = []
-            roi_voxels_downsampled = np.floor_divide(roi_voxels, 2)
-            for (x, y) in roi_voxels_downsampled:
-                voxel_time_course = data_4d[x, y, slice_index, :]
-                T1 = T1_matrix[x, y, slice_index]
-                M0 = M0_matrix[x, y, slice_index]
-                C_t_0 = compute_CTC(voxel_time_course, T1, r1=4000, TD=120, m0=M0, slice=slice_index, prints=False)
-                baseline_point = find_baseline_point_advanced(C_t_0)
-                C_t = custom_shifter(C_t_0, baseline_point)
-                all_C_t.append(C_t)
-                all_unnormalized_C_t.append(C_t_0)
-            avg_C_t_0 = np.mean(all_C_t, axis=0)
-            baseline_point = find_baseline_point_advanced(avg_C_t_0) - 1
-            avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
-            
-            # Get Patlak data
-            max_file = os.listdir(os.path.join(analysis_directory, 'TSCC Data', 'Max'))[0]
-            chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
-            chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
-            C_a = np.load(os.path.join(analysis_directory, 'TSCC Data', 'Max', f'TSCC_slice_{chosen_venous_slice}_{chosen_arterial_slice}.npy'))
-            C_t = avg_C_t[0:len(C_a)]
-            time_points = time_points_[0:len(C_a)]
-            Ki, lambda_, SD_Ki, x_patlak, y_patlak = patlak_analysis_plotting(C_t, C_a, time_points)
-            baseline_point_f = find_shifted_baseline(C_t)+1
-            P, P_std = compute_average_permeability(C_a, C_t, time_points_s, baseline_point=baseline_point_f)
-            
-            ax1 = plt.subplot(gs[0, idx])
-            ax1.plot(avg_C_t)
-            ax1.set_title(f'Concentration (Slice {slice_index+1} - ROI {roi_num+1})', fontsize=8)
-            ax1.grid(True)
-            
-            ax2 = plt.subplot(gs[1, idx])
-            ax2.imshow(data_3d[:, :, slice_index], cmap='magma', origin='lower')
-            for x, y in roi_voxels:
-                rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
-                ax2.add_patch(rect)
-            ax2.set_title(f'T2 Image (Slice {slice_index+1} - ROI {roi_num+1})', fontsize=8)
-            
-            ax3 = plt.subplot(gs[2, idx])
-            ax3.scatter(x_patlak, y_patlak, c='black', s=2)
-            ax3.plot(x_patlak, lambda_ + Ki * x_patlak, c='red', linestyle='--')
-            ax3.set_ylim(min(y_patlak), max(y_patlak))
-            ax3.set_title(f'$K_i = {round(Ki*6000, 5)}$, $\\lambda = {round(lambda_*100, 5)}$', fontsize=8)
-            ax3.set_xlabel(f'P = {round(P, 5)}')
-            ax3.grid(True)
-            
-            idx += 1
-
-    plt.subplots_adjust(wspace=0.3, hspace=0.5)
-    if choice == 2:
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Grey_Matter.png'), dpi=200) 
-    elif choice == 1:
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'White_Matter.png'), dpi=200)   
-    elif choice == 3: 
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Mixed_Matter.png'), dpi=200)    
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
-    plt.tight_layout()
-    plt.close()
-
+from utils.plotting import *
+from utils.loading import *
 
 def replace_max_with_artery_type_and_delete(values_json_path, max_info_json_path):
     # Read and parse max_info.json
@@ -117,7 +48,7 @@ def find_matching_file(directory, pattern):
             return os.path.join(directory, filename)
     return None
 
-def save_values(Ki, SD_Ki, lambda_, subtype_tissue, slice_tissue, subtype_artery, venous_slice, arterial_slice, analysis_directory):
+def save_values(Ki, SD_Ki, lambda_, P, P_std, subtype_tissue, slice_tissue, subtype_artery, venous_slice, arterial_slice, analysis_directory):
     values_file_path = os.path.join(analysis_directory, 'values.json')
     
     if os.path.exists(values_file_path):

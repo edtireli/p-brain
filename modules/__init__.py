@@ -10,7 +10,7 @@ __affiliation__ = "Copenhagen University"
 
 # modules/__init__.py
 from utils.fonts import *
-from config import *
+from utils.settings import *
 from utils.loading import *
 from .start import * # welcome screen
 from .images import * # option 0
@@ -20,3 +20,5 @@ from utils.mapping import *
 from utils.plotting import *
 from .time_shifting import * # option 3
 from .tissue_function import * # option 4
+from .BBB_parameters import * # option 5
+from .analysis_notes import * # option 6
