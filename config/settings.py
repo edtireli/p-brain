@@ -1,5 +1,7 @@
 import os
 import sys
+import matplotlib
+matplotlib.use("TkAgg")
 
 def create_directory(path):
     if not os.path.exists(path):
