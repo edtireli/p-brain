@@ -20,7 +20,7 @@ for i in range(len(original_colors) - 1):
 extended_colors.append(original_colors[-1])
 color_iterator = cycle(extended_colors)
 
-font_directory = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'resources', 'Fonts')
+font_directory = os.path.join('resources')
 font_path = os.path.join(font_directory,'AcademySans.ttf')
 prop = fm.FontProperties(fname=font_path)
 font_path_bold = os.path.join(font_directory,'AcademySans-Bold.ttf')

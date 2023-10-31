@@ -11,6 +11,7 @@ __email__ = "edis.devin.tireli@regionh.dk"
 
 # modules/__init__.py
 from .start import *
+from .T1_fit import *
 from .images import *
 from .fonts import *
 from config import *
