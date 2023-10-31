@@ -17,4 +17,4 @@ def update_version(file_path):
     return new_version
 
 if __name__ == "__main__":
-    new_version = update_version('__init__.py')
+    new_version = update_version('modules/__init__.py')
