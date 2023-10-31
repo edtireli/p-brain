@@ -118,15 +118,16 @@ The idea is to use the options in chronological order, as each step requires the
 
 ## 5. Core Features
 
-- T1/M0 Fitting: Utilizes advanced algorithms for precise T1/M0 fitting.
-- Signal Time Curve Generation: Generates signal time curves from the MRI data.
+- T1/M0 Fitting: Utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting.
+- Signal Time Curve Generation: Generates signal time curves from the MRI data from a ROI drawn on DCE data (GUI).
 - Concentration Curve Plotting: Plots the concentration curves for both arteries and tissues.
-- GM/WM Segmentation: Conducts Grey Matter/White Matter segmentation.
 - BBB Permeability Estimation: Estimates BBB permeability using both Patlak and ETofts models.
 - ROI GUI: A dedicated GUI for drawing high-precision ROIs for tissue and arterial/venous concentration curves.
+- Addons:
+    -  Boundary: Computes the concentration time function for Grey Matter/White Matter boundary (segmented with fsl_anat) 
 
 ## 6. Contributions
-For contributions, feature requests, and bug reporting, please contact Edis Devin Tireli at [Contact Information].
+For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
 ## 7. License
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
