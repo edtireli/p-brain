@@ -1,8 +1,7 @@
-from config.settings import *
+from utils import *
 from modules import *
 
 def main():
-    
     # Handle log_number choice and data directories
     log_number = select_log_number()
     data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(log_number)
@@ -29,14 +28,19 @@ def main():
         
         elif choice == 4: # Tissue concentration functions
             tissue_function(analysis_directory, nifti_directory, image_directory)
-        #elif choice == 5:
-            #do something 
-        #elif choice == 6:
-            #do something  
+
+        elif choice == 5: # Compute BBB parameters
+            BBB_parameters(analysis_directory, image_directory)
+
+        elif choice == 6:
+            add_notes(analysis_directory)  
+
         #elif choice == 7:
             #do something
+
         #elif choice == 8:
-            #do something
+            #do something else
+
         elif choice == 9:
             break       
 
