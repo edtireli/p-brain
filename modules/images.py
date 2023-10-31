@@ -49,31 +49,38 @@ class MRIViewer:
             print(f"| {colored('q', 'red')} | {colored('Exit', 'red')}")
             print("------------------------------")
 
-            while True:  # Outer loop to restart the choice
+            while True:  # Outer loop for the user choice
                 choice = input("Select an option or 'q' to quit: ")
                 if choice == 'q':
-                    break  # Exit the outer loop
-
+                    return  # Exit the program
+                    
                 try:
                     choice = int(choice) - 1
                     selected_file, selected_name = available_files[choice]
+                    
+                    # Load the NIFTI file
+                    img = nib.load(os.path.join(self.nifti_directory, selected_file))
+                    self.img_data = img.get_fdata()
+                    self.num_slices = self.img_data.shape[2]
+                    self.num_frames = self.img_data.shape[3] if self.img_data.ndim == 4 else None
+
+                    while True:  # Inner loop for the GUI
+                        # Create a new figure and axis
+                        self.fig, self.ax = plt.subplots()
+                        
+                        # Connect to events and show the figure
+                        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+                        self.redraw()
+                        plt.show()
+                        
+                        # Close the GUI and break the inner loop when 'Escape' is pressed
+                        if plt.get_fignums():
+                            continue  # Reopen the GUI if it is still open
+                        else:
+                            break  # Break the inner loop to return to the user choice
+                        
                 except (ValueError, IndexError):
                     print("Invalid choice. Please try again.")
-                    continue  # Skip the rest of the loop and go back to the choice
-
-                # Load the NIFTI file
-                img = nib.load(os.path.join(self.nifti_directory, selected_file))
-                self.img_data = img.get_fdata()
-                self.num_slices = self.img_data.shape[2]
-                self.num_frames = self.img_data.shape[3] if self.img_data.ndim == 4 else None
-
-                # Create a new figure and axis
-                self.fig, self.ax = plt.subplots()
-
-                # Connect to events and show the figure
-                self.fig.canvas.mpl_connect('key_press_event', self.on_key)
-                self.redraw()
-                plt.show()
 
 
 
