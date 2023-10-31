@@ -18,7 +18,7 @@ Contact: edis.devin.tireli@regionh.dk
 
 
 ## 1. Introduction
-p-Brain is a state-of-the-art neuroimaging tool developed for in-depth analysis of .PAR/.REC MRI data. The application is engineered to perform critical tasks such as T1/M0 fitting, creation of signal time curves, and plotting concentration curves for arteries and tissues. Additionally, the tool offers sophisticated methods for Grey Matter/White Matter (GM/WM) segmentation and Blood-Brain Barrier (BBB) permeability estimation, utilizing both the Patlak and ETofts models. GUI modules are incorporated for high-precision drawing of Regions of Interest (ROIs) across tissue and arterial/venous structures.
+p-Brain is a state-of-the-art neuroimaging tool developed for in-depth analysis of .PAR/.REC MRI data. The application is engineered to perform critical tasks such as T1/M0 fitting, creation of signal time curves, and plotting concentration curves for arteries and tissues. Additionally, the tool offers sophisticated methods for Grey Matter/White Matter (GM/WM) segmentation and Blood-Brain Barrier (BBB) permeability estimation, utilizing both the Patlak and the extended Tofts models. GUI modules are incorporated for high-precision drawing of Regions of Interest (ROIs) across tissue and arterial/venous structures.
 
 ## 2. Directory Structure
 The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
