@@ -20,11 +20,12 @@ jobs:
     - name: Update Version
       run: |
         cd scripts
-        new_version=$(python update_version.py)
+        new_version=$(python3 scripts/update_version.py)
         echo "new_version=$new_version" >> $GITHUB_ENV
         cd ..
-    - name: Debug new_version
-      run: echo "New version is ${{ env.new_version }}"
+    - name: Print working directory
+      run: pwd
+      
       
     - name: Commit and tag
       run: |
