@@ -6,7 +6,7 @@ from matplotlib.patches import Rectangle
 import os
 from utils.fonts import *
 from utils.loading import *
-
+from matplotlib.path import Path
 
 
 def normalize_ctc(C_t, baseline_point):
@@ -110,10 +110,11 @@ def butter_lowpass_filter(data, cutoff, fs, order=5):
     y = filtfilt(b, a, data)
     return y
 
+def on_esc(event):
+    if event.key == 'escape':
+        plt.close(event.canvas.figure)
+
 def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, type='test', subtype='test'):
-    def on_esc(event):
-        if event.key == 'escape':
-            plt.close(event.canvas.figure)
 
     N = data.shape[0]
     max_intensity = -1
@@ -188,9 +189,6 @@ def rescale_peak_to_four(array):
 
 
 def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, r1=4000, TD=120, type='test', subtype='test'):
-    def on_esc(event):
-        if event.key == 'escape':
-            plt.close(event.canvas.figure)
     N = data.shape[0]
     max_intensity = -1
     max_voxel = None
@@ -267,3 +265,159 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_slice_{slice_index+1}.npy'), C_t_shifted)
 
     
+
+from scipy.optimize import minimize_scalar
+
+def objective_function(offset, original_data, new_curve_segment):
+    return np.sum((original_data + offset - new_curve_segment)**2)
+
+class ConcentrationCurveEditor:
+    def __init__(self, curve_path, curve2_path, curve_path_actual):
+        self.data = curve_path
+        self.original_data = np.copy(self.data)
+        self.annotated_points = []
+        self.volume_points = []
+        self.selected_volume = []
+        self.area_closed = False
+        self.selecting_volume = True
+
+        self.fig, self.ax = plt.subplots()
+        self.redraw()
+        self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+        plt.show()
+
+    def update(self, val):
+        self.scale_factor = self.slider.val
+        self.redraw()
+
+    def onclick(self, event):
+        if event.inaxes != self.ax: return
+        x, y = int(event.xdata), event.ydata
+
+        if event.key == 'shift' and self.selecting_volume:
+            self.volume_points.append(self.volume_points[0])
+            self.selected_volume = self.volume_points.copy()
+            self.area_closed = True
+            self.selecting_volume = False
+        elif self.selecting_volume:
+            self.volume_points.append((x, y))
+        elif not self.selecting_volume and self.area_closed:
+            self.annotated_points.append((x, y))
+        self.redraw()
+
+    def on_key(self, event):
+        if event.key == 'escape':
+            plt.close(self.fig)
+        elif event.key == 'enter':
+            self.adjust_curve()
+            self.annotated_points = []
+            self.volume_points = []  # Reset the volume points
+            self.selected_volume = []  # Reset the selected volume
+            self.area_closed = False  # Reset the area closed flag
+            self.selecting_volume = True  # Reset to selecting volume
+            self.redraw()
+
+    def adjust_curve(self):
+        if len(self.annotated_points) < 2 or len(self.volume_points) < 2: return
+
+        x_volume, _ = zip(*sorted(self.volume_points))
+        start_volume, end_volume = min(x_volume), max(x_volume)
+
+        x_annot, y_annot = zip(*sorted(self.annotated_points))
+        start, end = max(min(x_annot), start_volume), min(max(x_annot), end_volume)
+
+        # Interpolate the user-drawn line within the range of interest
+        user_line_segment = np.interp(range(start, end + 1), x_annot, y_annot)
+        
+        # Mean of the user-drawn line
+        mean_user_line = np.mean(user_line_segment)
+        
+        # Selected data points
+        selected_data = [self.original_data[i] for i in range(start, end + 1) if Path(self.volume_points).contains_point((i, self.original_data[i]))]
+        
+        # Mean of the selected data
+        mean_selected_data = np.mean(selected_data)
+        
+        # Calculate the required shift to center the data around the line
+        required_shift = mean_selected_data - mean_user_line
+        
+        # Apply the shift to the selected points to align the means
+        for i in range(start, end + 1):
+            if Path(self.volume_points).contains_point((i, self.original_data[i])):
+                self.data[i] = self.original_data[i] - required_shift
+
+        self.original_data = np.copy(self.data)
+
+    def redraw(self):
+        self.ax.clear()
+        self.ax.grid(True, which='both')
+        self.ax.minorticks_on()
+        self.ax.grid(which='minor', alpha=0.25)
+
+        self.ax.plot(self.original_data, 'k:', marker='o', markersize=2, label="Original Curve")
+        self.ax.plot(self.data, 'k:', marker='o', markersize=2, label="Adjusted Curve")
+
+        if self.selecting_volume and self.volume_points:
+            x_vol, y_vol = zip(*self.volume_points)
+            self.ax.plot(x_vol, y_vol, 'r-', linewidth=1, marker='o', markersize=2, label="Volume Points")
+
+        if self.selected_volume:
+            path = Path(self.selected_volume)
+            for i, point in enumerate(self.original_data):
+                if path.contains_point((i, point)):
+                    self.ax.scatter(i, point, color='green', alpha=0.6)
+
+        if self.annotated_points:
+            x, y = zip(*self.annotated_points)
+            self.ax.plot(x, y, 'r-', linewidth=1, marker='o', markersize=2, label="Annotated Points")
+
+        self.ax.legend()
+        self.fig.canvas.draw()
+
+    def post_exit_dialog(self):
+        decision = input("[!] Keep changes (y) or restart (r)? ")
+        if decision == 'y':
+            self.save_corrected_curve()
+        elif decision == 'r':
+            self.__init__(self.curve_path, self.curve2_path)
+
+    def save_corrected_curve(self):
+        save_path = os.path.splitext(self.curve_path)[0] + '.npy'
+        np.save(save_path, self.data)
+
+    def restart_GUI(self):
+        plt.close(self.fig)
+        self.__init__(self.curve_path, self.curve2_path)
+
+def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir'):
+    fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
+
+    # Load existing concentration-time curve and Butterworth low-pass filter
+    avg_C_t = curve_path
+    fs = 15
+    cutoff = 4.0
+    order = 3
+    smoothed_values = butter_lowpass_filter(avg_C_t, cutoff, fs, order)
+
+    # Concentration-Time Curve
+    axs[0].plot(time_points_s, smoothed_values, color='black')
+    axs[0].scatter(time_points_s, avg_C_t, color='r', s=5)
+    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
+    axs[0].set_title(f'Average Concentration-Time Curve (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
+    axs[0].grid(which='minor', alpha=0.25)
+    axs[0].minorticks_on()
+
+    # Equilibrium Magnetisation Map
+    axs[1].imshow(data2[:, :, slice_index], cmap='magma', origin='lower')
+    for x, y in roi_voxels_upscaled:
+        rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
+        axs[1].add_patch(rect)
+    axs[1].set_title(f'Equilibrium magnetisation map (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
+    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_corrected.png'), dpi=200)
+    
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+    plt.show()
+    plt.close()
+

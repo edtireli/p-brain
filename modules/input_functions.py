@@ -118,7 +118,6 @@ class ROISelector:
 
 
 def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image='dir'):
-    print(time)
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-Instructions-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     print("1. Left " +colored('click', 'cyan') +" to select ROI points.")
     print("2. Press " +colored('shift', 'cyan') +" to close the ROI.")
@@ -218,4 +217,5 @@ def AIF(analysis='dir', nifti='dir', image='dir'):
     num_volumes = nifti_img.shape[-1]
     total_scan_duration = TR * num_volumes #*1e-3
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
+    np.save(os.path.join(analysis,'Fitting', 'time_points_s.npy'), time_points_s)
     start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis, image=image)
