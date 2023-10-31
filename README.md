@@ -110,7 +110,7 @@ eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee
 | 7 | Addons
 | 9 | Exit program
 =-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
-[!] Enter option (1-9): ^C% 
+[!] Enter option (1-9):
 ```
 
 The idea is to use the options in chronological order, as each step requires the files of each subsequent step. 
