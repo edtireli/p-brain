@@ -22,8 +22,8 @@ p-Brain is a state-of-the-art neuroimaging tool developed for in-depth analysis 
 The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
 
 ```
-Data
-└── Data_1
+data
+└── data_1
     ├── x.PAR
     ├── x.REC
     └── Analysis
@@ -31,10 +31,14 @@ Data
         ├── CTC Data
         ├── ITC Data
         └── ROI Data
-└── Data_2
+    └── Images    
+    └── NIfTI    
+└── data_2
 ...
 ```
-Place your .PAR/.REC MRI data in the 'Data' directory under the appropriate data folder. p-Brain will create subdirectories within the data folders (Data_1, Data_2 etc.) automatically. The names of the data folders are irrelevant, but listed above as data_1 and data_2 for clarity. 
+Place your .PAR/.REC MRI data in the 'data' directory under the appropriate data folder. p-Brain will create subdirectories within the data folders (Data_1, Data_2 etc.) automatically. The names of the data folders are irrelevant, but listed above as data_1 and data_2 for clarity. 
+
+Further, analysis images will be placed in the Images subfolder, and the NIfTI files will be placed in the subfolder of the same name.
 
 ## 3. Installation
 
