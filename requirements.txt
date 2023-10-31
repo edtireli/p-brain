@@ -1,0 +1,8 @@
+scipy
+matplotlib
+termcolor
+pyfiglet
+seaborn
+nibabel
+tqdm
+numpy
