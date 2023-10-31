@@ -13,12 +13,13 @@ def main():
         welcome_screen()
         choice = welcome_screen_choice()
 
-        #choices
+        #Choices
         if choice == 0: #Show MRI images: DCE, Saggital T1/T2, Axial T1/T2
             viewer = MRIViewer(nifti_directory)
             viewer.display()
-        #elif choice == 1:
-            #do something 
+
+        elif choice == 1: #T1/M0 fit
+            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory)
         #elif choice == 2:
             #do something 
         #elif choice == 3:
