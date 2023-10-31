@@ -1,0 +1,31 @@
+name: Auto Update Version
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  update_version:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.11'
+
+    - name: Update Version
+      run: echo "new_version=$(python update_version.py)" >> $GITHUB_ENV
+
+    - name: Commit and tag
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "github-actions[bot]"
+        git add .
+        git commit -m "Bump version to ${{ env.new_version }}"
+        git tag ${{ env.new_version }}
+        git push origin main --tags
+
