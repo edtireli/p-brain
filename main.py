@@ -3,27 +3,30 @@ from modules import *
 
 def main():
     
-    #Handle log_number choice and data directories
+    # Handle log_number choice and data directories
     log_number = select_log_number()
     data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(log_number)
     parrec2nifti(data_directory, nifti_directory)
    
-    #Welcome screen
+    # Welcome screen
     while True:
         welcome_screen()
         choice = welcome_screen_choice()
 
         #Choices
-        if choice == 0: #Show MRI images: DCE, Saggital T1/T2, Axial T1/T2
+        if choice == 0: # Show MRI images: DCE, Saggital T1/T2, Axial T1/T2
             viewer = MRIViewer(nifti_directory)
             viewer.display()
 
-        elif choice == 1: #T1/M0 fit
+        elif choice == 1: # T1/M0 fit
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory)
-        #elif choice == 2:
+
+        elif choice == 2: # Input function from ROI 
+            AIF(analysis = analysis_directory, nifti = nifti_directory, image = image_directory)
+        
+        elif choice == 3: # Time shifting of input functions
             #do something 
-        #elif choice == 3:
-            #do something 
+        
         #elif choice == 4:
             #do something
         #elif choice == 5:
