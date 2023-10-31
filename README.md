@@ -40,9 +40,23 @@ Place your .PAR/.REC MRI data in the 'Data' directory under the appropriate data
 
 ## 3. Installation
 
-To install p-Brain, simply clone the repository to your local machine.
+To install p-Brain, simply clone the repository to your local machine:
 
-For additional installation details, please refer to the INSTALL.txt file in the repository.
+1. Clone this repository to your local machine.
+    ```bash
+    git clone https://github.com/edtireli/p-brain.git
+    ```
+2. Navigate to the cloned directory.
+    ```bash
+    cd p-brain
+    ```
+3. Install the required packages.
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+Now you are ready to run the program.
+
 
 ## 4. Command-Line Interface Usage
 To start p-Brain, navigate to the project directory and execute the following command:
