@@ -21,20 +21,20 @@ Contact: edis.devin.tireli@regionh.dk
 p-Brain is a state-of-the-art neuroimaging tool developed for in-depth analysis of .PAR/.REC MRI data. The application is engineered to perform critical tasks such as T1/M0 fitting, creation of signal time curves, and plotting concentration curves for arteries and tissues. Additionally, the tool offers sophisticated methods for Grey Matter/White Matter (GM/WM) segmentation and Blood-Brain Barrier (BBB) permeability estimation, utilizing both the Patlak and ETofts models. GUI modules are incorporated for high-precision drawing of Regions of Interest (ROIs) across tissue and arterial/venous structures.
 
 ## 2. Directory Structure
-The software expects a specific directory structure for optimal functioning. The following is the required layout:
+The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
 
-- Data
-  └─ Data_1
-      └─ x.PAR
-      └─ x.REC
-      Analysis
-        └─ TSCC Data
-        └─ CTC Data
-        └─ ITC Data
-        └─ ROI Data
-  └─ Data_2
-      ...
-  ...
+Data
+└── Data_1
+    ├── x.PAR
+    ├── x.REC
+    └── Analysis
+        ├── TSCC Data
+        ├── CTC Data
+        ├── ITC Data
+        └── ROI Data
+└── Data_2
+...
+...
 
 Place your .PAR/.REC MRI data in the 'Data' directory under the appropriate data folder. p-Brain will create subdirectories within the data folders (Data_1, Data_2 etc.) automatically. The names of the data folders are irrelevant, but listed above as data_1 and data_2 for clarity. 
 
