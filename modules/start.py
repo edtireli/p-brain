@@ -88,6 +88,7 @@ def select_log_number():
 #A simple implementation of a CLI interface
 from pyfiglet import Figlet
 from termcolor import colored
+import time
 import os
 
 
@@ -115,9 +116,18 @@ def welcome_screen():
     print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
     print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
     
+
 def welcome_screen_choice():
     choice = input('['+colored('!', 'cyan')+'] Enter option ('+colored('1', 'cyan')+'-'+colored('9', 'cyan')+'): ')
-    return choice    
+    
+    if not choice.isdigit():
+        print('[' +colored('!', 'red') +"] Only integer input!")
+        time.sleep(2)
+        print('[' +colored('!', 'cyan') +'] Try again!  ^-^')
+        time.sleep(2)
+        return welcome_screen_choice()  # Recursively call itself
+    
+    return choice  
 
 
 import subprocess
