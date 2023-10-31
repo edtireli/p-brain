@@ -127,7 +127,7 @@ def welcome_screen_choice():
         time.sleep(2)
         return welcome_screen_choice()  # Recursively call itself
     
-    return choice  
+    return int(choice) 
 
 
 import subprocess
