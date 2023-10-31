@@ -1,4 +1,4 @@
-name: Auto Update Version
+name: Update Version
 
 on:
   push:
@@ -7,31 +7,23 @@ on:
 
 jobs:
   update_version:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
       
-    - name: Set up Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v2
       with:
         python-version: '3.11'
+        
+    - name: Run update_version.py
+      run: python scripts/update_version.py
 
-    - name: Update Version
+    - name: Commit and push
       run: |
-        cd scripts
-        new_version=$(python3 scripts/update_version.py)
-        echo "new_version=$new_version" >> $GITHUB_ENV
-        cd ..
-    - name: Print working directory
-      run: pwd
-      
-      
-    - name: Commit and tag
-      run: |
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git config --global user.name "github-actions[bot]"
-        git add .
-        git commit -m "Bump version to ${{ env.new_version }}"
-        git tag ${{ env.new_version }}
-        git push origin main --tags
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add modules/__init__.py
+        git commit -m "Update version"
+        git push
