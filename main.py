@@ -21,7 +21,7 @@ def main():
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory)
 
         elif choice == 2: # Input function from ROI 
-            AIF(analysis = analysis_directory, nifti = nifti_directory, image = image_directory)
+            input_function(analysis_directory, nifti_directory, image_directory)
         
         elif choice == 3: # Time shifting of input functions AND find maximum AIF
             time_shifting(analysis_directory, nifti_directory, image_directory)
@@ -32,14 +32,17 @@ def main():
         elif choice == 5: # Compute BBB parameters
             BBB_parameters(analysis_directory, image_directory)
 
-        elif choice == 6:
-            add_notes(analysis_directory)  
+        elif choice == 6: # Analysis notes
+            add_notes(analysis_directory) 
+        
+        elif choice == 7: # Addons
+            selected_addon = list_addons()
+            load_addon(selected_addon, analysis_directory, nifti_directory, image_directory)
 
-        #elif choice == 7:
-            #do something
+
 
         #elif choice == 8:
-            #do something else
+            #not yet imlpemented
 
         elif choice == 9:
             break       
