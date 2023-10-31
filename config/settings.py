@@ -61,3 +61,5 @@ def setup_directories(log_number):
     # Create all directories
     for dir_path in dirs_to_create:
         create_directory(dir_path)
+
+    return data_directory, analysis_directory, nifti_directory, image_directory    
