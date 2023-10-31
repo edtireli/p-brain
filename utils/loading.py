@@ -8,19 +8,23 @@ from utils.plotting import *
 from utils.loading import *
 import importlib
 
-def list_addons():
-    addon_files = [f[:-3] for f in os.listdir("addons") if f.endswith(".py") and f != "__init__.py"]
-    for i, addon in enumerate(addon_files):
-        print(f"{i+1}. {addon}")
-    choice = int(input("Choose addon: ")) - 1
-    return addon_files[choice]
 
-def load_addon(addon_name, *args):
+def list_addons():
+    addon_folders = [f for f in os.listdir("addons") if os.path.isdir(os.path.join("addons", f))]
+    print('--------------------------------')
+    for i, addon in enumerate(addon_folders):
+        print(f"{i+1}. {addon}")
+    print('--------------------------------')    
+    choice = int(input("Choose addon: ")) - 1
+    return addon_folders[choice]
+
+def load_addon(addon_folder_name, *args):
     try:
-        addon = importlib.import_module(f'addons.{addon_name}')
-        addon.run(*args) 
+        addon = importlib.import_module(f'addons.{addon_folder_name}.{addon_folder_name}')
+        addon.run(*args)
     except ImportError:
-        print(f"Addon {addon_name} not available.")
+        print(f"Addon {addon_folder_name} not available.")
+
 
 def replace_max_with_artery_type_and_delete(values_json_path, max_info_json_path):
     # Read and parse max_info.json

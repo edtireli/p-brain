@@ -40,7 +40,6 @@ def main():
             load_addon(selected_addon, analysis_directory, nifti_directory, image_directory)
 
 
-
         #elif choice == 8:
             #not yet imlpemented
 

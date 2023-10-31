@@ -13,13 +13,13 @@ from utils.fonts import *
 from utils.settings import *
 from utils.loading import *
 from .start import * # welcome screen
-from .images import * # option 0
-from .T1_fit import * # option 1
-from .input_functions import * # option 2
+from .opt00_images import * # option 0
+from .opt01_T1_fit import * # option 1
+from .opt02_input_functions import * # option 2
 from utils.mapping import *
 from utils.plotting import *
-from .time_shifting import * # option 3
-from .tissue_function import * # option 4
-from .BBB_parameters import * # option 5
-from .analysis_notes import * # option 6
+from .opt03_time_shifting import * # option 3
+from .opt04_tissue_function import * # option 4
+from .opt05_BBB_parameters import * # option 5
+from .opt06_analysis_notes import * # option 6
 
