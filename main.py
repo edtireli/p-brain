@@ -24,11 +24,11 @@ def main():
         elif choice == 2: # Input function from ROI 
             AIF(analysis = analysis_directory, nifti = nifti_directory, image = image_directory)
         
-        elif choice == 3: # Time shifting of input functions
-            #do something 
+        elif choice == 3: # Time shifting of input functions AND find maximum AIF
+            time_shifting(analysis_directory, nifti_directory, image_directory)
         
-        #elif choice == 4:
-            #do something
+        elif choice == 4: # Tissue concentration functions
+            tissue_function(analysis_directory, nifti_directory, image_directory)
         #elif choice == 5:
             #do something 
         #elif choice == 6:
