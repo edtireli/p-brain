@@ -7,6 +7,8 @@ import os
 from utils.fonts import *
 from utils.loading import *
 from matplotlib.path import Path
+from scipy.signal import argrelextrema
+
 
 
 def normalize_ctc(C_t, baseline_point):
@@ -69,6 +71,35 @@ def custom_shifter(array, baseline_point):
     
     # Add the first few points again but as zeros
     return np.concatenate([np.zeros(baseline_point), shifted_array])
+
+
+def find_major_peaks(gradient, radius=10):
+    """
+    Finds the indices of the two major peaks in the given 1D array based on the gradient.
+    
+    Parameters:
+        gradient (numpy.ndarray): The 1D array containing the gradient data.
+        radius (int): The radius around the peaks for filtering out subdominant peaks.
+        
+    Returns:
+        list: The indices of the two major peaks.
+    """
+    # Identify peaks
+    peak_indices = argrelextrema(gradient, np.greater)[0]
+    peak_values = gradient[peak_indices]
+    
+    # Sort peaks by value
+    sorted_peak_indices = [x for _, x in sorted(zip(peak_values, peak_indices), reverse=True)]
+    
+    # Extract the two major peaks based on radius
+    major_peaks = []
+    for peak in sorted_peak_indices:
+        if all(abs(peak - mp) >= radius for mp in major_peaks):
+            major_peaks.append(peak)
+            if len(major_peaks) >= 2:
+                break
+    return major_peaks
+
 
 
 def find_main_peaks(data, height_threshold):
@@ -272,7 +303,7 @@ def objective_function(offset, original_data, new_curve_segment):
     return np.sum((original_data + offset - new_curve_segment)**2)
 
 class ConcentrationCurveEditor:
-    def __init__(self, curve_path, curve2_path, curve_path_actual):
+    def __init__(self, curve_path):
         self.data = curve_path
         self.original_data = np.copy(self.data)
         self.annotated_points = []
@@ -390,7 +421,7 @@ class ConcentrationCurveEditor:
         plt.close(self.fig)
         self.__init__(self.curve_path, self.curve2_path)
 
-def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir'):
+def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir', rot90 = False):
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
 
     # Load existing concentration-time curve and Butterworth low-pass filter
@@ -409,14 +440,24 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
     axs[0].grid(which='minor', alpha=0.25)
     axs[0].minorticks_on()
 
-    # Equilibrium Magnetisation Map
-    axs[1].imshow(data2[:, :, slice_index], cmap='magma', origin='lower')
-    for x, y in roi_voxels_upscaled:
-        rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
-        axs[1].add_patch(rect)
-    axs[1].set_title(f'Equilibrium magnetisation map (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
-    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_corrected.png'), dpi=200)
-    
+    if rot90 == False:
+        axs[1].imshow(data2[:, :, slice_index], cmap='magma', origin='lower')
+        for x, y in roi_voxels_upscaled:
+            rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
+            axs[1].add_patch(rect)
+        axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
+        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_corrected.png'), dpi=200)
+    elif rot90:
+        rect_array = np.zeros((data2.shape[0], data2.shape[1]))
+        for x, y in roi_voxels_upscaled:
+            rect_array[x, y] = 1
+        rotated_rect_array = np.rot90(rect_array, 3)
+        rotated_roi_voxels = np.array(np.where(rotated_rect_array)).T
+        axs[1].imshow(np.rot90(data2[:, :, slice_index],3), cmap='magma', origin='lower')
+        for x, y in rotated_roi_voxels:
+            rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
+            axs[1].add_patch(rect)
+        axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontsize=14) 
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     plt.show()
     plt.close()

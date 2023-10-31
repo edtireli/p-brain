@@ -209,13 +209,13 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
     
 
 
-def AIF(analysis='dir', nifti='dir', image='dir'):
+def input_function(analysis_directory, nifti_directory, image_directory):
     possible_dce_filenames = ['WIPhperf120long.nii', 'WIPDelRec-hperf120long.nii']
-    filename = first_existing_dce_file(nifti, possible_dce_filenames)
+    filename = first_existing_dce_file(nifti_directory, possible_dce_filenames)
     nifti_img = nib.load(filename)
     TR = nifti_img.header.get_zooms()[-1] #*1e3
     num_volumes = nifti_img.shape[-1]
     total_scan_duration = TR * num_volumes #*1e-3
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
-    np.save(os.path.join(analysis,'Fitting', 'time_points_s.npy'), time_points_s)
-    start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis, image=image)
+    np.save(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'), time_points_s)
+    start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis_directory, image=image_directory)
