@@ -38,22 +38,39 @@ Place your .PAR/.REC MRI data in the 'Data' directory under the appropriate data
 
 ## 3. Installation
 
-To install p-Brain, simply clone the repository to your local machine:
+To get started with p-Brain, please follow the steps below to install the software on your local machine.
 
-1. Clone this repository to your local machine.
+### Required Installation
+
+1. **Clone the Repository**: Clone the p-Brain repository to your local machine using the following command:
     ```bash
     git clone https://github.com/edtireli/p-brain.git
     ```
-2. Navigate to the cloned directory.
+
+2. **Navigate to the Directory**: Change to the directory containing the cloned repository:
     ```bash
     cd p-brain
     ```
-3. Install the required packages.
+
+3. **Install Dependencies**: Install the required Python packages listed in `requirements.txt`:
     ```bash
     pip install -r requirements.txt
     ```
 
-Now you are ready to run the program.
+At this point, p-Brain is installed and you can run the program.
+
+### Optional Addon Installation
+
+For advanced functionalities, p-Brain supports optional addons. One such addon is `boundary`.
+
+To install the `boundary` addon:
+
+1. **Initialize the Submodule**: While in the root directory of the p-Brain repository, run the following command to initialize and update the `boundary` submodule:
+    ```bash
+    git submodule update --init -- addons/boundary
+    ```
+
+By following these steps, the `boundary` addon will be available for use within p-Brain.
 
 
 ## 4. Command-Line Interface Usage
@@ -79,6 +96,6 @@ For contributions, feature requests, and bug reporting, please contact Edis Devi
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
 
 ## 8. Acknowledgments
-Special thanks to Henrik B. W. Larsson for collaboration and discussion
+Special thanks to Henrik B. W. Larsson for collaboration and discussion.
 
 
