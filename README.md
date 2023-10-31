@@ -77,11 +77,43 @@ To install the `boundary` addon:
 By following these steps, the `boundary` addon will be available for use within p-Brain.
 
 
-## 4. Command-Line Interface Usage
+## 4. How to use
 To start p-Brain, navigate to the project directory and execute the following command:
+```bash
+python3 main.py
+```
+This will open up a GUI in which the subfolders of the data folder will be enumerated. Here you will need to select a subfolder (e.g. analysis ID, exam ID, log number etc.). Thereafter, you can press Accept and after the GUI will close, the following command line interface will be printed in the terminal:
 
+```bash
+         Welcome to p-brain - a neuroimaging & analysis tool
+=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
 
-The program will prompt you for various inputs corresponding to the task you want to perform. Follow the on-screen instructions to complete the process.
+        / /                                                  / /      
+       / /    eeeee      eeeee  eeeee  eeeee e  eeeee       / /       
+      / /     8   8      8   8  8   8  8   8 8  8   8      / /        
+eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee 
+    / /       88         88   8 88   8 88  8 88 88  8    / /          
+   / /        88         88eee8 88   8 88  8 88 88  8   / /           
+                                                                      
+
+                  Developed by Edis Devin Tireli
+                     University of Copenhagen
+=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
+=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-= 
+| 0 | View MRI images
+| 1 | Compute M0 and T1 map from MRI data
+| 2 | Generate Concentration Time Curves (CTC) based on ROI
+| 3 | Generate Time-Shifted Concentration Curves (TSCC) from CTC
+| 4 | Create Tissue (Grey/White matter) CTCs
+| 5 | Compute BBB permeability and perfusion parameters
+| 6 | Add analysis notes
+| 7 | Addons
+| 9 | Exit program
+=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
+[!] Enter option (1-9): ^C% 
+```
+
+The idea is to use the options in chronological order, as each step requires the files of each subsequent step. 
 
 
 ## 5. Core Features
