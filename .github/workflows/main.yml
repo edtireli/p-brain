@@ -18,14 +18,19 @@ jobs:
         python-version: '3.11'
 
     - name: Update Version
-      id: update_version_step
-      run: echo "::set-output name=new_version::$(python update_version.py)" 
-
+      run: |
+        cd scripts
+        new_version=$(python update_version.py)
+        echo "new_version=$new_version" >> $GITHUB_ENV
+        cd ..
+    - name: Debug new_version
+      run: echo "New version is ${{ env.new_version }}"
+      
     - name: Commit and tag
       run: |
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git config --global user.name "github-actions[bot]"
         git add .
-        git commit -m "Bump version to ${{ steps.update_version_step.outputs.new_version }}" # Use the output from the step
-        git tag ${{ steps.update_version_step.outputs.new_version }} # Use the output from the step
+        git commit -m "Bump version to ${{ env.new_version }}"
+        git tag ${{ env.new_version }}
         git push origin main --tags
