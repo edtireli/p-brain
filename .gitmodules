@@ -1,3 +1,6 @@
 [submodule "addons/boundary"]
 	path = addons/boundary
 	url = https://github.com/edtireli/p-brain-boundary
+[submodule "addons/screenshot"]
+	path = addons/screenshot
+	url = https://github.com/edtireli/p-brain-screenshot
