@@ -42,8 +42,8 @@ NIfTI files can also be used directly by simply creating a folder of the same na
 
 There are several files that are important to the analysis, I will list the sequence names below: 
 
-- WIPAxT2TSEmatrix.nii: An axial T2 weighted image.
-- WIPhperf120long.nii: The data for the dynamic contrast-enhanced sequence.
+- WIPAxT2TSEmatrix.nii: An axial 2D T2 weighted image.
+- WIPhperf120long.nii: The data for the dynamic contrast-enhanced (DCE) sequence.
 - WIPTI_xxxxx.nii: A series of n inversion recovery sequences where the x's are times in ms (by default set to 120, 300, ..., 1e5).
 - Extra: The following files are not needed for the minimal case, but p-brain has an extended behavior (e.g. in GUI or plotting) if they are available.
     - WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii: A 3D FLAIR sequence.
@@ -53,7 +53,9 @@ There are several files that are important to the analysis, I will list the sequ
     - axVWIPcs_3D_Brain_VIEW_T2_32chSHC.nii: An axial reconstruction of the 3D T2 sequence above.
     - axVWIPcs_T1W_3D_TFE_32channel.nii: : An axial reconstruction of the 3D T1 sequence above.
 
-The above files can be renamed to suit different purposes/sequences. 
+The above files can be renamed to suit different purposes/sequences. See below for some of the most useful, especially with the _boundary_ addon: 
+![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
+
 
 ## 3. Installation
 
@@ -130,13 +132,19 @@ The idea is to use the options in chronological order, as each step requires the
 ## 5. Core Features
 
 - Option 0 - View MRI images: This option opens a GUI that allows for the selection and viewing of axial and saggital images of the aforementioned data types.
-- Option 1 - T1/M0 Fitting: This option utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting.
-- Option 2 - Concentration Time Curve (CTC) Generation: Generates signal time curves from the MRI data from a ROI drawn on DCE data (GUI).
+- Option 1 - T1/M0 Fitting: This option utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting: it uses the WIPTI_xxxx.nii files to do so.
+  <img width="1277" alt="Screenshot 2023-11-01 at 18 34 13" src="https://github.com/edtireli/p-brain/assets/129996957/c27ff5d8-1b9c-4bda-8af6-25655fe4da42">
+- Option 2 - Concentration Time Curve (CTC) Generation: Generates signal time curves from the MRI data from a ROI drawn on DCE data (GUI): using the DCE file for this step.
+ 
+  <img width="470" alt="Figure_1_github" src="https://github.com/edtireli/p-brain/assets/129996957/370ecb97-7dae-4148-b60e-93b72bfab24c">
+  <img width="470" alt="Figure_2_github" src="https://github.com/edtireli/p-brain/assets/129996957/8f464073-1c6f-4cf2-91ff-5131f36bcfd5">
+
 - Option 3 - Time shifting:  The venous CTC is shifted in time to the arterial CTC this is done by peak analysis so that a sufficient input function can be used. If the arterial CTC has taller peaks than the venous, then the venous curve is also rescaled to match.
-- Option 4 - Tissue Concentration Time Curves: Generates Tissue CTCs via ROI selection (GUI) in the same way as in Option 2.
-- Option 5 - BBB Permeability Estimation: Estimates BBB permeability using both Patlak and ETofts models.
+- Option 4 - Tissue Concentration Time Curves: Generates Tissue CTCs via ROI selection (GUI) in the same way as in Option 2: using the DCE file and the 2D T2W image for this step.
+- Option 5 - BBB Permeability Estimation: Estimates BBB permeability using both Patlak and the extended Tofts models.
 - Addons:
     -  Boundary: Computes the concentration time function for Grey Matter/White Matter boundary (segmented with fsl_anat).
+    ![CTC+ROI_slice_7](https://github.com/edtireli/p-brain/assets/129996957/32bc922a-dcce-4b9c-a31e-053d021351e4)
     -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
 
 ## 6. Contributions
@@ -146,6 +154,6 @@ For contributions, feature requests, and bug reporting, please contact me (Edis 
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
 
 ## 8. Acknowledgments
-Special thanks to Henrik B. W. Larsson for collaboration and discussion.
+Special thanks to Henrik B. W. Larsson for collaborations and discussions.
 
 
