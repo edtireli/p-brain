@@ -15,7 +15,7 @@ def list_addons():
     for i, addon in enumerate(addon_folders):
         print(f"{i+1}. {addon}")
     print('--------------------------------')    
-    choice = int(input("Choose addon: ")) - 1
+    choice = int(input("[!] Choose addon: ")) - 1
     return addon_folders[choice]
 
 def load_addon(addon_folder_name, *args):
@@ -23,7 +23,7 @@ def load_addon(addon_folder_name, *args):
         addon = importlib.import_module(f'addons.{addon_folder_name}.{addon_folder_name}')
         addon.run(*args)
     except ImportError:
-        print(f"Addon {addon_folder_name} not available.")
+        print(f"Addon {addon_folder_name} not available! Download it with 'git submodule update --init -- addons/addon_name' where the addon_name is the name of the addon, which can be found on the github page.")
 
 
 def replace_max_with_artery_type_and_delete(values_json_path, max_info_json_path):
