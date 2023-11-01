@@ -2,7 +2,7 @@
 
 Author: Edis Devin Tireli, M.Sc, Ph.D. student
 
-Affiliation: Copenhagen University
+Affiliation: [Copenhagen University](https://www.ku.dk/english/)
 
 # Table of Contents
 1. Introduction
