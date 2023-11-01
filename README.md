@@ -133,7 +133,6 @@ The idea is to use the options in chronological order, as each step requires the
 
 - Option 0 - View MRI images: This option opens a GUI that allows for the selection and viewing of axial and saggital images of the aforementioned data types.
 - Option 1 - T1/M0 Fitting: This option utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting: it uses the WIPTI_xxxx.nii files to do so.
-  <img width="1277" alt="Screenshot 2023-11-01 at 18 34 13" src="https://github.com/edtireli/p-brain/assets/129996957/c27ff5d8-1b9c-4bda-8af6-25655fe4da42">
 - Option 2 - Concentration Time Curve (CTC) Generation: Generates signal time curves from the MRI data from a ROI drawn on DCE data (GUI): using the DCE file for this step.
  
   <img width="450" alt="Figure_1_github" src="https://github.com/edtireli/p-brain/assets/129996957/370ecb97-7dae-4148-b60e-93b72bfab24c">
