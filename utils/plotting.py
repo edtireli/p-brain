@@ -10,6 +10,11 @@ from matplotlib.path import Path
 from scipy.signal import argrelextrema
 
 
+def load_from_pickle(file_path):
+    with open(file_path, 'rb') as file:
+        matrix = pickle.load(file)
+    return matrix
+
 
 def normalize_ctc(C_t, baseline_point):
     baseline_length = baseline_point
