@@ -8,7 +8,7 @@ Affiliation: Copenhagen University
 1. Introduction
 2. Directory & Data Structure
 3. Installation
-4. Command-Line Interface Usage
+4. How to use
 5. Core Features
 6. Contributions
 7. License
