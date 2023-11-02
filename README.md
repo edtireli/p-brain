@@ -1,4 +1,5 @@
 # p-Brain: Advanced Neuroimaging Analysis Tool
+![New Project (2)](https://github.com/edtireli/p-brain/assets/129996957/73eaf579-5309-4f2c-a596-5840cdf27a0d)
 
 Author: Edis Devin Tireli, M.Sc, Ph.D. student
 
