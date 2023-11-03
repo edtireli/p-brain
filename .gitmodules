@@ -4,3 +4,6 @@
 [submodule "addons/screenshot"]
 	path = addons/screenshot
 	url = https://github.com/edtireli/p-brain-screenshot
+[submodule "addons/seg2roi"]
+	path = addons/seg2roi
+	url = https://github.com/edtireli/p-brain-seg2roi
