@@ -133,21 +133,28 @@ import subprocess
 from collections import defaultdict
 import os
 
-#A simple function for transforming the .PAR files if available to .nii/.json assuming the user has dcm2niix installed
 def parrec2nifti(directory, nifti_directory):
+    # Check if any .nii files are already present; if so, return
     if any(file.endswith('.nii') for file in os.listdir(nifti_directory)):
         return
 
+    # List all .PAR files in the given directory
     par_files = [f for f in os.listdir(directory) if f.endswith('.PAR')]
-    prefix_dict = defaultdict(int)
 
+    # Convert each .PAR file
     for file in par_files:
-        parts = file.rsplit('_', 1)
-        prefix, num = parts[0], int(parts[1].split('.')[0])
-        prefix_dict[prefix] = max(prefix_dict[prefix], num)
-
-    for prefix, max_num in prefix_dict.items():
-        file_to_convert = f"{prefix}_{max_num}.PAR"
-        command = f"dcm2niix -f %p -v n -o {nifti_directory} {os.path.join(directory, file_to_convert)}"
-        process = subprocess.Popen(command, shell=True)
-        process.wait()
+        file_to_convert = os.path.join(directory, file)
+        command = f"dcm2niix -f %p -o {nifti_directory} -v n {file_to_convert}"
+        try:
+            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            if process.returncode != 0:
+                # If there was an error, output it
+                print(f"Error converting {file}: {stderr.decode('utf-8')}")
+            else:
+                # If conversion was successful, print a confirmation message
+                print(f"Converted {file} successfully.")
+        except Exception as e:
+            # If there was an exception, output the exception details
+            print(f"Exception during conversion of {file}: {e}")
+         
