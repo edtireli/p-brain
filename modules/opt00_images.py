@@ -63,6 +63,8 @@ class MRIViewer:
                     self.num_slices = self.img_data.shape[2]
                     self.num_frames = self.img_data.shape[3] if self.img_data.ndim == 4 else None
 
+                    self.slice_idx = 0  # Reset slice index to start at slice 1
+
                     # Inner loop for the GUI
                     while True:
                         # Create a new figure and axis
