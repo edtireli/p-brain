@@ -76,6 +76,8 @@ def permeability_user_interface(analysis_directory):
             else:
                 print(f'[!] Available slices: {", ".join(available_slices)}')
                 chosen_slice = input('[!] Enter the slice index: ')
+                if chosen_slice == 'seg2roi':
+                    chosen_slice = '_seg2roi'
             subtype_tissue, slice_tissue = chosen_subtype, chosen_slice
 
     return subtype_tissue, subtype_artery, slice_tissue, slice_artery
