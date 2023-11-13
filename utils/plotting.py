@@ -42,6 +42,11 @@ def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True):
     return C_t
 
 
+def compute_CTC_VFA(s_tissue, m0_tissue, FA, TR, r1, beta_tissue):
+    A = s_tissue / (m0_tissue * np.sin(FA)) 
+    c_tissue = -r1 / beta_tissue - np.log((A - 1) / (A * np.cos(FA) - 1)) / (beta_tissue * TR)
+    return c_tissue
+
 def interp_nans(arr):
     mask = np.isnan(arr)
     arr[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), arr[~mask])
@@ -183,7 +188,7 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     axs[1].imshow(data[:, :, slice_index, frame_index], cmap='viridis', origin='lower')
     if max_voxel:
         x, y = max_voxel
-        rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='r', facecolor='none')
+        rect = Rectangle((y-0.5, x-0.5), 1, 1, linewidth=1, edgecolor='r', facecolor='none')
         axs[1].add_patch(rect)
     axs[1].set_title(f'Slice with brightest voxel (slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
 
@@ -224,7 +229,11 @@ def rescale_peak_to_four(array):
     return array
 
 
-def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, r1=4000, TD=120, type='test', subtype='test'):
+def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
+    
+    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    
     N = data.shape[0]
     max_intensity = -1
     max_voxel = None
@@ -245,11 +254,28 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     # Compute Concentration-Time Curve (CTC)
     S0 = voxel_time_course_max[0] 
     x, y, z = max_voxel[0], max_voxel[1], slice_index
-    T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
-    M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
+    T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
+    M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
     T1 = T1_matrix[x, y, z]
     M0 = M0_matrix[x, y, z]
-    C_t = np.array(compute_CTC(voxel_time_course_max, T1, TD, r1=4000, m0=M0, slice=slice_index))
+    if IsVFA:
+        radius = 10 # radius between boluses, assuming double bolus input
+        json_filename = dce_filename.replace('.nii', '.json')
+        with open(os.path.join(nifti_directory, json_filename), 'r') as file:
+            json_data = json.load(file)
+            FA = json_data['FlipAngle']  # Flip angle in degrees
+            TR = json_data['RepetitionTimeExcitation']  # TR in seconds
+
+            FA_rad = np.radians(FA)  # Convert flip angle to radians
+
+        # Compute Concentration-Time Curve for VFA
+        beta_tissue = 4 # relaxitivity in 1/ms
+        T1 = T1 * 1e-3 # T1 from ms to sec
+
+        C_t = np.array(compute_CTC_VFA(voxel_time_course_max, M0, FA_rad, TR, r1=1/T1, beta_tissue=beta_tissue))
+    else:  
+        radius = 10 # radius between boluses, assuming double bolus input   
+        C_t = np.array(compute_CTC(voxel_time_course_max, T1, TD, r1=4000, m0=M0, slice=slice_index))
     C_t = interp_nans(C_t)
     #print(f"Slice {slice_index+1}: TD: {TD}, TR: {TR}, T1: {round(T1,1)}, M0: {round(M0,1)}")
     print("")
@@ -269,18 +295,18 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     # Equilibrium Magnetisation Map
     axs[1].imshow(M0_matrix[:, :, slice_index], cmap='plasma', origin='lower')
     if max_voxel:
-        x, y = max_voxel
-        rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none')
+        x, y = max_voxel  # x, y are row, column indices in the data
+        # Plot the rectangle using column, row coordinates
+        rect = Rectangle((y-0.5, x-0.5), 1, 1, linewidth=1, edgecolor='g', facecolor='none')
         axs[1].add_patch(rect)
     axs[1].set_title(f'Equilibrium magnetisation map (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
-    
+
     plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', type, subtype, f'CTC+M0_slice_{slice_index+1}.png'), dpi=200)
     
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     plt.show()
     #plt.close()
-
-    baseline_point = find_shifted_baseline(C_t)-1
+    baseline_point = find_shifted_baseline(C_t, skip_points=radius)-1
     C_t_shifted = custom_shifter(C_t, baseline_point)
     C_t_shifted = rescale_peak_to_four(C_t_shifted) 
     
@@ -300,6 +326,7 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     # Save the tissue concentrations
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_slice_{slice_index+1}.npy'), C_t_shifted)
 
+    
     
 
 from scipy.optimize import minimize_scalar

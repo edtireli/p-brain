@@ -10,6 +10,7 @@ __affiliation__ = "Copenhagen University"
 
 # modules/__init__.py
 from utils.fonts import *
+from utils.parameters import * #Change global parameters here!! Important!
 from utils.settings import *
 from utils.loading import *
 from .start import * # welcome screen
