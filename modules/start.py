@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk
 import sys
 import os
+import gzip
+import glob
 
 
 availability_toggled = False
@@ -133,28 +135,45 @@ import subprocess
 from collections import defaultdict
 import os
 
+
+def decompress_gz_in_directory(directory):
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.gz'):
+                gz_path = os.path.join(root, file)
+                with gzip.open(gz_path, 'rb') as f_in:
+                    with open(gz_path[:-3], 'wb') as f_out:
+                        f_out.write(f_in.read())
+                print(f'Decompressed: {gz_path}')
+
+
 def parrec2nifti(directory, nifti_directory):
     # Check if any .nii files are already present; if so, return
     if any(file.endswith('.nii') for file in os.listdir(nifti_directory)):
         return
 
-    # List all .PAR files in the given directory
+    # Check for .PAR files in the directory
     par_files = [f for f in os.listdir(directory) if f.endswith('.PAR')]
 
-    # Convert each .PAR file
-    for file in par_files:
-        file_to_convert = os.path.join(directory, file)
-        command = f"dcm2niix -f %p -o {nifti_directory} -v n {file_to_convert}"
-        try:
-            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                # If there was an error, output it
-                print(f"Error converting {file}: {stderr.decode('utf-8')}")
-            else:
-                # If conversion was successful, print a confirmation message
-                print(f"Converted {file} successfully.")
-        except Exception as e:
-            # If there was an exception, output the exception details
-            print(f"Exception during conversion of {file}: {e}")
-         
+    if par_files:
+        # Convert each .PAR file
+        for file in par_files:
+            file_to_convert = os.path.join(directory, file)
+            command = f"dcm2niix -f %p -o {nifti_directory} -v n {file_to_convert}"
+            try:
+                process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = process.communicate()
+                if process.returncode != 0:
+                    # If there was an error, output it
+                    print(f"Error converting {file}: {stderr.decode('utf-8')}")
+                else:
+                    # If conversion was successful, print a confirmation message
+                    print(f"Converted {file} successfully.")
+            except Exception as e:
+                # If there was an exception, output the exception details
+                print(f"Exception during conversion of {file}: {e}")
+    else:
+        # No .PAR files, so decompress gzipped files if present
+        decompress_gz_in_directory(nifti_directory)
+
+

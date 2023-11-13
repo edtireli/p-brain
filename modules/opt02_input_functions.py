@@ -117,7 +117,7 @@ class ROISelector:
         return self.roi_slices
 
 
-def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image='dir'):
+def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image='dir', nifti='dir', filenames='filenames', IsVFA=False):
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-Instructions-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     print("1. Left " +colored('click', 'cyan') +" to select ROI points.")
     print("2. Press " +colored('shift', 'cyan') +" to close the ROI.")
@@ -151,7 +151,7 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
     [os.remove(f) for f in glob.glob(os.path.join(analysis, 'ITC Data', type, subtype, '*.npy'))]
     for slice_index, roi_voxels in selected_voxels.items():
         plot_time_intensity_curves(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
-        plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
+        plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, nifti, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white')) 
 
     rerun = input('[!] Repeat analysis? (y/n): ')
@@ -177,7 +177,7 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
         [os.remove(f) for f in glob.glob(os.path.join(analysis, 'ITC Data', type, subtype, '*.npy'))]
         for slice_index, roi_voxels in selected_voxels.items():
             plot_time_intensity_curves(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
-            plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
+            plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, nifti, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
         print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))  
 
         rerun2 = input('[!] Repeat analysis? (y/n): ')
@@ -203,19 +203,21 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
             [os.remove(f) for f in glob.glob(os.path.join(analysis, 'ITC Data', type, subtype, '*.npy'))]
             for slice_index, roi_voxels in selected_voxels.items():
                 plot_time_intensity_curves(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
-                plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
+                plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, nifti, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
             print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))  
 
     
 
 
-def input_function(analysis_directory, nifti_directory, image_directory):
-    possible_dce_filenames = ['WIPhperf120long.nii', 'WIPDelRec-hperf120long.nii']
-    filename = first_existing_dce_file(nifti_directory, possible_dce_filenames)
+def input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters):
+    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    IsVFA, IsIR = parameters
+    filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
     TR = nifti_img.header.get_zooms()[-1] #*1e3
     num_volumes = nifti_img.shape[-1]
     total_scan_duration = TR * num_volumes #*1e-3
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
     np.save(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'), time_points_s)
-    start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis_directory, image=image_directory)
+    start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis_directory, image=image_directory, nifti=nifti_directory, IsVFA=IsVFA, filenames=filenames)

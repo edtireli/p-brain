@@ -123,7 +123,7 @@ def patlak_analysis(c_tissue, c_input, time, subtype_tissue, image_directory):
           f'$\\lambda = {round(lambda_*100, 5)}$ ml/100g')
     plt.grid(True)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
-    plt.savefig(os.path.join(image_directory, f'patlak_{subtype_tissue}'),dpi=200)
+    plt.savefig(os.path.join(image_directory, 'Fit', f'patlak_{subtype_tissue}'),dpi=200)
     plt.show()
     return Ki, lambda_, SD_Ki
 
@@ -160,7 +160,7 @@ def compute_average_permeability(c_in, c_out, time_array, baseline_point):
 
 
 def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
-    time_points_s = np.load(os.path.join(analysis_directory, 'time_points_s.npy'))
+    time_points_s = np.load(os.path.join(analysis_directory, 'Fitting', 'time_points_s.npy'))
     subtype_tissue, subtype_artery, slice_tissue, (venous_slice, arterial_slice) = permeability_user_interface(analysis_directory)
 
     C_t = np.load(os.path.join(analysis_directory, 'CTC Data', 'Tissue', subtype_tissue, f'CTC_slice_{slice_tissue}.npy'))

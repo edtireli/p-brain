@@ -214,8 +214,8 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     
     all_C_t = []
     all_unnormalized_C_t = []
-    T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
-    M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
+    T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
+    M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
 
     for (x, y) in roi_voxels:
         voxel_time_course = data[x, y, slice_index, :]
@@ -316,9 +316,13 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
 
 
 class ROISelector_tissue:
-    def __init__(self, data, slice_index=0):
+    def __init__(self, data, slice_index=None):
         self.data = data
-        self.slice_index = slice_index
+        # Set the slice_index to the middle of the data if not provided
+        if slice_index is None:
+            self.slice_index = data.shape[2] // 2
+        else:
+            self.slice_index = slice_index
         self.roi_points = []
         self.roi_slices = defaultdict(list)
         self.zoom_level = 0
@@ -373,22 +377,36 @@ class ROISelector_tissue:
     def redraw(self):
         self.ax.clear()
         frame = self.get_current_frame(self.data)
-        self.ax.imshow(frame, cmap='viridis', origin='lower')
+
+        # Calculate aspect ratio to stretch the image
+        y_size, x_size = frame.shape
+        aspect_ratio = x_size / y_size
+
+        # Stretch the image to fill a square plot
+        self.ax.imshow(frame, cmap='viridis', origin='lower', aspect=aspect_ratio)
+
         if self.zoom_level > 0 and self.zoom_center:
+            # Adjust the zoom center and zoom limits
             x_center, y_center = self.zoom_center
-            x_size, y_size = frame.shape
-            zoom_factor = 1 / (2 ** self.zoom_level)
-            x_zoom, y_zoom = x_size * zoom_factor, y_size * zoom_factor
-            x_start, x_end = max(0, x_center - x_zoom), min(x_size, x_center + x_zoom)
-            y_start, y_end = max(0, y_center - y_zoom), min(y_size, y_center + y_zoom)
+            zoom_factor = 2 ** self.zoom_level
+            x_zoom = min(x_size, y_size * aspect_ratio) / zoom_factor
+            y_zoom = min(y_size, x_size / aspect_ratio) / zoom_factor
+
+            x_start = max(0, x_center - x_zoom / 2)
+            x_end = min(x_size, x_center + x_zoom / 2)
+            y_start = max(0, y_center - y_zoom / 2)
+            y_end = min(y_size, y_center + y_zoom / 2)
+
             self.ax.set_xlim(x_start, x_end)
             self.ax.set_ylim(y_start, y_end)
-        self.title = self.ax.set_title(f'Slice {self.slice_index + 1}', fontproperties=prop, fontsize=15)    
+
+        self.title = self.ax.set_title(f'Slice {self.slice_index + 1}', fontsize=15)    
         if self.roi_points:
             x, y = zip(*self.roi_points)
             self.ax.plot(x, y, 'r-', markersize=0.5, alpha=0.75)
             self.ax.plot(x, y, 'ro', markersize=2)
             self.ax.fill(x, y, 'r', alpha=0.3)
+
         self.fig.canvas.draw()
         
     def get_selected_voxels(self):
@@ -404,7 +422,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
     print("6. Press " +colored('z', 'cyan') +" to zoom in/out.")
     print("7. Press " +colored('Esc', 'red') +" to close the GUI.")
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
-
+    print(filename_dce)
     data_3d = nib.load(filename_t2).get_fdata()
     if rotate_AC==True:
         data_3d = np.rot90(data_3d, k=-1, axes=(0, 1))
@@ -426,14 +444,14 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
     choice = choicestr2int_tissue(choice_str)
     if choice !=3:
         type = choice2type_tissue(choice_str)
-        T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
-        M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
+        T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
+        M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
         t1_map_upscaled = zoom(T1_matrix, (2, 2, 1), order=3)
         m0_map_upscaled = zoom(M0_matrix, (2, 2, 1), order=3)
 
         num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
         if num_rois > 1:
-            plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_s = time_points, choice=choice)
+            plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_s = time_points, choice = 3, analysis_directory= analysis_directory, image_directory = image_directory)
             
             selected_str = input("Select the index of the ROI curve you want to proceed with (format: slice-roi): ")
             try:
@@ -481,8 +499,8 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                             plot_corrected_tissue_curve(editor.data, data_3d, roi_voxels, slice_index, type=type, analysis_directory= analysis_directory, image_directory = image_directory)
                             break
     elif choice==3:
-        T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
-        M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
+        T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
+        M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
         t1_map_upscaled = zoom(T1_matrix, (2, 2, 1), order=3)
         m0_map_upscaled = zoom(M0_matrix, (2, 2, 1), order=3)
 
@@ -530,22 +548,18 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
 
 
 
-def tissue_function(analysis_directory, nifti_directory, image_directory):
-    filename_t2 = os.path.join(nifti_directory, 'WIPAxT2TSEmatrix.nii')
-    nifti_img_t2 = nib.load(filename_t2)
-    possible_dce_filenames = ['WIPhperf120long.nii', 'WIPDelRec-hperf120long.nii']
-    filename_dce = first_existing_dce_file(nifti_directory, possible_dce_filenames)
-    nifti_img_dce = nib.load(filename_dce)
+def tissue_function(analysis_directory, nifti_directory, image_directory, filenames):
+    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+    flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    filename_t2 = os.path.join(nifti_directory, axial_t2_2D_filename)
+    filename_dce = os.path.join(nifti_directory, dce_filename)
     time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
-    np.save(os.path.join(analysis_directory, 'time_points_s.npy'), time_points_s)
+    #np.save(os.path.join(analysis_directory, 'time_points_s.npy'), time_points_s)
     start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=time_points_s, analysis_directory=analysis_directory, image_directory=image_directory)
     rerun = input('[!] Repeat analysis? (y/n): ')
     if rerun == 'y':
-        filename_t2 = os.path.join(nifti_directory, 'WIPAxT2TSEmatrix.nii')
-        nifti_img_t2 = nib.load(filename_t2)
-        possible_dce_filenames = ['WIPhperf120long.nii', 'WIPDelRec-hperf120long.nii']
-        filename_dce = first_existing_dce_file(nifti_directory, possible_dce_filenames)
-        nifti_img_dce = nib.load(filename_dce)
+        filename_t2 = os.path.join(nifti_directory, axial_t2_2D_filename)
+        filename_dce = os.path.join(nifti_directory, dce_filename)
         time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
         start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=time_points_s, analysis_directory=analysis_directory, image_directory=image_directory)
         leaver()

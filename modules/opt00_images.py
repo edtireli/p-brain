@@ -8,8 +8,9 @@ import matplotlib
 matplotlib.use("TkAgg")
 
 class MRIViewer:
-    def __init__(self, nifti_directory):
+    def __init__(self, nifti_directory, filenames):
         self.nifti_directory = nifti_directory
+        self.filenames = filenames
         self.slice_idx = 0
         self.frame_idx = 0
 
@@ -24,15 +25,17 @@ class MRIViewer:
 
 
     def display(self):
+        t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = self.filenames
         patterns_and_names = [
-            ([r'WIPcs_T1W_3D_TFE_32channel\.nii'], 'Saggital T1'),
-            ([r'ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'], '3D Axial T1'),
-            ([r'WIPcs_3D_Brain_VIEW_T2_32chSHC\.nii'], 'Saggital T2'),
-            ([r'ax([-_ ])?vwipcs_3D_Brain_VIEW_T2_32chSHC\.nii'], '3D Axial T2'),
-            ([r'WIPcs_3D_Brain_VIEW_FLAIR_SHC\.nii'], 'Saggital FLAIR'),
-            ([r'ax([-_ ])?VWIPcs_3D_Brain_VIEW_FLAIR_SHC\.nii'], '3D Axial FLAIR'),
-            ([r'WIPAxT2TSEmatrix\.nii'], 'Axial T2 (DCE)'),
-            ([r'WIPhperf120long\.nii', r'WIPDelRec-hperf120long'], 'Axial DCE')
+            ([t1_3D_filename], 'Saggital T1'),
+            ([axial_t1_3D_filename], '3D Axial T1'),
+            ([t2_3D_filename], 'Saggital T2'),
+            ([axial_t2_3D_filename], '3D Axial T2'),
+            ([flair_3D_filename], 'Saggital FLAIR'),
+            ([axial_flair_3D_filename], '3D Axial FLAIR'),
+            ([axial_t2_2D_filename], 'Axial T2 (DCE)'),
+            ([dce_filename], 'Axial DCE')
         ]
 
         while True:  # Outer loop to restart the choice
