@@ -54,7 +54,7 @@ There are several files that are important to the analysis, I will list the sequ
     - axVWIPcs_3D_Brain_VIEW_T2_32chSHC.nii: An axial reconstruction of the 3D T2 sequence above.
     - axVWIPcs_T1W_3D_TFE_32channel.nii: : An axial reconstruction of the 3D T1 sequence above.
 
-The above files can be renamed to suit different purposes/sequences. See below for some of the most useful, especially with the _boundary_ addon: 
+The above files can be renamed to suit different purposes/sequences which can be done globally in the utils/parameters.py file. See below for some of the most useful, especially with the _boundary_ addon: 
 ![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
 
 
