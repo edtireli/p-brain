@@ -43,16 +43,16 @@ NIfTI files can also be used directly by simply creating a folder of the same na
 
 There are several files that are important to the analysis, I will list the variables below, which can be changed in the parameters.py file to fit your naming scheme: 
 
-- axial_t2_2D_filename: An axial 2D T2 weighted image that is in the same geometry as the DCE below. It can in essence also be a T1 weighted image, this is simply a naming convention.
-- dce_filename: The data for the dynamic contrast-enhanced (DCE) sequence. In the case of the default file, there are actually two filenames that this file can take. If your file only has one filename, then simply ignore the previous lines (dce_filename_primary, dce_filename_fallback) and name the dce_filename as you would otherwise. 
-- WIPTI_xxxxx.nii: A series of n inversion recovery sequences where the x's are times in ms (by default set to 120, 300, ..., 1e5). It is very important that your inversion sequence files are named in the same manor, as this is hardcoded into the fitting proceedure. 
+- **axial_t2_2D_filename**: An axial 2D T2 weighted image that is in the same geometry as the DCE below. It can in essence also be a T1 weighted image, this is simply a naming convention.
+- **dce_filename**: The data for the dynamic contrast-enhanced (DCE) sequence. In the case of the default file, there are actually two filenames that this file can take. If your file only has one filename, then simply ignore the previous lines (dce_filename_primary, dce_filename_fallback) and name the dce_filename as you would otherwise. 
+- **WIPTI_xxxxx.nii**: A series of n inversion recovery sequences where the x's are times in ms (by default set to 120, 300, ..., 1e5). It is very important that your inversion sequence files are named in the same manor, as this is hardcoded into the fitting proceedure. 
 - Extra: The following files are not needed for the minimal case, but p-brain has an extended behavior (e.g. in GUI or plotting) if they are available.
-    - flair_3D_filename: A 3D FLAIR sequence.
-    - t2_3D_filename: A 3D T2 sequence.
-    - t1_3D_filename: A 3D T1 sequence.
-    - axial_flair_3D_filename: An axial reconstruction of the 3D FLAIR sequence above.
-    - axial_t2_3D_filename: An axial reconstruction of the 3D T2 sequence above.
-    - axial_t1_3D_filename: : An axial reconstruction of the 3D T1 sequence above.
+    - **flair_3D_filename**: A 3D FLAIR sequence.
+    - **t2_3D_filename**: A 3D T2 sequence.
+    - **t1_3D_filename**: A 3D T1 sequence.
+    - **axial_flair_3D_filename**: An axial reconstruction of the 3D FLAIR sequence above.
+    - **axial_t2_3D_filename**: An axial reconstruction of the 3D T2 sequence above.
+    - **axial_t1_3D_filename**: : An axial reconstruction of the 3D T1 sequence above.
 
 The above files can be renamed to suit different purposes/sequences which can be done globally in the utils/parameters.py file. See below for some of the most useful, especially with the _boundary_ addon: 
 ![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
