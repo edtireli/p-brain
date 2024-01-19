@@ -60,7 +60,7 @@ The above files can be renamed to suit different purposes/sequences which can be
 
 ## 3. Installation
 
-To get started with p-Brain, please follow the steps below to install the software on your local machine.
+To get started with p-Brain, please follow the steps below to install the software on your local machine. Before you do so, make sure you have python and git installed. 
 
 ### Required Installation
 
