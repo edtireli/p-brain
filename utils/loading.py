@@ -7,6 +7,17 @@ import json
 import importlib
 import time
 
+def find_file_with_regex(directory, regex_pattern):
+    # List all files in the directory
+    all_files = os.listdir(directory)
+    # Compile the regex pattern
+    pattern = re.compile(regex_pattern)
+    # Filter files using the regex pattern
+    filtered_files = [file for file in all_files if pattern.match(file)]
+    # Return the first matched file or None if no match found
+    return filtered_files[0] if filtered_files else None
+
+
 def list_addons():
     addon_folders = [f for f in os.listdir("addons") if os.path.isdir(os.path.join("addons", f))]
     print('--------------------------------')

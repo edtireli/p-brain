@@ -10,6 +10,7 @@ from scipy.ndimage import zoom
 from termcolor import colored
 from utils.mapping import *
 import glob
+import shutil
 
 
 def patlak_analysis_plotting(c_tissue, c_input, time):
@@ -282,7 +283,12 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         plt.close()
         baseline_point = int(input('[!] Pick baseline point: '))
         avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
-
+    else:
+        try:
+            baseline_point = int(shift_manual)
+            avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
+        except ValueError:
+            print("[!] Continuing with automatically selected point: " +str(baseline_point))
 
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
     smoothed_values = butter_lowpass_filter(avg_C_t, cutoff, fs, order)
@@ -480,9 +486,9 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                 curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                 while True:
-                    editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
+                    editor = editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
-                    plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type)
+                    plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                     break
         else: 
             for slice_index, roi_list in selected_voxels.items():
@@ -491,12 +497,16 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                     curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, roi_voxels_downsampled, roi_voxels, slice_index, type=type, skipshift=False, analysis_directory= analysis_directory, image_directory = image_directory)
                     correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
                     if correction_prompt == 'y':
+                        correction_text = f'{type} signal jump corrected. '
+                        notes_path = os.path.join(analysis_directory, 'analysis_notes.txt')
+                        with open(notes_path, 'a') as f:
+                            f.write(correction_text)
                         curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
                         curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                         while True:
-                            editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
+                            editor = editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
                             corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
-                            plot_corrected_tissue_curve(editor.data, data_3d, roi_voxels, slice_index, type=type, analysis_directory= analysis_directory, image_directory = image_directory)
+                            plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                             break
     elif choice==3:
         T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
@@ -531,21 +541,23 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             if selected_roi_idx > len(selected_voxels[selected_slice_idx]) or selected_roi_idx < 1:
                 print("Invalid ROI index. Exiting.")
                 return
-
-            # Now you can proceed
+            
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
             curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, skipshift=False, time_points_s = time_points, analysis_directory = analysis_directory, image_directory = image_directory)
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
+                original_file_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
+                new_file_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'Recovery', type, f'CTC_slice_{selected_slice_idx+1}.npy')
+                os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
+                shutil.copy2(original_file_path, new_file_path)
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                 curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                 while True:
                     editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
-                    plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory)
+                    plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                     break
-
 
 
 def tissue_function(analysis_directory, nifti_directory, image_directory, filenames):
