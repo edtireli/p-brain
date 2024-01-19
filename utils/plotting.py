@@ -335,7 +335,7 @@ def objective_function(offset, original_data, new_curve_segment):
     return np.sum((original_data + offset - new_curve_segment)**2)
 
 class ConcentrationCurveEditor:
-    def __init__(self, curve_path):
+    def __init__(self, curve_path, curve2_path, curve_path_actual):
         self.data = curve_path
         self.original_data = np.copy(self.data)
         self.annotated_points = []
@@ -392,19 +392,19 @@ class ConcentrationCurveEditor:
 
         # Interpolate the user-drawn line within the range of interest
         user_line_segment = np.interp(range(start, end + 1), x_annot, y_annot)
-        
+
         # Mean of the user-drawn line
         mean_user_line = np.mean(user_line_segment)
-        
+
         # Selected data points
         selected_data = [self.original_data[i] for i in range(start, end + 1) if Path(self.volume_points).contains_point((i, self.original_data[i]))]
-        
+
         # Mean of the selected data
         mean_selected_data = np.mean(selected_data)
-        
+
         # Calculate the required shift to center the data around the line
         required_shift = mean_selected_data - mean_user_line
-        
+
         # Apply the shift to the selected points to align the means
         for i in range(start, end + 1):
             if Path(self.volume_points).contains_point((i, self.original_data[i])):
@@ -453,7 +453,7 @@ class ConcentrationCurveEditor:
         plt.close(self.fig)
         self.__init__(self.curve_path, self.curve2_path)
 
-def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir', rot90 = False):
+def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir', rot90 = False, final_curve_path='dir'):
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
 
     # Load existing concentration-time curve and Butterworth low-pass filter
@@ -493,4 +493,5 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     plt.show()
     plt.close()
+    np.save(final_curve_path, avg_C_t)
 

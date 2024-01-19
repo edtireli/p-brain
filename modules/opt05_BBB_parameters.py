@@ -128,7 +128,6 @@ def patlak_analysis(c_tissue, c_input, time, subtype_tissue, image_directory):
     return Ki, lambda_, SD_Ki
 
 
-
 def extended_tofts_model(t, Ktrans, ve, vp, Cp):
     integrand = np.zeros_like(t)
     for i in range(len(t)):
