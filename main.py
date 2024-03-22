@@ -37,13 +37,13 @@ def main():
         elif choice == 6: # Analysis notes
             add_notes(analysis_directory) 
         
-        elif choice == 7: # Addons
+        elif choice == 7: # Axial FLAIR to axial T1&T2
+            check_axial(nifti_directory, filenames)
+
+        elif choice == 8: # Addons
             selected_addon = list_addons()
             load_addon(selected_addon, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-
-
-        #elif choice == 8:
-            #not yet implemented
+    
 
         elif choice == 9:
             break
