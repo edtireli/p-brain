@@ -113,7 +113,8 @@ def welcome_screen():
     print('| '+colored('4', 'cyan')+' | Create Tissue (Grey/White matter) CTCs')
     print('| '+colored('5', 'cyan')+' | Compute BBB permeability and perfusion parameters')
     print('| '+colored('6', 'cyan')+' | Add analysis notes')
-    print('| '+colored('7', 'cyan')+' | Addons')
+    print('| '+colored('7', 'cyan')+' | Cross-sequence axial reconstructions')
+    print('| '+colored('8', 'cyan')+' | Addons')
     print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
     print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
     
