@@ -43,6 +43,7 @@ def main():
         elif choice == 8: # Addons
             selected_addon = list_addons()
             load_addon(selected_addon, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            time.sleep(3)
     
 
         elif choice == 9:
