@@ -20,8 +20,12 @@ def global_parameters():
     IsIR = True #Inversion recovery method 
     return (IsVFA, IsIR)
 
+def refresh_nifti_directory(nifti_directory):
+    return os.listdir(nifti_directory)
+
 # Global filenames:
 def global_filenames(nifti_directory):
+    refresh_nifti_directory(nifti_directory)
     t1_3D_filename = 'WIPcs_T1W_3D_TFE_32channel.nii'
     axial_t1_3D_filename = r'ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'
 

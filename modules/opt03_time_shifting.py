@@ -54,8 +54,11 @@ def get_available_arteries(analysis_directory):
             available_arteries[code] = artery
             slice_indexes = []
             for i in range(1, 11):
+                shifted_slice_file = os.path.join(artery_dir, f'CTC_shifted_slice_{i}.npy')
                 slice_file = os.path.join(artery_dir, f'CTC_slice_{i}.npy')
-                if os.path.exists(slice_file):
+                if os.path.exists(shifted_slice_file):
+                    slice_indexes.append(i)
+                elif os.path.exists(slice_file):
                     slice_indexes.append(i)
             available_slices[code] = slice_indexes
 
@@ -176,7 +179,7 @@ def find_max_npy_file(analysis_directory):
 
     for subtype in subtypes:
         file_paths = glob.glob(os.path.join(analysis_directory, 'TSCC Data', subtype, '*.npy'))
-
+        
         for file_path in file_paths:
             arr = np.load(file_path)
             curr_max = np.max(arr)

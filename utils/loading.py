@@ -27,13 +27,22 @@ def list_addons():
     choice = int(input("[!] Choose addon: ")) - 1
     return addon_folders[choice]
 
+import sys
 def load_addon(addon_folder_name, *args):
     try:
-        addon = importlib.import_module(f'addons.{addon_folder_name}.{addon_folder_name}')
-        addon.run(*args)
-    except ImportError:
-        print(f"Addon {addon_folder_name} not available! Download it with 'git submodule update --init -- addons/addon_name' where the addon_name is the name of the addon, which can be found on the github page.")
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))  # Directory of the current script
+        base_dir = os.path.dirname(current_script_dir)
+        addon_path = os.path.join(base_dir, 'addons')
+        sys.path.append(addon_path)  
 
+        addon = importlib.import_module(f'{addon_folder_name}.{addon_folder_name}')
+        addon.run(*args)
+    except ModuleNotFoundError as e:
+        print(f"Addon {addon_folder_name} not available! Error: {str(e)}")
+        print("Make sure the addon is correctly placed in the 'addons' directory and named correctly.")
+        print(f"Attempted to import from {addon_path}")
+    except Exception as e:
+        print(f"An error occurred while loading the addon: {str(e)}")
 
 def replace_max_with_artery_type_and_delete(values_json_path, max_info_json_path):
     # Read and parse max_info.json
@@ -157,9 +166,24 @@ def find_matching_file(directory, pattern):
 
 
 def load_curves(venous_slice, arterial_slice, artery_choice, analysis_directory):
-    vein_curve = np.load(os.path.join(analysis_directory, 'CTC Data', 'Vein', 'Sinus Sagittalis', f'CTC_slice_{venous_slice}.npy'))
-    artery_curve = np.load(os.path.join(analysis_directory, 'CTC Data', 'Artery', artery_choice, f'CTC_slice_{arterial_slice}.npy'))
+    shifted_vein_file = os.path.join(analysis_directory, 'CTC Data', 'Vein', 'Sinus Sagittalis', f'CTC_shifted_slice_{venous_slice}.npy')
+    vein_file = os.path.join(analysis_directory, 'CTC Data', 'Vein', 'Sinus Sagittalis', f'CTC_slice_{venous_slice}.npy')
+    
+    shifted_artery_file = os.path.join(analysis_directory, 'CTC Data', 'Artery', artery_choice, f'CTC_shifted_slice_{arterial_slice}.npy')
+    artery_file = os.path.join(analysis_directory, 'CTC Data', 'Artery', artery_choice, f'CTC_slice_{arterial_slice}.npy')
+
+    if os.path.exists(shifted_vein_file):
+        vein_curve = np.load(shifted_vein_file)
+    else:
+        vein_curve = np.load(vein_file)
+    
+    if os.path.exists(shifted_artery_file):
+        artery_curve = np.load(shifted_artery_file)
+    else:
+        artery_curve = np.load(artery_file)
+    
     return vein_curve, artery_curve
+
 
 
 def save_as_pickle(matrix, file_path):

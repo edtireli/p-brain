@@ -545,6 +545,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
             curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, skipshift=False, time_points_s = time_points, analysis_directory = analysis_directory, image_directory = image_directory)
+            
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
                 original_file_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
