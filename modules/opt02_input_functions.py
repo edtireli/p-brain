@@ -208,10 +208,14 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
 
     
 
+def refresh_nifti_directory(nifti_directory):
+    return os.listdir(nifti_directory)
 
 def input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    refresh_nifti_directory(nifti_directory)
+    
     IsVFA, IsIR = parameters
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
