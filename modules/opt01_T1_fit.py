@@ -8,8 +8,25 @@ import json
 import matplotlib.pyplot as plt
 from utils.fonts import *
 from utils.loading import *
+from utils.plotting import *
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
+import threading
+
+def close_plot_after_delay_plt(delay):
+    """
+    Close the plot automatically after a delay if no interaction occurs.
+    :param delay: Time in seconds to wait before closing the plot.
+    """
+    def close():
+        plt.close(plt.gcf())  # Close the current figure
+
+    timer = threading.Timer(delay, close)
+    timer.start()
+
+    # If there is user interaction, cancel the timer
+    plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+
 
 def extract_vfa_params(vfa_filenames, nifti_directory):
     repetition_times = []
@@ -149,6 +166,7 @@ def plot_voxel_fit(X, Y, Z, M0_matrix, T1_matrix, voxel_matrix, values, isVFA=Fa
     plt.grid(which='minor', alpha=0.25)
     plt.minorticks_on()
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
+    close_plot_after_delay_plt(3)
     plt.show()
 
 
@@ -182,6 +200,7 @@ def plot_histograms(M0_matrix, T1_matrix, image_directory):
     plt.tight_layout()
     plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Histogram.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
+    close_plot_after_delay(3, fig)
     plt.show()
 
 
@@ -215,6 +234,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
     plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Maps.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
+    close_plot_after_delay(3, fig)
     plt.show()
 
 
@@ -222,7 +242,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
 
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
     
-    IsVFA, IsIR = parameters
+    IsVFA, IsIR,_,_ = parameters
     
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames

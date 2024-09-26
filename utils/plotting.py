@@ -9,6 +9,8 @@ from utils.loading import *
 from matplotlib.path import Path
 from scipy.signal import argrelextrema
 from matplotlib.widgets import Button
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
 def load_from_pickle(file_path):
     with open(file_path, 'rb') as file:
@@ -155,6 +157,35 @@ def on_esc(event):
     if event.key == 'escape':
         plt.close(event.canvas.figure)
 
+import threading
+
+
+def close_plot_after_delay_plt(delay, fig=None):
+    def close_plot():
+        if fig:
+            plt.close(fig)
+        else:
+            plt.close()
+    threading.Timer(delay, close_plot).start()
+
+
+
+def close_plot_after_delay(delay, fig):
+    """
+    Close the plot automatically after a delay if no interaction occurs.
+    :param delay: Time in seconds to wait before closing the plot.
+    :param fig: The figure object to close.
+    """
+    def close():
+        plt.close(fig)
+
+    timer = threading.Timer(delay, close)
+    timer.start()
+
+    # If there is user interaction, cancel the timer
+    fig.canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+
+
 def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, type='test', subtype='test'):
 
     # Array to store the maximum intensity at each time point from potentially different voxels
@@ -207,6 +238,7 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
 
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+M0_slice_{slice_index+1}.png'), dpi=200)
 
+    close_plot_after_delay_plt(3)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)    
     plt.show()
     plt.close()
@@ -222,7 +254,8 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
     
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)    
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)   
+    close_plot_after_delay_plt(3) 
     plt.close()
 
 
@@ -231,6 +264,77 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     
     np.save(os.path.join(analysis_directory, 'ROI Data', type, subtype, f'ROI_voxels_slice_{slice_index+1}.npy'), roi_voxels)
     np.save(os.path.join(analysis_directory, 'Frame Data', type, subtype, f'frame_index_slice_{slice_index+1}.npy'), frame_index)
+
+
+
+def plot_time_intensity_curves_AI(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, type='test', subtype='test'):
+
+    # Array to store the maximum intensity at each time point from potentially different voxels
+    num_time_points = data.shape[3]
+    adaptive_voxel_time_courses = np.zeros(num_time_points)
+    
+    # Loop through each time frame to find the maximum intensity voxel
+    for t in range(num_time_points):
+        max_intensity_at_t = -1  # Start with a very low value
+        for (x, y) in roi_voxels:
+            voxel_intensity_at_t = data[x, y, slice_index, t]
+            if voxel_intensity_at_t > max_intensity_at_t:
+                max_intensity_at_t = voxel_intensity_at_t
+        adaptive_voxel_time_courses[t] = max_intensity_at_t
+
+    # For comparison, calculate the maximum intensity voxel over all time (non-adaptive)
+    max_intensity = -1
+    max_voxel = None
+    voxel_time_course_max = None
+    for (x, y) in roi_voxels:
+        voxel_time_course = data[x, y, slice_index, :]
+        if voxel_time_course.max() > max_intensity:
+            max_intensity = voxel_time_course.max()
+            max_voxel = (x, y)
+            voxel_time_course_max = voxel_time_course
+
+    # Filter the max voxel time course for non-adaptive approach
+    fs = 15
+    cutoff = 4.0
+    order = 3
+    smoothed_values = butter_lowpass_filter(voxel_time_course_max, cutoff, fs, order)
+
+    # Plotting both non-adaptive and adaptive results
+    fig, axs = plt.subplots(1, 2, figsize=(16, 6))
+    axs[0].scatter(time_points_s, voxel_time_course_max, label='Standard Max ITC', s=5, color='red')
+    axs[0].scatter(time_points_s, adaptive_voxel_time_courses, label='Adaptive-max ITC', s=5, color='blue')
+    axs[0].plot(time_points_s, smoothed_values, label='Smoothed Standard ITC', linestyle='-', alpha=0.75, color='black')
+    axs[0].set_xlabel('Time (sec)')
+    axs[0].set_ylabel('Signal Intensity (a.u.)')
+    axs[0].set_title(f'Intensity-Time Curve Comparison (Slice {slice_index + 1})')
+    axs[0].legend()
+    axs[0].grid(True)
+    
+    axs[1].imshow(data[:, :, slice_index, frame_index], cmap='viridis', origin='lower')
+    if max_voxel:
+        x, y = max_voxel
+        rect = Rectangle((y-0.5, x-0.5), 1, 1, linewidth=1, edgecolor='r', facecolor='none')
+        axs[1].add_patch(rect)
+    axs[1].set_title(f'DCE (Slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
+
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+DCE_slice_{slice_index+1}.png'), dpi=200)
+    plt.close()
+
+    plt.figure(figsize=(20, 6))
+    plt.scatter(time_points_s, voxel_time_course_max, label='Raw ITC', s=5, color='red')
+    plt.plot(time_points_s, smoothed_values, label='Smoothened ITC', linestyle='-', alpha=0.75, color='black')
+    plt.xlabel('Time (sec)', fontproperties=prop, fontsize=15)
+    plt.ylabel('Signal intensity (a. u.)', fontproperties=prop, fontsize=15)
+    plt.title(f'Intensity-Time Curve for brightest voxel ({subtype},  Slice {slice_index + 1})', fontproperties=prop, fontsize=18)
+    plt.grid(which='minor', alpha=0.25)
+    plt.minorticks_on()
+    
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
+    plt.close()
+    np.save(os.path.join(analysis_directory, 'ITC Data', type, subtype, f'ITC_slice_{slice_index+1}.npy'), voxel_time_course_max)
+    np.save(os.path.join(analysis_directory, 'ROI Data', type, subtype, f'ROI_voxels_slice_{slice_index+1}.npy'), roi_voxels)
+    np.save(os.path.join(analysis_directory, 'Frame Data', type, subtype, f'frame_index_slice_{slice_index+1}.npy'), frame_index)
+
 
 
 def rescale_peak_to_four(array):
@@ -252,6 +356,17 @@ def button_callback(event, C_t, type, subtype, analysis_directory, slice_index, 
     # Save the shifted CTC data
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
     print(f"Shifted and rescaled CTC data saved using the {event.inaxes.get_title()} method.")
+    plt.close()
+
+def save_plot_data_AI(C_t, type, subtype, analysis_directory, slice_index, radius=10):
+    np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_slice_{slice_index+1}.npy'), C_t)
+    # Shift and rescale CTC before saving
+    baseline_point = find_shifted_baseline(C_t, skip_points=radius) - 1
+    C_t_shifted = custom_shifter(C_t, baseline_point)
+    C_t_shifted = rescale_peak_to_four(C_t_shifted)
+    
+    # Save the shifted CTC data
+    np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
     plt.close()
 
 def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
@@ -354,10 +469,125 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     btn_standard.on_clicked(lambda event: button_callback(event, C_t_standard, type, subtype, analysis_directory, slice_index))
     btn_adaptive.on_clicked(lambda event: button_callback(event, C_t_adaptive, type, subtype, analysis_directory, slice_index))
 
+    close_plot_after_delay_special(3, lambda: button_callback(None, C_t_standard, type, subtype, analysis_directory, slice_index))
+
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     plt.show()
 
+
+def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
     
+    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    
+    # Initialize variables
+    max_intensity = -1
+    max_voxel = None
+    voxel_time_course_max = None
+    num_time_points = data.shape[3]
+    adaptive_voxel_time_courses = np.zeros(num_time_points)
+
+    # Find maximum voxel over all time and adaptively
+    for t in range(num_time_points):
+        max_intensity_at_t = -1  # Start with a very low value
+        for (x, y) in roi_voxels:
+            voxel_intensity_at_t = data[x, y, slice_index, t]
+            if voxel_intensity_at_t > max_intensity_at_t:
+                max_intensity_at_t = voxel_intensity_at_t
+                if max_intensity_at_t > max_intensity:
+                    max_intensity = max_intensity_at_t
+                    max_voxel = (x, y)
+                    voxel_time_course_max = data[x, y, slice_index, :]
+            adaptive_voxel_time_courses[t] = max_intensity_at_t
+    
+    fs = 15
+    cutoff = 4.0
+    order = 3
+
+    # Compute Concentration-Time Curves
+    S0 = voxel_time_course_max[0]
+    x, y, z = max_voxel[0], max_voxel[1], slice_index
+    T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
+    M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
+    T1 = T1_matrix[x, y, z]
+    M0 = M0_matrix[x, y, z]
+
+    if IsVFA:
+        radius = 10 # radius between boluses, assuming double bolus input
+        json_filename = dce_filename.replace('.nii', '.json')
+        with open(os.path.join(nifti_directory, json_filename), 'r') as file:
+            json_data = json.load(file)
+            FA = json_data['FlipAngle']  # Flip angle in degrees
+            TR = json_data['RepetitionTimeExcitation']  # TR in seconds
+
+            FA_rad = np.radians(FA)  # Convert flip angle to radians
+
+        # Compute Concentration-Time Curve for VFA
+        beta_tissue = 4 # relaxitivity in 1/ms
+        T1 = T1 * 1e-3 # T1 from ms to sec
+
+        C_t_standard = np.array(compute_CTC_VFA(voxel_time_course_max, M0, FA_rad, TR, r1=1/T1, beta_tissue=beta_tissue))
+        C_t_adaptive = np.array(compute_CTC_VFA(adaptive_voxel_time_courses, M0, FA_rad, TR, r1=1/T1, beta_tissue=beta_tissue))
+    else:  
+        radius = 10 # radius between boluses, assuming double bolus input   
+        C_t_standard = np.array(compute_CTC(voxel_time_course_max, T1, TD, r1=4000, m0=M0, slice=slice_index))
+        C_t_adaptive = np.array(compute_CTC(adaptive_voxel_time_courses, T1, TD, r1=4000, m0=M0, slice=slice_index))
+    
+    C_t_standard = interp_nans(C_t_standard)
+    C_t_adaptive = interp_nans(C_t_adaptive)
+
+    #print(f"Slice {slice_index+1}: TD: {TD}, TR: {TR}, T1: {round(T1,1)}, M0: {round(M0,1)}")
+    print("")
+    
+    fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
+    smoothed_standard = butter_lowpass_filter(C_t_standard, cutoff, fs, order)
+    smoothed_adaptive = butter_lowpass_filter(C_t_adaptive, cutoff, fs, order)
+
+    
+    # Concentration-Time Curve
+    axs[0].plot(time_points_s, smoothed_standard, color='red', label='Standard CTC')
+    axs[0].scatter(time_points_s, C_t_standard, color='r', s=5, label='Standard Raw')
+    axs[0].plot(time_points_s, smoothed_adaptive, color='blue', alpha=0.5, label='Adaptive CTC')
+    axs[0].scatter(time_points_s, C_t_adaptive, color='blue',alpha=0.5, s=5, label='Adaptive Raw')
+    axs[0].legend()
+    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
+    axs[0].set_title(f'Concentration-Time Curve (Slice {slice_index + 1})',fontproperties=prop, fontsize=14)
+    axs[0].grid(which='minor', alpha=0.25)
+    axs[0].minorticks_on()
+
+    # Equilibrium Magnetisation Map
+    axs[1].imshow(data[:, :, slice_index, max_intensity_frame], cmap='plasma', origin='lower')
+    if max_voxel:
+        x, y = max_voxel  # x, y are row, column indices in the data
+        # Plot the rectangle using column, row coordinates
+        rect = Rectangle((y-0.5, x-0.5), 1, 1, linewidth=1, edgecolor='g', facecolor='none')
+        axs[1].add_patch(rect)
+    axs[1].set_title(f'DCE (Slice {slice_index + 1}, Frame {max_intensity_frame + 1})', fontproperties=prop, fontsize=14)
+
+    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', type, subtype, f'CTC+DCE_slice_{slice_index+1}.png'), dpi=200)
+
+    plt.show(block=False)  # Display the plot without blocking
+    plt.pause(2)           # Pause the script to keep the plot open for 2 seconds
+    save_plot_data_AI(C_t_adaptive, type, subtype, analysis_directory, slice_index)
+    
+
+
+def close_plot_after_delay_special(delay, default_save_callback):
+    """
+    Close the plot automatically after a delay if no interaction occurs, and save the default data.
+    :param delay: Time in seconds to wait before closing the plot.
+    :param default_save_callback: Function to call for saving the default data.
+    """
+    def close():
+        default_save_callback()
+        plt.close(plt.gcf())  # Close the current figure
+
+    timer = threading.Timer(delay, close)
+    timer.start()
+
+    # If there is user interaction, cancel the timer
+    plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
     
 
 from scipy.optimize import minimize_scalar

@@ -25,6 +25,7 @@ def setup_directories(log_number):
         os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'Grey Matter'),
         os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'White Matter'),
         os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'Boundary'),
+        os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'AI'),
         os.path.join(analysis_directory, 'ITC Data'),
         os.path.join(analysis_directory, 'TSCC Data', 'Max'),
         os.path.join(analysis_directory, 'ITC Data', 'Artery'),
@@ -37,6 +38,10 @@ def setup_directories(log_number):
         os.path.join(analysis_directory, 'Fitting'),
         image_directory,
         os.path.join(image_directory, 'Intensity Time Curves'),
+        os.path.join(image_directory, 'AI'),
+        os.path.join(image_directory, 'AI', 'Input functions'),
+        os.path.join(image_directory, 'AI', 'Tissue functions'),
+        os.path.join(image_directory, 'AI', 'Segmentation'),
         os.path.join(image_directory, 'Fit'),
         os.path.join(image_directory, 'Intensity Time Curves', 'Artery'),
         os.path.join(image_directory, 'Intensity Time Curves', 'Vein'),
@@ -73,4 +78,4 @@ def setup_directories(log_number):
     for dir_path in dirs_to_create:
         create_directory(dir_path)
 
-    return data_directory, analysis_directory, nifti_directory, image_directory    
+    return data_directory, analysis_directory, nifti_directory, image_directory

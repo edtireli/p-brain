@@ -452,8 +452,6 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
         type = choice2type_tissue(choice_str)
         T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
         M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
-        t1_map_upscaled = zoom(T1_matrix, (2, 2, 1), order=3)
-        m0_map_upscaled = zoom(M0_matrix, (2, 2, 1), order=3)
 
         num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
         if num_rois > 1:
@@ -511,8 +509,6 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
     elif choice==3:
         T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
         M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
-        t1_map_upscaled = zoom(T1_matrix, (2, 2, 1), order=3)
-        m0_map_upscaled = zoom(M0_matrix, (2, 2, 1), order=3)
 
         num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
         plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_s = time_points, choice = 3, analysis_directory= analysis_directory, image_directory = image_directory)
