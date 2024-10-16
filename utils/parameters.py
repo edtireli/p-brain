@@ -5,10 +5,10 @@ import re
 import time 
 
 def get_dce_filename(primary, fallback, nifti_directory):
+    if os.path.exists(os.path.join(nifti_directory, fallback)):
+        return fallback
     if os.path.exists(os.path.join(nifti_directory, primary)):
         return primary
-    elif os.path.exists(os.path.join(nifti_directory, fallback)):
-        return fallback
     else:
         return None 
 
@@ -41,5 +41,6 @@ def global_filenames(nifti_directory):
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
+    print(dce_filename)
     return t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename
 

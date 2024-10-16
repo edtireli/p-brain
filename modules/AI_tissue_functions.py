@@ -310,8 +310,12 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
 
         color_overlay = np.zeros((*image_slice.shape, 3))
         color_overlay[:, :, 2] = wm_slice  # Blue channel for white matter
-        color_overlay[:, :, 0] = cortical_gm_slice  # Red channel for cortical gray matter
-        color_overlay[:, :, 1] = subcortical_gm_slice  # Green channel for subcortical gray matter
+
+        # Assign bright red to cortical gray matter
+        color_overlay[:, :, 0][cortical_gm_slice == 1] = 1.0  # Bright red
+
+        # Assign dark red to subcortical gray matter
+        color_overlay[:, :, 0][subcortical_gm_slice == 1] = 0.5  # Darker red
 
         ax = axes[row, col]
         ax.imshow(image_slice, cmap='gray')
@@ -322,102 +326,140 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
         ax.axis("off")
 
     plt.tight_layout()
+    os.makedirs(os.path.join(image_directory, 'AI', 'Segmentation'), exist_ok=True)
     plt.savefig(os.path.join(image_directory, 'AI', 'Segmentation', 'T2_WM_GM_masks.png'))
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     close_plot_after_delay(3, fig)
     plt.show()
 
-
-def segmentation(fastsurfer_path, seg_mgz_path, t1_path, apple_metal=True):
+def segmentation(fastsurfer_path, seg_mgz_path, t1_path, output_dir, apple_metal=True):
     # Check if FastSurfer is installed
     if not os.path.exists(fastsurfer_path):
-        raise Exception("Fastsurfer not found, ensure correct installation and configuration of path.")
+        raise Exception("FastSurfer not found, ensure correct installation and configuration of path.")
 
     # Run FastSurfer if the segmentation file doesn't exist
     if not os.path.exists(seg_mgz_path):
         print("Segmentation file not found, running FastSurfer...")
-        if apple_metal == True:
+        if apple_metal:
             command = (
                 f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
                 f"{fastsurfer_path} --seg_only --device mps "
                 f"--t1 {t1_path} "
                 f"--sid segmentation "
-                f"--sd {os.path.dirname(t1_path).replace('.nii', '')} --no_cereb"
+                f"--sd {output_dir} --no_cereb"
             )
-        else: 
+        else:
             command = (
                 f"{fastsurfer_path} --seg_only "
                 f"--t1 {t1_path} "
                 f"--sid segmentation "
-                f"--sd {os.path.dirname(t1_path).replace('.nii', '')} --no_cereb"
-            )    
+                f"--sd {output_dir} --no_cereb"
+            )
         subprocess.run(command, shell=True)
+    else:
+        print("Segmentation file already exists, skipping FastSurfer segmentation.")
+
+    aseg_mgz_path = seg_mgz_path
+
+    # Convert aseg.mgz to aseg.nii if needed
+    aseg_nii_path = aseg_mgz_path.replace('.mgz', '.nii')
+    if not os.path.exists(aseg_nii_path):
+        print(f"Converting {aseg_mgz_path} to {aseg_nii_path}...")
+        subprocess.run(['mri_convert', aseg_mgz_path, aseg_nii_path])
+    else:
+        print(f"{aseg_nii_path} already exists, skipping conversion.")
+
+    # Generate masks using mri_binarize with specific labels
+    cortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'cortical_gm.nii')
+    subcortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'subcortical_gm.nii')
+    wm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'wm.nii')
+
+    # Create masks using the label lists
+    labels_str = lambda labels: ' '.join(map(str, labels))
+
+    # Cortical GM Mask
+    if not os.path.exists(cortical_gm_mask_path):
+        cortical_labels = labels_str(cortical_gray_matter_labels)
+        cortical_gm_command = f"mri_binarize --i {aseg_nii_path} --match {cortical_labels} --o {cortical_gm_mask_path}"
+        subprocess.run(cortical_gm_command, shell=True)
+    else:
+        print("Cortical GM mask already exists, skipping mri_binarize for cortical GM.")
+
+    # Subcortical GM Mask
+    if not os.path.exists(subcortical_gm_mask_path):
+        subcortical_labels = labels_str(subcortical_gray_matter_labels)
+        subcortical_gm_command = f"mri_binarize --i {aseg_nii_path} --match {subcortical_labels} --o {subcortical_gm_mask_path}"
+        subprocess.run(subcortical_gm_command, shell=True)
+    else:
+        print("Subcortical GM mask already exists, skipping mri_binarize for subcortical GM.")
+
+    # White Matter Mask
+    if not os.path.exists(wm_mask_path):
+        wm_labels = labels_str(white_matter_labels)
+        wm_command = f"mri_binarize --i {aseg_nii_path} --match {wm_labels} --o {wm_mask_path}"
+        subprocess.run(wm_command, shell=True)
+    else:
+        print("WM mask already exists, skipping mri_binarize for WM.")
 
 def coregistration(seg_mgz_path, dce_path, t2_path, white_matter_labels, cortical_gm_labels, subcortical_gm_labels):
+    import os
+    import subprocess
+    import nibabel as nib
+    import numpy as np
+
     # Step 1: Convert segmentation file from .mgz to .nii format
     seg_nii_path = seg_mgz_path.replace('.mgz', '.nii')
     if not os.path.exists(seg_nii_path):
         print(f"Converting {seg_mgz_path} to {seg_nii_path}...")
         subprocess.run(['mri_convert', seg_mgz_path, seg_nii_path])
+    else:
+        print(f"{seg_nii_path} already exists, skipping conversion.")
 
-    # Step 2: Align the segmentation mask to the DCE space without coregistration
-    seg_in_dce_path = seg_nii_path.replace('.nii', '_in_DCE_nocoreg.nii.gz')  # Adjusted to expect .nii.gz
-    flirt_cmd_dce = [
-        'flirt', '-in', seg_nii_path, '-ref', dce_path,
-        '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
-        '-out', seg_in_dce_path
-    ]
-    print(f"Running FLIRT command for DCE: {' '.join(flirt_cmd_dce)}")
-    result_dce = subprocess.run(flirt_cmd_dce, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    # Check if the FLIRT command was successful
-    if result_dce.returncode != 0:
-        print(f"FLIRT failed for DCE with error: {result_dce.stderr.decode()}")
-        raise RuntimeError("FLIRT command for DCE failed. Check inputs and paths.")
-    
-    # Ensure the output file was created
+    # Step 2: Align the segmentation image to the DCE space
+    seg_in_dce_path = seg_nii_path.replace('.nii', '_in_DCE.nii.gz')
     if not os.path.exists(seg_in_dce_path):
-        print(f"FLIRT did not produce the expected output file: {seg_in_dce_path}")
-        raise FileNotFoundError(f"Expected output not found: {seg_in_dce_path}")
+        flirt_cmd_dce = [
+            'flirt', '-in', seg_nii_path, '-ref', dce_path,
+            '-out', seg_in_dce_path,
+            '-interp', 'nearestneighbour',
+            '-omat', seg_nii_path.replace('.nii', '_to_DCE.mat'),
+            '-dof', '6'
+        ]
+        print(f"Running FLIRT command for DCE: {' '.join(flirt_cmd_dce)}")
+        subprocess.run(flirt_cmd_dce)
+    else:
+        print(f"Aligned segmentation to DCE already exists at {seg_in_dce_path}.")
 
-    # Step 3: Align the segmentation mask to the T2 space without coregistration
-    seg_in_t2_path = seg_nii_path.replace('.nii', '_in_T2_nocoreg.nii.gz')  # Adjusted to expect .nii.gz
-    flirt_cmd_t2 = [
-        'flirt', '-in', seg_nii_path, '-ref', t2_path,
-        '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
-        '-out', seg_in_t2_path
-    ]
-    print(f"Running FLIRT command for T2: {' '.join(flirt_cmd_t2)}")
-    result_t2 = subprocess.run(flirt_cmd_t2, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-    # Check if the FLIRT command was successful
-    if result_t2.returncode != 0:
-        print(f"FLIRT failed for T2 with error: {result_t2.stderr.decode()}")
-        raise RuntimeError("FLIRT command for T2 failed. Check inputs and paths.")
-    
-    # Ensure the output file was created
+    # Step 3: Align the segmentation image to the T2 space
+    seg_in_t2_path = seg_nii_path.replace('.nii', '_in_T2.nii.gz')
     if not os.path.exists(seg_in_t2_path):
-        print(f"FLIRT did not produce the expected output file: {seg_in_t2_path}")
-        raise FileNotFoundError(f"Expected output not found: {seg_in_t2_path}")
+        flirt_cmd_t2 = [
+            'flirt', '-in', seg_nii_path, '-ref', t2_path,
+            '-out', seg_in_t2_path,
+            '-interp', 'nearestneighbour',
+            '-omat', seg_nii_path.replace('.nii', '_to_T2.mat'),
+            '-dof', '6'
+        ]
+        print(f"Running FLIRT command for T2: {' '.join(flirt_cmd_t2)}")
+        subprocess.run(flirt_cmd_t2)
+    else:
+        print(f"Aligned segmentation to T2 already exists at {seg_in_t2_path}.")
 
-    # Step 4: Load the aligned segmentation masks
-    print(f"Loading aligned segmentation masks from {seg_in_dce_path} and {seg_in_t2_path}")
+    # Step 4: Load the aligned segmentation images
+    print(f"Loading aligned segmentation images from {seg_in_dce_path} and {seg_in_t2_path}")
     seg_in_dce_img = nib.load(seg_in_dce_path).get_fdata()
     seg_in_t2_img = nib.load(seg_in_t2_path).get_fdata()
 
-    # Create white matter and gray matter masks for T2 and DCE
-    wm_mask_t2 = np.isin(seg_in_t2_img, white_matter_labels)
-    cortical_gm_mask_t2 = np.isin(seg_in_t2_img, cortical_gm_labels)
-    subcortical_gm_mask_t2 = np.isin(seg_in_t2_img, subcortical_gm_labels)
-
+    # Step 5: Create masks from the aligned segmentation images
     wm_mask_dce = np.isin(seg_in_dce_img, white_matter_labels)
     cortical_gm_mask_dce = np.isin(seg_in_dce_img, cortical_gm_labels)
     subcortical_gm_mask_dce = np.isin(seg_in_dce_img, subcortical_gm_labels)
 
-    return wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, subcortical_gm_mask_t2, cortical_gm_mask_dce, subcortical_gm_mask_dce
+    wm_mask_t2 = np.isin(seg_in_t2_img, white_matter_labels)
+    cortical_gm_mask_t2 = np.isin(seg_in_t2_img, cortical_gm_labels)
+    subcortical_gm_mask_t2 = np.isin(seg_in_t2_img, subcortical_gm_labels)
 
-
-
+    return wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce, subcortical_gm_mask_t2, subcortical_gm_mask_dce
 
 
 def plot_dce_grid(dce_image, wm_mask_downsampled, cortical_gm_mask_downsampled, subcortical_gm_mask_downsampled):
@@ -438,8 +480,13 @@ def plot_dce_grid(dce_image, wm_mask_downsampled, cortical_gm_mask_downsampled, 
 
         color_overlay_dce = np.zeros((*dce_slice.shape, 3))
         color_overlay_dce[:, :, 2] = wm_slice_dce  # Blue channel for white matter
-        color_overlay_dce[:, :, 0] = cortical_gm_slice_dce  # Red channel for cortical gray matter
-        color_overlay_dce[:, :, 1] = subcortical_gm_slice_dce  # Green channel for subcortical gray matter
+
+        # Assign bright red to cortical gray matter
+        color_overlay_dce[:, :, 0][cortical_gm_slice_dce == 1] = 1.0  # Bright red
+
+        # Assign dark red to subcortical gray matter
+        color_overlay_dce[:, :, 0][subcortical_gm_slice_dce == 1] = 0.5  # Darker red
+
 
         ax_dce = axes[row, col]
         ax_dce.imshow(dce_slice, cmap='gray', alpha=1)
@@ -575,18 +622,26 @@ def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_ma
     color_overlay_t2 = np.zeros((*t2_img_slice.shape, 4))  # RGBA channels
     color_overlay_dce = np.zeros((*dce_img_slice.shape, 4))  # RGBA channels
 
-    # Set RGB channels for T2 overlays
-    color_overlay_t2[..., 0] = cortical_gm_mask_resized_t2  # Red channel
-    color_overlay_t2[..., 1] = subcortical_gm_mask_resized_t2  # Green channel
+    # Initialize color overlays
+    color_overlay_t2 = np.zeros((*t2_img_slice.shape, 4))  # RGBA channels
+    color_overlay_dce = np.zeros((*dce_img_slice.shape, 4))  # RGBA channels
+
+    # Set blue channel for white matter
     color_overlay_t2[..., 2] = wm_mask_resized_t2  # Blue channel
+    color_overlay_dce[..., 2] = wm_mask_resized_dce  # Blue channel
+
+    # Assign bright red to cortical gray matter
+    color_overlay_t2[..., 0][cortical_gm_mask_resized_t2 == 1] = 1.0  # Bright red
+    color_overlay_dce[..., 0][cortical_gm_mask_resized_dce == 1] = 1.0  # Bright red
+
+    # Assign dark red to subcortical gray matter
+    color_overlay_t2[..., 0][subcortical_gm_mask_resized_t2 == 1] = 0.5  # Darker red
+    color_overlay_dce[..., 0][subcortical_gm_mask_resized_dce == 1] = 0.5  # Darker red
 
     # Set alpha channel
-    color_overlay_t2[..., 3] = (cortical_gm_mask_resized_t2 + subcortical_gm_mask_resized_t2 + wm_mask_resized_t2) * 0.5  # Adjust alpha
+    color_overlay_t2[..., 3] = (cortical_gm_mask_resized_t2 + subcortical_gm_mask_resized_t2 + wm_mask_resized_t2) * 0.5
+    color_overlay_dce[..., 3] = (cortical_gm_mask_resized_dce + subcortical_gm_mask_resized_dce + wm_mask_resized_dce) * 0.5
 
-    # Set RGB channels for DCE overlays
-    color_overlay_dce[..., 0] = cortical_gm_mask_resized_dce  # Red channel
-    color_overlay_dce[..., 1] = subcortical_gm_mask_resized_dce  # Green channel
-    color_overlay_dce[..., 2] = wm_mask_resized_dce  # Blue channel
 
     # Set alpha channel
     color_overlay_dce[..., 3] = (cortical_gm_mask_resized_dce + subcortical_gm_mask_resized_dce + wm_mask_resized_dce) * 0.5  # Adjust alpha
@@ -631,9 +686,9 @@ def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_ma
     ax3 = fig.add_subplot(gs[1, :])
     ax3.plot(avg_wm_ctc, label='White Matter CTC', color='blue')
     ax3.plot(avg_cortical_gm_ctc, label='Cortical Gray Matter CTC', color='red')
-    ax3.plot(avg_subcortical_gm_ctc, label='Subcortical Gray Matter CTC', color='green')
+    ax3.plot(avg_subcortical_gm_ctc, label='Subcortical Gray Matter CTC', color='darkred')
     if boundary_ctc is not None:
-        ax3.plot(boundary_ctc, label='Boundary CTC', color='yellow')
+        ax3.plot(boundary_ctc, label='Boundary CTC', color='green')
     ax3.set_title('Concentration-Time Curves')
     ax3.legend(loc='upper right')
     ax3.grid(True)
@@ -655,15 +710,15 @@ def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_ma
 
     # Plot Subcortical Gray Matter Patlak data if available
     if not np.isnan(Ki_subcortical_gm):
-        ax4.scatter(x_patlak_subcortical_gm[included_subcortical_gm], y_patlak_subcortical_gm[included_subcortical_gm], label='Subcortical GM', color='green', marker='o')
-        ax4.scatter(x_patlak_subcortical_gm[~included_subcortical_gm], y_patlak_subcortical_gm[~included_subcortical_gm], facecolors='none', edgecolors='green')
-        ax4.plot(x_patlak_subcortical_gm, lambda_subcortical_gm / 100 + (Ki_subcortical_gm / 6000) * x_patlak_subcortical_gm, color='green', linestyle='--')
+        ax4.scatter(x_patlak_subcortical_gm[included_subcortical_gm], y_patlak_subcortical_gm[included_subcortical_gm], label='Subcortical GM', color='darkred', marker='o')
+        ax4.scatter(x_patlak_subcortical_gm[~included_subcortical_gm], y_patlak_subcortical_gm[~included_subcortical_gm], facecolors='none', edgecolors='darkred')
+        ax4.plot(x_patlak_subcortical_gm, lambda_subcortical_gm / 100 + (Ki_subcortical_gm / 6000) * x_patlak_subcortical_gm, color='darkred', linestyle='--')
 
     # Plot Boundary Patlak data if available
     if boundary_ctc is not None and not np.isnan(Ki_boundary):
-        ax4.scatter(x_patlak_boundary[included_boundary], y_patlak_boundary[included_boundary], label='Boundary', color='yellow', marker='o')
-        ax4.scatter(x_patlak_boundary[~included_boundary], y_patlak_boundary[~included_boundary], facecolors='none', edgecolors='yellow')
-        ax4.plot(x_patlak_boundary, lambda_boundary / 100 + (Ki_boundary / 6000) * x_patlak_boundary, color='yellow', linestyle='--')
+        ax4.scatter(x_patlak_boundary[included_boundary], y_patlak_boundary[included_boundary], label='Boundary', color='green', marker='o')
+        ax4.scatter(x_patlak_boundary[~included_boundary], y_patlak_boundary[~included_boundary], facecolors='none', edgecolors='green')
+        ax4.plot(x_patlak_boundary, lambda_boundary / 100 + (Ki_boundary / 6000) * x_patlak_boundary, color='green', linestyle='--')
 
     ax4.set_title('Patlak Plot')
     ax4.legend(loc='lower right')
@@ -968,25 +1023,33 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
     plt.show()
 
 
-
-
-
 def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
-    
+
     IsVFA, IsIR, apple_metal, boundary = parameters
 
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
-    seg_mgz_path = os.path.join(os.path.dirname(t1_path), 'segmentation', 'mri/aparc.DKTatlas+aseg.deep.mgz')
+    seg_dir = os.path.join(nifti_directory, 'segmentation')
+    seg_mgz_path = os.path.join(seg_dir, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
     t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
     dce_path = os.path.join(nifti_directory, dce_filename)
-    
-    segmentation(fastsurfer_path, seg_mgz_path, t1_path, apple_metal)
-    
+
+    # Ensure segmentation directory exists
+    os.makedirs(seg_dir, exist_ok=True)
+
+    # Run segmentation and create masks
+    segmentation(fastsurfer_path, seg_mgz_path, t1_path, seg_dir, apple_metal)
+
+    # Paths to masks in the same directory as aparc.DKTatlas+aseg.deep.mgz
+    mask_dir = os.path.dirname(seg_mgz_path)
+    cortical_gm_mask_path = os.path.join(mask_dir, 'cortical_gm.nii')
+    subcortical_gm_mask_path = os.path.join(mask_dir, 'subcortical_gm.nii')
+    wm_mask_path = os.path.join(mask_dir, 'wm.nii')
+
     print('[!] Coregistering GM/WM masks onto T2 and DCE space')
-    wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, subcortical_gm_mask_t2, cortical_gm_mask_dce, subcortical_gm_mask_dce = coregistration(
+    wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce, subcortical_gm_mask_t2, subcortical_gm_mask_dce = coregistration(
         seg_mgz_path=seg_mgz_path,
         dce_path=dce_path,
         t2_path=t2_path,
@@ -994,6 +1057,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
         cortical_gm_labels=cortical_gray_matter_labels,
         subcortical_gm_labels=subcortical_gray_matter_labels
     )
+
 
     # Load the T2 image for visualization
     t2_img = nib.load(t2_path).get_fdata()
@@ -1015,6 +1079,8 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
 
     # Compute and plot CTCs and Patlak fits, and save data
-    compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2, 
-                                wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce, 
-                                T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory, boundary=boundary)
+    compute_and_plot_ctcs_median(
+        data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
+        wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
+        T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory, boundary=boundary
+    )
