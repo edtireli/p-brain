@@ -14,6 +14,9 @@ import glob
 import json
 import time
 
+turbo_mode = True # doesnt show plots
+
+
 def get_available_arteries(analysis_directory):
     artery_types = {'lica': 'Left Interior Carotid', 'rica': 'Right Interior Carotid', 'b': 'Basilar', 'lmca': 'Left Middle Cerebral', 'rmca': 'Right Middle Cerebral'}
     available_arteries = {}
@@ -180,13 +183,15 @@ def plot_transformed_curves_max(shifted_vein_curve, slice_index, artery_index, v
 
     plt.savefig(os.path.join(image_directory, 'Time Shifted Concentration Curves', 'Max', f'TSCC_slice_{slice_index}_{artery_index}.png'), dpi=200)
     np.save(os.path.join(analysis_directory, 'TSCC Data', 'Max', f'TSCC_slice_{slice_index}_{artery_index}.npy'), shifted_vein_curve)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    close_plot_after_delay_plt(3)
-    plt.show()
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        close_plot_after_delay_plt(3)
+        plt.show()
 
 
 
 def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_index, arterial_slice_index, vein_top2_peaks, time_points_s, analysis_directory, image_directory, subtype='test', scaling=1, time_shift=1):
+    global turbo_mode
     # No need to modify the subtype here; it should already be correct
     def on_esc(event):
         if event.key == 'escape':
@@ -218,9 +223,10 @@ def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_inde
 
     plt.savefig(os.path.join(image_directory, 'Time Shifted Concentration Curves', subtype, f'TSCC_slice_{slice_index}_{arterial_slice_index}.png'), dpi=200)
     np.save(os.path.join(analysis_directory, 'TSCC Data', subtype, f'TSCC_slice_{slice_index}_{arterial_slice_index}.npy'), shifted_vein_curve)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    close_plot_after_delay_plt(3)
-    plt.show()    
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        close_plot_after_delay_plt(3)
+        plt.show()    
 
 
 
@@ -261,6 +267,7 @@ def extract_and_accumulate_rois(rotated_data, slice_classifier, roi_model, choic
     return original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels
 
 def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_rois, slice_labels, image_directory):
+    global turbo_mode
     num_slices = len(relevant_slices)
     rows = num_slices
     cols = 2
@@ -299,9 +306,10 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
 
     plt.tight_layout()
     plt.savefig(os.path.join(image_directory, 'AI', f'AI_input_function_ROIs.png'), dpi=300)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    close_plot_after_delay(3, fig)
-    plt.show()
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        close_plot_after_delay(3, fig)
+        plt.show()
 
 
 

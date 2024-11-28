@@ -13,6 +13,8 @@ import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 import threading
 
+turbo_mode = True #doesnt show plots
+
 def close_plot_after_delay_plt(delay):
     """
     Close the plot automatically after a delay if no interaction occurs.
@@ -166,8 +168,9 @@ def plot_voxel_fit(X, Y, Z, M0_matrix, T1_matrix, voxel_matrix, values, isVFA=Fa
     plt.grid(which='minor', alpha=0.25)
     plt.minorticks_on()
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
-    close_plot_after_delay_plt(3)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.show()
 
 
 def plot_histograms(M0_matrix, T1_matrix, image_directory):
@@ -200,8 +203,9 @@ def plot_histograms(M0_matrix, T1_matrix, image_directory):
     plt.tight_layout()
     plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Histogram.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
-    close_plot_after_delay(3, fig)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay(3, fig)
+        plt.show()
 
 
 def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
@@ -234,8 +238,9 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
     plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Maps.png'), dpi=200)
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
-    close_plot_after_delay(3, fig)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay(3, fig)
+        plt.show()
 
 
 

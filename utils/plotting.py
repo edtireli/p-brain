@@ -12,6 +12,9 @@ from matplotlib.widgets import Button
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
+turbo_mode = True # doesnt show plots
+
+
 def load_from_pickle(file_path):
     with open(file_path, 'rb') as file:
         matrix = pickle.load(file)
@@ -37,9 +40,7 @@ def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True):
     C_t = -(1 / r1) * ((1 / TD) * np.log(1 - (S / (m0 * np.sin(theta_rad)))) + (1 / T1))
 
     if prints:
-        print('')
-        print(f"Slice {slice+1}: TD: {TD}, T1: {round(T1, 3)}, M0: {round(m0, 1)}")
-        print(f"Slice {slice+1}: Max Concentration: {round(np.max(C_t), 2)} mM")
+        print(f" TD: {TD}, T1: {round(T1, 3)}, M0: {round(m0, 1)}, Max Concentration: {round(np.max(C_t), 2)} mM")
 
     return C_t
 
@@ -154,19 +155,22 @@ def butter_lowpass_filter(data, cutoff, fs, order=5):
     return y
 
 def on_esc(event):
-    if event.key == 'escape':
-        plt.close(event.canvas.figure)
+    if not turbo_mode:
+        if event.key == 'escape':
+            if not turbo_mode:
+                plt.close(event.canvas.figure)
 
 import threading
 
 
 def close_plot_after_delay_plt(delay, fig=None):
-    def close_plot():
-        if fig:
-            plt.close(fig)
-        else:
-            plt.close()
-    threading.Timer(delay, close_plot).start()
+    if not turbo_mode:
+        def close_plot():
+            if fig:
+                plt.close(fig)
+            else:
+                plt.close()
+        threading.Timer(delay, close_plot).start()
 
 
 
@@ -176,14 +180,15 @@ def close_plot_after_delay(delay, fig):
     :param delay: Time in seconds to wait before closing the plot.
     :param fig: The figure object to close.
     """
-    def close():
-        plt.close(fig)
+    if not turbo_mode:
+        def close():
+            plt.close(fig)
 
-    timer = threading.Timer(delay, close)
-    timer.start()
+        timer = threading.Timer(delay, close)
+        timer.start()
 
-    # If there is user interaction, cancel the timer
-    fig.canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+        # If there is user interaction, cancel the timer
+        fig.canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
 
 
 def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, type='test', subtype='test'):
@@ -237,11 +242,11 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     axs[1].set_title(f'Slice with brightest voxel (slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
 
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+M0_slice_{slice_index+1}.png'), dpi=200)
-
-    close_plot_after_delay_plt(3)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)    
-    plt.show()
-    plt.close()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)    
+        plt.show()
+        plt.close()
 
     plt.figure(figsize=(20, 6))
     plt.scatter(time_points_s, voxel_time_course_max, label='Raw ITC', s=5, color='red')
@@ -253,10 +258,10 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     plt.minorticks_on()
     
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
-    
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)   
-    close_plot_after_delay_plt(3) 
-    plt.close()
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)   
+        close_plot_after_delay_plt(3) 
+        plt.close()
 
 
     
@@ -318,7 +323,8 @@ def plot_time_intensity_curves_AI(data, roi_voxels, slice_index, frame_index, ti
     axs[1].set_title(f'DCE (Slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
 
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+DCE_slice_{slice_index+1}.png'), dpi=200)
-    plt.close()
+    if not turbo_mode:
+        plt.close()
 
     plt.figure(figsize=(20, 6))
     plt.scatter(time_points_s, voxel_time_course_max, label='Raw ITC', s=5, color='red')
@@ -330,7 +336,8 @@ def plot_time_intensity_curves_AI(data, roi_voxels, slice_index, frame_index, ti
     plt.minorticks_on()
     
     plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
-    plt.close()
+    if not turbo_mode:
+        plt.close()
     np.save(os.path.join(analysis_directory, 'ITC Data', type, subtype, f'ITC_slice_{slice_index+1}.npy'), voxel_time_course_max)
     np.save(os.path.join(analysis_directory, 'ROI Data', type, subtype, f'ROI_voxels_slice_{slice_index+1}.npy'), roi_voxels)
     np.save(os.path.join(analysis_directory, 'Frame Data', type, subtype, f'frame_index_slice_{slice_index+1}.npy'), frame_index)
@@ -356,7 +363,8 @@ def button_callback(event, C_t, type, subtype, analysis_directory, slice_index, 
     # Save the shifted CTC data
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
     print(f"Shifted and rescaled CTC data saved using the {event.inaxes.get_title()} method.")
-    plt.close()
+    if not turbo_mode:
+        plt.close()
 
 def save_plot_data_AI(C_t, type, subtype, analysis_directory, slice_index, radius=10):
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_slice_{slice_index+1}.npy'), C_t)
@@ -367,7 +375,8 @@ def save_plot_data_AI(C_t, type, subtype, analysis_directory, slice_index, radiu
     
     # Save the shifted CTC data
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
-    plt.close()
+    if not turbo_mode:
+        plt.close()
 
 def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
     
@@ -459,20 +468,19 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
         axs[1].add_patch(rect)
     axs[1].set_title(f'Equilibrium magnetisation map (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
 
-    # Place buttons for saving data
-    ax_button_std = plt.axes([0.25, 0.05, 0.15, 0.075])
-    ax_button_adp = plt.axes([0.55, 0.05, 0.15, 0.075])
-    btn_standard = Button(ax_button_std, 'Save Standard', color='lightgray', hovercolor='gray')
-    btn_adaptive = Button(ax_button_adp, 'Save Adaptive', color='lightgray', hovercolor='gray')
+    if not turbo_mode:
+        # Place buttons for saving data
+        ax_button_std = plt.axes([0.25, 0.05, 0.15, 0.075])
+        ax_button_adp = plt.axes([0.55, 0.05, 0.15, 0.075])
+        btn_standard = Button(ax_button_std, 'Save Standard', color='lightgray', hovercolor='gray')
+        btn_adaptive = Button(ax_button_adp, 'Save Adaptive', color='lightgray', hovercolor='gray')
 
-    # Callbacks for buttons
-    btn_standard.on_clicked(lambda event: button_callback(event, C_t_standard, type, subtype, analysis_directory, slice_index))
-    btn_adaptive.on_clicked(lambda event: button_callback(event, C_t_adaptive, type, subtype, analysis_directory, slice_index))
-
-    close_plot_after_delay_special(3, lambda: button_callback(None, C_t_standard, type, subtype, analysis_directory, slice_index))
-
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
+        # Callbacks for buttons
+        btn_standard.on_clicked(lambda event: button_callback(event, C_t_standard, type, subtype, analysis_directory, slice_index))
+        btn_adaptive.on_clicked(lambda event: button_callback(event, C_t_adaptive, type, subtype, analysis_directory, slice_index))
+        close_plot_after_delay_special(3, lambda: button_callback(None, C_t_standard, type, subtype, analysis_directory, slice_index))
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        plt.show()
 
 
 def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
@@ -566,9 +574,9 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
     axs[1].set_title(f'DCE (Slice {slice_index + 1}, Frame {max_intensity_frame + 1})', fontproperties=prop, fontsize=14)
 
     plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', type, subtype, f'CTC+DCE_slice_{slice_index+1}.png'), dpi=200)
-
-    plt.show(block=False)  # Display the plot without blocking
-    plt.pause(2)           # Pause the script to keep the plot open for 2 seconds
+    if not turbo_mode:
+        plt.show(block=False)  # Display the plot without blocking
+        plt.pause(2)           # Pause the script to keep the plot open for 2 seconds
     save_plot_data_AI(C_t_adaptive, type, subtype, analysis_directory, slice_index)
     
 
@@ -579,15 +587,16 @@ def close_plot_after_delay_special(delay, default_save_callback):
     :param delay: Time in seconds to wait before closing the plot.
     :param default_save_callback: Function to call for saving the default data.
     """
-    def close():
-        default_save_callback()
-        plt.close(plt.gcf())  # Close the current figure
+    if not turbo_mode:
+        def close():
+            default_save_callback()
+            plt.close(plt.gcf())  # Close the current figure
 
-    timer = threading.Timer(delay, close)
-    timer.start()
+        timer = threading.Timer(delay, close)
+        timer.start()
 
-    # If there is user interaction, cancel the timer
-    plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+        # If there is user interaction, cancel the timer
+        plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
     
 
 from scipy.optimize import minimize_scalar
@@ -609,7 +618,8 @@ class ConcentrationCurveEditor:
         self.redraw()
         self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
         self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key)
-        plt.show()
+        if not turbo_mode:
+            plt.show()
 
     def update(self, val):
         self.scale_factor = self.slider.val
@@ -751,8 +761,9 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
             rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
             axs[1].add_patch(rect)
         axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontsize=14) 
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
-    plt.close()
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        plt.show()
+        plt.close()
     np.save(final_curve_path, avg_C_t)
 
