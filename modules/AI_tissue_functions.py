@@ -18,6 +18,7 @@ import os
 from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from skimage.exposure import rescale_intensity
+from tqdm import tqdm
 
 def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm_mask, image_directory):
     n_slices = image.shape[2]
@@ -630,7 +631,8 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
     # Initialize an empty 3D array to store K_i values per voxel
     Ki_per_voxel = np.full(data_4d.shape[:3], np.nan)
 
-    for i in range(n_slices):
+    # Add tqdm progress bar to the loop
+    for i in tqdm(range(n_slices), desc="Processing slices"):
         # Extract relevant masks for the current slice
         wm_slice_t2 = wm_mask_t2[:, :, i]
         cortical_gm_slice_t2 = cortical_gm_mask_t2[:, :, i]
@@ -712,7 +714,7 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         if boundary and avg_boundary_ctc.size > 0:
             np.save(os.path.join(save_dir_ctc, f'bo_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_boundary_ctc)
 
-        # Ensure the CTCs and C_a have the same length
+        # Ensure the CTCs and C_a_full have the same length
         min_length = len(C_a_full)
         if avg_wm_ctc.size > 0:
             min_length = min(min_length, avg_wm_ctc.size)
@@ -846,6 +848,7 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         # Compute K_i per voxel if enabled
         if compute_per_voxel_Ki:
             # Combine WM and GM masks for the current slice
+            gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
             brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
             brain_indices = np.argwhere(brain_mask_slice)
 
@@ -879,11 +882,25 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
             # Store the K_i slice in the 3D K_i array
             Ki_per_voxel[:, :, i] = Ki_slice
 
-            # Generate and save the overlay image for the current slice
+    # Compute global minimum and maximum K_i values
+    if compute_per_voxel_Ki:
+        global_Ki_min = np.nanmin(Ki_per_voxel)
+        global_Ki_max = np.nanmax(Ki_per_voxel)
+        print(f"Global K_i min: {global_Ki_min}, max: {global_Ki_max}")
+
+        # Generate and save the overlay images for each slice with consistent color scaling
+        for i in range(n_slices):
+            Ki_slice = Ki_per_voxel[:, :, i]
+            if np.isnan(Ki_slice).all():
+                continue  # Skip slices without valid K_i values
+
             save_dir_overlay = os.path.join(image_directory, 'AI', 'Ki Overlays')
             os.makedirs(save_dir_overlay, exist_ok=True)
             save_path_overlay = os.path.join(save_dir_overlay, f"Ki_overlay_slice_{i+1}.png")
-            plot_Ki_overlay(data_4d[:, :, i, 20], Ki_slice, slice_idx=i+1, save_path=save_path_overlay)
+            plot_Ki_overlay(
+                data_4d[:, :, i, 20], Ki_slice, slice_idx=i+1, save_path=save_path_overlay,
+                vmin=global_Ki_min, vmax=global_Ki_max
+            )
 
     # Save all Patlak data to JSON file after processing all slices
     json_file_path = os.path.join(analysis_directory, "AI_values_median.json")
@@ -1026,7 +1043,7 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         print(f"K_i per voxel saved to {Ki_per_voxel_path}")
         
         
-def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path):
+def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path, vmin, vmax):
     """
     Plots the DCE image slice with an overlay of K_i values.
 
@@ -1035,6 +1052,8 @@ def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path):
     - Ki_slice: 2D numpy array of K_i values for the slice.
     - slice_idx: Integer indicating the slice number.
     - save_path: Path to save the overlay image.
+    - vmin: Global minimum K_i value for consistent color scaling.
+    - vmax: Global maximum K_i value for consistent color scaling.
 
     Returns:
     - None
@@ -1052,10 +1071,10 @@ def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path):
 
     # Overlay K_i values using a colormap
     plt.imshow(np.rot90(Ki_masked), cmap='jet', interpolation='nearest', alpha=0.6,
-               norm=Normalize(vmin=np.nanmin(Ki_slice), vmax=np.nanmax(Ki_slice)))
+               norm=Normalize(vmin=vmin, vmax=vmax))
 
-    plt.colorbar(label='K_i (ml/100g/min)')
-    plt.title(f'Slice {slice_idx} K_i Overlay')
+    plt.colorbar(label='K$_i$ (ml/100g/min)')
+    plt.title(f'Blood Brain Barrier permeability (K$_i$) per voxel - Slice {slice_idx}')
     plt.axis('off')
     plt.tight_layout()
 

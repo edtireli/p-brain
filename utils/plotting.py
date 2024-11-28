@@ -39,8 +39,8 @@ def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True):
 
     C_t = -(1 / r1) * ((1 / TD) * np.log(1 - (S / (m0 * np.sin(theta_rad)))) + (1 / T1))
 
-    if prints:
-        print(f" TD: {TD}, T1: {round(T1, 3)}, M0: {round(m0, 1)}, Max Concentration: {round(np.max(C_t), 2)} mM")
+    #if prints:
+        #print(f"T1: {round(T1, 3)}, M0: {round(m0, 1)}, Max Concentration: {round(np.max(C_t), 2)} mM")
 
     return C_t
 
