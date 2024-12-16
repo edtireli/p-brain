@@ -59,8 +59,13 @@ def check_axial(nifti_directory, filenames):
     # Check for axially reconstructed T1 and T2 files
     if file_exists(os.path.join(nifti_directory, axial_t1_3D_output)) and \
        file_exists(os.path.join(nifti_directory, axial_t2_3D_output)):
+<<<<<<< HEAD
         #print("Axially reconstructed T2 and T1 files already exist.")
         #time.sleep(3)
+=======
+        print("Axially reconstructed T2 and T1 files already exist.")
+        time.sleep(3)
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
         return
 
     if not flair_full_path or not axial_flair_3D_filename:
@@ -78,4 +83,8 @@ def check_axial(nifti_directory, filenames):
     decompress_nii_gz(axial_t1_output_path)
     decompress_nii_gz(axial_t2_output_path)
     print("[!] Finished.")
+<<<<<<< HEAD
     #time.sleep(2)
+=======
+    time.sleep(2)
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21

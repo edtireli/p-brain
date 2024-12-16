@@ -8,6 +8,7 @@ import json
 import matplotlib.pyplot as plt
 from utils.fonts import *
 from utils.loading import *
+<<<<<<< HEAD
 from utils.plotting import *
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
@@ -30,6 +31,11 @@ def close_plot_after_delay_plt(delay):
     plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
 
 
+=======
+import warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 def extract_vfa_params(vfa_filenames, nifti_directory):
     repetition_times = []
     flip_angles = []
@@ -172,7 +178,6 @@ def plot_voxel_fit(X, Y, Z, M0_matrix, T1_matrix, voxel_matrix, values, isVFA=Fa
         close_plot_after_delay_plt(3)
         plt.show()
 
-
 def plot_histograms(M0_matrix, T1_matrix, image_directory):
     def on_esc(event):
         if event.key == 'escape':
@@ -247,7 +252,11 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
 
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
     
+<<<<<<< HEAD
     IsVFA, IsIR,_,_ = parameters
+=======
+    IsVFA, IsIR = parameters
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames

@@ -5,6 +5,7 @@ import re
 import time 
 
 def get_dce_filename(primary, fallback, nifti_directory):
+<<<<<<< HEAD
     if os.path.exists(os.path.join(nifti_directory, fallback)):
         return fallback
     if os.path.exists(os.path.join(nifti_directory, primary)):
@@ -12,14 +13,28 @@ def get_dce_filename(primary, fallback, nifti_directory):
     else:
         return None 
 
+=======
+    if os.path.exists(os.path.join(nifti_directory, primary)):
+        return primary
+    elif os.path.exists(os.path.join(nifti_directory, fallback)):
+        return fallback
+    else:
+        return None 
+
+
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 # Global parameters: 
 
 def global_parameters():
     IsVFA = False #Variable flip angle for the T1/M0 fit
     IsIR = True #Inversion recovery method 
+<<<<<<< HEAD
     apple_metal = True # Enable if running on apple M1/M2/M3...
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
     return (IsVFA, IsIR, apple_metal, boundary)
+=======
+    return (IsVFA, IsIR)
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 
 def refresh_nifti_directory(nifti_directory):
     return os.listdir(nifti_directory)
@@ -41,6 +56,9 @@ def global_filenames(nifti_directory):
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
+<<<<<<< HEAD
     print(dce_filename)
+=======
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     return t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename
 

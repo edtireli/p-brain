@@ -9,12 +9,16 @@ from utils.loading import *
 from matplotlib.path import Path
 from scipy.signal import argrelextrema
 from matplotlib.widgets import Button
+<<<<<<< HEAD
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
 turbo_mode = True # doesnt show plots
 
 
+=======
+
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 def load_from_pickle(file_path):
     with open(file_path, 'rb') as file:
         matrix = pickle.load(file)
@@ -363,6 +367,7 @@ def button_callback(event, C_t, type, subtype, analysis_directory, slice_index, 
     # Save the shifted CTC data
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
     print(f"Shifted and rescaled CTC data saved using the {event.inaxes.get_title()} method.")
+<<<<<<< HEAD
     if not turbo_mode:
         plt.close()
 
@@ -378,6 +383,10 @@ def save_plot_data_AI(C_t, type, subtype, analysis_directory, slice_index, radiu
     if not turbo_mode:
         plt.close()
 
+=======
+    plt.close()
+
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
     
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
@@ -467,6 +476,7 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
         rect = Rectangle((y-0.5, x-0.5), 1, 1, linewidth=1, edgecolor='g', facecolor='none')
         axs[1].add_patch(rect)
     axs[1].set_title(f'Equilibrium magnetisation map (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
+<<<<<<< HEAD
 
     if not turbo_mode:
         # Place buttons for saving data
@@ -597,6 +607,23 @@ def close_plot_after_delay_special(delay, default_save_callback):
 
         # If there is user interaction, cancel the timer
         plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+=======
+
+    # Place buttons for saving data
+    ax_button_std = plt.axes([0.25, 0.05, 0.15, 0.075])
+    ax_button_adp = plt.axes([0.55, 0.05, 0.15, 0.075])
+    btn_standard = Button(ax_button_std, 'Save Standard', color='lightgray', hovercolor='gray')
+    btn_adaptive = Button(ax_button_adp, 'Save Adaptive', color='lightgray', hovercolor='gray')
+
+    # Callbacks for buttons
+    btn_standard.on_clicked(lambda event: button_callback(event, C_t_standard, type, subtype, analysis_directory, slice_index))
+    btn_adaptive.on_clicked(lambda event: button_callback(event, C_t_adaptive, type, subtype, analysis_directory, slice_index))
+
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+    plt.show()
+
+    
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     
 
 from scipy.optimize import minimize_scalar
@@ -761,9 +788,15 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
             rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
             axs[1].add_patch(rect)
         axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontsize=14) 
+<<<<<<< HEAD
     if not turbo_mode:
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
         plt.show()
         plt.close()
+=======
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+    plt.show()
+    plt.close()
+>>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     np.save(final_curve_path, avg_C_t)
 
