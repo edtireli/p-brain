@@ -4,3 +4,4 @@ __pycache__/
 *.log
 data/
 resources/.DS_Store
+AI/
