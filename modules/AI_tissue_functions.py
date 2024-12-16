@@ -1,4 +1,5 @@
 turbo_mode = False  # Set to True to suppress all plots
+force_recreate_masks = True  # If True: recreate all masks regardless of existence
 
 import nibabel as nib
 import matplotlib.pyplot as plt
@@ -20,7 +21,26 @@ from matplotlib.gridspec import GridSpec
 from skimage.exposure import rescale_intensity
 from tqdm import tqdm
 
-def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm_mask, image_directory):
+def construct_convolution_matrix(C_a, delta_t):
+    n = len(C_a)
+    A = np.zeros((n, n))
+    for i in range(n):
+        A[i, :i+1] = C_a[i::-1] * delta_t
+    return A
+
+from scipy.linalg import solve
+
+def tikhonov_regularization(A, C_t, lambd):
+    n = A.shape[1]
+    L = np.eye(n)  # Using identity matrix for regularization
+    ATA = A.T @ A
+    LTL = L.T @ L
+    regularized_matrix = ATA + lambd * LTL
+    ATC_t = A.T @ C_t
+    R = np.linalg.solve(regularized_matrix, ATC_t)
+    return R
+
+def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm_mask, gm_brainstem_mask, gm_cerebellum_mask, wm_cerebellum_mask, wm_cc_mask, image_directory):
     n_slices = image.shape[2]
     n_cols = 5
     n_rows = (n_slices + n_cols - 1) // n_cols  # Calculate the number of rows needed
@@ -35,15 +55,35 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
         wm_slice = np.rot90(wm_mask[:, :, i])
         cortical_gm_slice = np.rot90(cortical_gm_mask[:, :, i])
         subcortical_gm_slice = np.rot90(subcortical_gm_mask[:, :, i])
+        gm_brainstem_slice = np.rot90(gm_brainstem_mask[:, :, i])
+        gm_cerebellum_slice = np.rot90(gm_cerebellum_mask[:, :, i])
+        wm_cerebellum_slice = np.rot90(wm_cerebellum_mask[:, :, i])
+        wm_cc_slice = np.rot90(wm_cc_mask[:, :, i])
 
         color_overlay = np.zeros((*image_slice.shape, 3))
-        color_overlay[:, :, 2] = wm_slice  # Blue channel for white matter
+        color_overlay[:, :, 2][wm_slice == 1] = 1.0  # Blue channel for white matter
 
         # Assign bright red to cortical gray matter
         color_overlay[:, :, 0][cortical_gm_slice == 1] = 1.0  # Bright red
 
         # Assign dark red to subcortical gray matter
         color_overlay[:, :, 0][subcortical_gm_slice == 1] = 0.5  # Darker red
+
+        # Assign orange to brainstem (red + green)
+        color_overlay[:, :, 0][gm_brainstem_slice == 1] = 1.0  # Red channel
+        color_overlay[:, :, 1][gm_brainstem_slice == 1] = 0.5  # Green channel
+
+        # Assign yellow to cerebellum GM (red + green)
+        color_overlay[:, :, 0][gm_cerebellum_slice == 1] = 1.0  # Red channel
+        color_overlay[:, :, 1][gm_cerebellum_slice == 1] = 1.0  # Green channel
+
+        # Assign cyan to cerebellum WM (green + blue)
+        color_overlay[:, :, 1][wm_cerebellum_slice == 1] = 1.0  # Green channel
+        color_overlay[:, :, 2][wm_cerebellum_slice == 1] = 1.0  # Blue channel
+
+        # Assign magenta to corpus callosum WM (red + blue)
+        color_overlay[:, :, 0][wm_cc_slice == 1] = 1.0  # Red channel
+        color_overlay[:, :, 2][wm_cc_slice == 1] = 1.0  # Blue channel
 
         ax = axes[row, col]
         ax.imshow(image_slice, cmap='gray')
@@ -111,36 +151,88 @@ def segmentation(fastsurfer_path, seg_mgz_path, t1_path, output_dir, sid, apple_
 
     # Create masks using predefined flags
     # White Matter Mask
-    if not os.path.exists(wm_mask_path):
-        wm_command = f"mri_binarize --i {aseg_nii_path} --all-wm --o {wm_mask_path}"
+    temp_wm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'temp_wm.nii.gz')
+    if force_recreate_masks or not os.path.exists(temp_wm_mask_path):
+        wm_command = f"mri_binarize --i {aseg_nii_path} --all-wm --o {temp_wm_mask_path}"
         subprocess.run(wm_command, shell=True)
     else:
-        print("WM mask already exists, skipping mri_binarize for WM.")
+        print("Temporary WM mask already exists, skipping mri_binarize for temp WM.")
 
     # Subcortical Gray Matter Mask
-    if not os.path.exists(subcortical_gm_mask_path):
-        subcortical_gm_command = f"mri_binarize --i {aseg_nii_path} --subcort-gm --o {subcortical_gm_mask_path}"
+    temp_subcortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'temp_subcortical_gm.nii.gz')
+    if force_recreate_masks or not os.path.exists(temp_subcortical_gm_mask_path):
+        subcortical_gm_command = f"mri_binarize --i {aseg_nii_path} --subcort-gm --o {temp_subcortical_gm_mask_path}"
         subprocess.run(subcortical_gm_command, shell=True)
     else:
-        print("Subcortical GM mask already exists, skipping mri_binarize for subcortical GM.")
+        print("Temporary subcortical GM mask already exists, skipping mri_binarize for temp subcortical GM.")
 
     # Cortical Gray Matter Mask
     # Create overall gray matter mask
     gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'gm.nii.gz')
-    if not os.path.exists(gm_mask_path):
+    if force_recreate_masks or not os.path.exists(gm_mask_path):
         gm_command = f"mri_binarize --i {aseg_nii_path} --gm --o {gm_mask_path}"
         subprocess.run(gm_command, shell=True)
     else:
         print("GM mask already exists, skipping mri_binarize for GM.")
 
-    # Create cortical gray matter mask by subtracting subcortical gray matter from total gray matter
-    if not os.path.exists(cortical_gm_mask_path):
-        cortical_gm_command = f"fslmaths {gm_mask_path} -sub {subcortical_gm_mask_path} -thr 0.5 -bin {cortical_gm_mask_path}"
+    # Create gm_brainstem_mask
+    gm_brainstem_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'gm_brainstem.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_brainstem_mask_path):
+        gm_brainstem_command = f"mri_binarize --i {aseg_nii_path} --match 16 --o {gm_brainstem_mask_path}"
+        subprocess.run(gm_brainstem_command, shell=True)
+    else:
+        print("Brainstem GM mask already exists, skipping mri_binarize for brainstem GM.")
+
+    # Create gm_cerebellum_mask
+    gm_cerebellum_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'gm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_cerebellum_mask_path):
+        gm_cerebellum_command = f"mri_binarize --i {aseg_nii_path} --match 8 47 --o {gm_cerebellum_mask_path}"
+        subprocess.run(gm_cerebellum_command, shell=True)
+    else:
+        print("Cerebellum GM mask already exists, skipping mri_binarize for cerebellum GM.")
+
+    # Create wm_cerebellum_mask
+    wm_cerebellum_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'wm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cerebellum_mask_path):
+        wm_cerebellum_command = f"mri_binarize --i {aseg_nii_path} --match 7 46 --o {wm_cerebellum_mask_path}"
+        subprocess.run(wm_cerebellum_command, shell=True)
+    else:
+        print("Cerebellum WM mask already exists, skipping mri_binarize for cerebellum WM.")
+
+    # Create wm_cc_mask
+    wm_cc_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'wm_cc.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cc_mask_path):
+        wm_cc_command = f"mri_binarize --i {aseg_nii_path} --match 251 252 253 254 255 --o {wm_cc_mask_path}"
+        subprocess.run(wm_cc_command, shell=True)
+    else:
+        print("Corpus Callosum WM mask already exists, skipping mri_binarize for corpus callosum WM.")
+
+    # Create cortical gray matter mask by subtracting subcortical gray matter, brainstem, and cerebellum from total gray matter
+    if force_recreate_masks or not os.path.exists(cortical_gm_mask_path):
+        cortical_gm_command = f"fslmaths {gm_mask_path} -sub {temp_subcortical_gm_mask_path} -sub {gm_brainstem_mask_path} -sub {gm_cerebellum_mask_path} -thr 0.5 -bin {cortical_gm_mask_path}"
         subprocess.run(cortical_gm_command, shell=True)
     else:
         print("Cortical GM mask already exists, skipping creation.")
 
-    # Optionally, remove the gm.nii.gz file if not needed
+    # Create subcortical gray matter mask by subtracting brainstem and cerebellum from the temp subcortical GM mask
+    if force_recreate_masks or not os.path.exists(subcortical_gm_mask_path):
+        subcortical_gm_command = f"fslmaths {temp_subcortical_gm_mask_path} -sub {gm_brainstem_mask_path} -sub {gm_cerebellum_mask_path} -thr 0.5 -bin {subcortical_gm_mask_path}"
+        subprocess.run(subcortical_gm_command, shell=True)
+    else:
+        print("Subcortical GM mask already exists, skipping creation.")
+
+    # Create white matter mask by subtracting cerebellar WM and corpus callosum from the temp WM mask
+    if force_recreate_masks or not os.path.exists(wm_mask_path):
+        wm_command = f"fslmaths {temp_wm_mask_path} -sub {wm_cerebellum_mask_path} -sub {wm_cc_mask_path} -thr 0.5 -bin {wm_mask_path}"
+        subprocess.run(wm_command, shell=True)
+    else:
+        print("WM mask already exists, skipping creation.")
+
+    # Optionally, remove temporary files
+    if os.path.exists(temp_wm_mask_path):
+        os.remove(temp_wm_mask_path)
+    if os.path.exists(temp_subcortical_gm_mask_path):
+        os.remove(temp_subcortical_gm_mask_path)
     if os.path.exists(gm_mask_path):
         os.remove(gm_mask_path)
 
@@ -208,7 +300,7 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     # Step 4: Create masks from the aligned segmentation images
     # For DCE space
     wm_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_wm.nii.gz')
-    if not os.path.exists(wm_mask_dce_path):
+    if force_recreate_masks or not os.path.exists(wm_mask_dce_path):
         wm_command = f"mri_binarize --i {aseg_in_dce_path} --all-wm --o {wm_mask_dce_path}"
         print(f"Running command: {wm_command}")
         result = subprocess.run(wm_command, shell=True, capture_output=True, text=True)
@@ -219,7 +311,7 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
         print("WM mask in DCE space already exists, skipping mri_binarize for WM.")
 
     subcortical_gm_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_subcortical_gm.nii.gz')
-    if not os.path.exists(subcortical_gm_mask_dce_path):
+    if force_recreate_masks or not os.path.exists(subcortical_gm_mask_dce_path):
         subcortical_gm_command = f"mri_binarize --i {aseg_in_dce_path} --subcort-gm --o {subcortical_gm_mask_dce_path}"
         print(f"Running command: {subcortical_gm_command}")
         result = subprocess.run(subcortical_gm_command, shell=True, capture_output=True, text=True)
@@ -230,7 +322,7 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
         print("Subcortical GM mask in DCE space already exists, skipping mri_binarize.")
 
     gm_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_gm.nii.gz')
-    if not os.path.exists(gm_mask_dce_path):
+    if force_recreate_masks or not os.path.exists(gm_mask_dce_path):
         gm_command = f"mri_binarize --i {aseg_in_dce_path} --gm --o {gm_mask_dce_path}"
         print(f"Running command: {gm_command}")
         result = subprocess.run(gm_command, shell=True, capture_output=True, text=True)
@@ -240,9 +332,58 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("GM mask in DCE space already exists, skipping mri_binarize.")
 
+    # Create gm_brainstem_mask in DCE space
+    gm_brainstem_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_gm_brainstem.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_brainstem_mask_dce_path):
+        gm_brainstem_command = f"mri_binarize --i {aseg_in_dce_path} --match 16 --o {gm_brainstem_mask_dce_path}"
+        print(f"Running command: {gm_brainstem_command}")
+        result = subprocess.run(gm_brainstem_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for brainstem GM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for brainstem GM in DCE space failed.")
+    else:
+        print("Brainstem GM mask in DCE space already exists, skipping mri_binarize.")
+
+    # Create gm_cerebellum_mask in DCE space
+    gm_cerebellum_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_gm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_cerebellum_mask_dce_path):
+        gm_cerebellum_command = f"mri_binarize --i {aseg_in_dce_path} --match 8 47 --o {gm_cerebellum_mask_dce_path}"
+        print(f"Running command: {gm_cerebellum_command}")
+        result = subprocess.run(gm_cerebellum_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for cerebellum GM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for cerebellum GM in DCE space failed.")
+    else:
+        print("Cerebellum GM mask in DCE space already exists, skipping mri_binarize.")
+
+    # Create wm_cerebellum_mask in DCE space
+    wm_cerebellum_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_wm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cerebellum_mask_dce_path):
+        wm_cerebellum_command = f"mri_binarize --i {aseg_in_dce_path} --match 7 46 --o {wm_cerebellum_mask_dce_path}"
+        print(f"Running command: {wm_cerebellum_command}")
+        result = subprocess.run(wm_cerebellum_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for cerebellum WM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for cerebellum WM in DCE space failed.")
+    else:
+        print("Cerebellum WM mask in DCE space already exists, skipping mri_binarize.")
+
+    # Create wm_cc_mask in DCE space
+    wm_cc_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_wm_cc.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cc_mask_dce_path):
+        wm_cc_command = f"mri_binarize --i {aseg_in_dce_path} --match 251 252 253 254 255 --o {wm_cc_mask_dce_path}"
+        print(f"Running command: {wm_cc_command}")
+        result = subprocess.run(wm_cc_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for corpus callosum WM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for corpus callosum WM in DCE space failed.")
+    else:
+        print("Corpus Callosum WM mask in DCE space already exists, skipping mri_binarize.")
+
+    # Create cortical gray matter mask by subtracting subcortical GM, brainstem, and cerebellum from total GM
     cortical_gm_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_cortical_gm.nii.gz')
-    if not os.path.exists(cortical_gm_mask_dce_path):
-        cortical_gm_command = f"fslmaths {gm_mask_dce_path} -sub {subcortical_gm_mask_dce_path} -thr 0.5 -bin {cortical_gm_mask_dce_path}"
+    if force_recreate_masks or not os.path.exists(cortical_gm_mask_dce_path):
+        cortical_gm_command = f"fslmaths {gm_mask_dce_path} -sub {subcortical_gm_mask_dce_path} -sub {gm_brainstem_mask_dce_path} -sub {gm_cerebellum_mask_dce_path} -thr 0.5 -bin {cortical_gm_mask_dce_path}"
         print(f"Running command: {cortical_gm_command}")
         result = subprocess.run(cortical_gm_command, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
@@ -251,9 +392,31 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("Cortical GM mask in DCE space already exists, skipping creation.")
 
+    # Create subcortical GM mask by subtracting brainstem and cerebellum from subcortical GM
+    if force_recreate_masks or not os.path.exists(subcortical_gm_mask_dce_path):
+        subcortical_gm_command = f"fslmaths {subcortical_gm_mask_dce_path} -sub {gm_brainstem_mask_dce_path} -sub {gm_cerebellum_mask_dce_path} -thr 0.5 -bin {subcortical_gm_mask_dce_path}"
+        print(f"Running command: {subcortical_gm_command}")
+        result = subprocess.run(subcortical_gm_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"fslmaths failed for subcortical GM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("fslmaths command for subcortical GM in DCE space failed.")
+    else:
+        print("Subcortical GM mask in DCE space already exists, skipping creation.")
+
+    # Create WM mask by subtracting cerebellar WM and corpus callosum from total WM
+    if force_recreate_masks or not os.path.exists(wm_mask_dce_path):
+        wm_command = f"fslmaths {wm_mask_dce_path} -sub {wm_cerebellum_mask_dce_path} -sub {wm_cc_mask_dce_path} -thr 0.5 -bin {wm_mask_dce_path}"
+        print(f"Running command: {wm_command}")
+        result = subprocess.run(wm_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"fslmaths failed for WM in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("fslmaths command for WM in DCE space failed.")
+    else:
+        print("WM mask in DCE space already exists, skipping creation.")
+
     # Similarly for T2 space
     wm_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_wm.nii.gz')
-    if not os.path.exists(wm_mask_t2_path):
+    if force_recreate_masks or not os.path.exists(wm_mask_t2_path):
         wm_command = f"mri_binarize --i {aseg_in_t2_path} --all-wm --o {wm_mask_t2_path}"
         print(f"Running command: {wm_command}")
         result = subprocess.run(wm_command, shell=True, capture_output=True, text=True)
@@ -264,7 +427,7 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
         print("WM mask in T2 space already exists, skipping mri_binarize for WM.")
 
     subcortical_gm_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_subcortical_gm.nii.gz')
-    if not os.path.exists(subcortical_gm_mask_t2_path):
+    if force_recreate_masks or not os.path.exists(subcortical_gm_mask_t2_path):
         subcortical_gm_command = f"mri_binarize --i {aseg_in_t2_path} --subcort-gm --o {subcortical_gm_mask_t2_path}"
         print(f"Running command: {subcortical_gm_command}")
         result = subprocess.run(subcortical_gm_command, shell=True, capture_output=True, text=True)
@@ -275,7 +438,7 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
         print("Subcortical GM mask in T2 space already exists, skipping mri_binarize.")
 
     gm_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_gm.nii.gz')
-    if not os.path.exists(gm_mask_t2_path):
+    if force_recreate_masks or not os.path.exists(gm_mask_t2_path):
         gm_command = f"mri_binarize --i {aseg_in_t2_path} --gm --o {gm_mask_t2_path}"
         print(f"Running command: {gm_command}")
         result = subprocess.run(gm_command, shell=True, capture_output=True, text=True)
@@ -285,9 +448,58 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("GM mask in T2 space already exists, skipping mri_binarize.")
 
+    # Create gm_brainstem_mask in T2 space
+    gm_brainstem_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_gm_brainstem.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_brainstem_mask_t2_path):
+        gm_brainstem_command = f"mri_binarize --i {aseg_in_t2_path} --match 16 --o {gm_brainstem_mask_t2_path}"
+        print(f"Running command: {gm_brainstem_command}")
+        result = subprocess.run(gm_brainstem_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for brainstem GM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for brainstem GM in T2 space failed.")
+    else:
+        print("Brainstem GM mask in T2 space already exists, skipping mri_binarize.")
+
+    # Create gm_cerebellum_mask in T2 space
+    gm_cerebellum_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_gm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(gm_cerebellum_mask_t2_path):
+        gm_cerebellum_command = f"mri_binarize --i {aseg_in_t2_path} --match 8 47 --o {gm_cerebellum_mask_t2_path}"
+        print(f"Running command: {gm_cerebellum_command}")
+        result = subprocess.run(gm_cerebellum_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for cerebellum GM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for cerebellum GM in T2 space failed.")
+    else:
+        print("Cerebellum GM mask in T2 space already exists, skipping mri_binarize.")
+
+    # Create wm_cerebellum_mask in T2 space
+    wm_cerebellum_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_wm_cerebellum.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cerebellum_mask_t2_path):
+        wm_cerebellum_command = f"mri_binarize --i {aseg_in_t2_path} --match 7 46 --o {wm_cerebellum_mask_t2_path}"
+        print(f"Running command: {wm_cerebellum_command}")
+        result = subprocess.run(wm_cerebellum_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for cerebellum WM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for cerebellum WM in T2 space failed.")
+    else:
+        print("Cerebellum WM mask in T2 space already exists, skipping mri_binarize.")
+
+    # Create wm_cc_mask in T2 space
+    wm_cc_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_wm_cc.nii.gz')
+    if force_recreate_masks or not os.path.exists(wm_cc_mask_t2_path):
+        wm_cc_command = f"mri_binarize --i {aseg_in_t2_path} --match 251 252 253 254 255 --o {wm_cc_mask_t2_path}"
+        print(f"Running command: {wm_cc_command}")
+        result = subprocess.run(wm_cc_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for corpus callosum WM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for corpus callosum WM in T2 space failed.")
+    else:
+        print("Corpus Callosum WM mask in T2 space already exists, skipping mri_binarize.")
+
+    # Create cortical gray matter mask by subtracting subcortical GM, brainstem, and cerebellum from total GM
     cortical_gm_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_cortical_gm.nii.gz')
-    if not os.path.exists(cortical_gm_mask_t2_path):
-        cortical_gm_command = f"fslmaths {gm_mask_t2_path} -sub {subcortical_gm_mask_t2_path} -thr 0.5 -bin {cortical_gm_mask_t2_path}"
+    if force_recreate_masks or not os.path.exists(cortical_gm_mask_t2_path):
+        cortical_gm_command = f"fslmaths {gm_mask_t2_path} -sub {subcortical_gm_mask_t2_path} -sub {gm_brainstem_mask_t2_path} -sub {gm_cerebellum_mask_t2_path} -thr 0.5 -bin {cortical_gm_mask_t2_path}"
         print(f"Running command: {cortical_gm_command}")
         result = subprocess.run(cortical_gm_command, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
@@ -296,10 +508,34 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("Cortical GM mask in T2 space already exists, skipping creation.")
 
+    # Create subcortical GM mask by subtracting brainstem and cerebellum from subcortical GM
+    if force_recreate_masks or not os.path.exists(subcortical_gm_mask_t2_path):
+        subcortical_gm_command = f"fslmaths {subcortical_gm_mask_t2_path} -sub {gm_brainstem_mask_t2_path} -sub {gm_cerebellum_mask_t2_path} -thr 0.5 -bin {subcortical_gm_mask_t2_path}"
+        print(f"Running command: {subcortical_gm_command}")
+        result = subprocess.run(subcortical_gm_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"fslmaths failed for subcortical GM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("fslmaths command for subcortical GM in T2 space failed.")
+    else:
+        print("Subcortical GM mask in T2 space already exists, skipping creation.")
+
+    # Create WM mask by subtracting cerebellar WM and corpus callosum from total WM
+    if force_recreate_masks or not os.path.exists(wm_mask_t2_path):
+        wm_command = f"fslmaths {wm_mask_t2_path} -sub {wm_cerebellum_mask_t2_path} -sub {wm_cc_mask_t2_path} -thr 0.5 -bin {wm_mask_t2_path}"
+        print(f"Running command: {wm_command}")
+        result = subprocess.run(wm_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"fslmaths failed for WM in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("fslmaths command for WM in T2 space failed.")
+    else:
+        print("WM mask in T2 space already exists, skipping creation.")
+
     # Ensure all mask files exist before loading
     required_files = [
         wm_mask_dce_path, cortical_gm_mask_dce_path, subcortical_gm_mask_dce_path,
-        wm_mask_t2_path, cortical_gm_mask_t2_path, subcortical_gm_mask_t2_path
+        gm_brainstem_mask_dce_path, gm_cerebellum_mask_dce_path, wm_cerebellum_mask_dce_path, wm_cc_mask_dce_path,
+        wm_mask_t2_path, cortical_gm_mask_t2_path, subcortical_gm_mask_t2_path,
+        gm_brainstem_mask_t2_path, gm_cerebellum_mask_t2_path, wm_cerebellum_mask_t2_path, wm_cc_mask_t2_path
     ]
     for file_path in required_files:
         if not os.path.exists(file_path):
@@ -309,14 +545,35 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     wm_mask_dce = nib.load(wm_mask_dce_path).get_fdata().astype(bool)
     cortical_gm_mask_dce = nib.load(cortical_gm_mask_dce_path).get_fdata().astype(bool)
     subcortical_gm_mask_dce = nib.load(subcortical_gm_mask_dce_path).get_fdata().astype(bool)
+    gm_brainstem_mask_dce = nib.load(gm_brainstem_mask_dce_path).get_fdata().astype(bool)
+    gm_cerebellum_mask_dce = nib.load(gm_cerebellum_mask_dce_path).get_fdata().astype(bool)
+    wm_cerebellum_mask_dce = nib.load(wm_cerebellum_mask_dce_path).get_fdata().astype(bool)
+    wm_cc_mask_dce = nib.load(wm_cc_mask_dce_path).get_fdata().astype(bool)
 
     wm_mask_t2 = nib.load(wm_mask_t2_path).get_fdata().astype(bool)
     cortical_gm_mask_t2 = nib.load(cortical_gm_mask_t2_path).get_fdata().astype(bool)
     subcortical_gm_mask_t2 = nib.load(subcortical_gm_mask_t2_path).get_fdata().astype(bool)
+    gm_brainstem_mask_t2 = nib.load(gm_brainstem_mask_t2_path).get_fdata().astype(bool)
+    gm_cerebellum_mask_t2 = nib.load(gm_cerebellum_mask_t2_path).get_fdata().astype(bool)
+    wm_cerebellum_mask_t2 = nib.load(wm_cerebellum_mask_t2_path).get_fdata().astype(bool)
+    wm_cc_mask_t2 = nib.load(wm_cc_mask_t2_path).get_fdata().astype(bool)
 
-    return wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce, subcortical_gm_mask_t2, subcortical_gm_mask_dce
+    return (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
+            subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
+            gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
+            wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce)
 
-def plot_dce_grid(dce_image, wm_mask_downsampled, cortical_gm_mask_downsampled, subcortical_gm_mask_downsampled, image_directory):
+def plot_dce_grid(
+    dce_image,
+    wm_mask_downsampled,
+    cortical_gm_mask_downsampled,
+    subcortical_gm_mask_downsampled,
+    gm_brainstem_mask_downsampled,
+    gm_cerebellum_mask_downsampled,
+    wm_cerebellum_mask_downsampled,
+    wm_cc_mask_downsampled,
+    image_directory
+):
     n_slices = dce_image.shape[2]
     n_cols = 5
     n_rows = 2
@@ -331,15 +588,38 @@ def plot_dce_grid(dce_image, wm_mask_downsampled, cortical_gm_mask_downsampled, 
         wm_slice_dce = np.rot90(wm_mask_downsampled[:, :, i])
         cortical_gm_slice_dce = np.rot90(cortical_gm_mask_downsampled[:, :, i])
         subcortical_gm_slice_dce = np.rot90(subcortical_gm_mask_downsampled[:, :, i])
+        gm_brainstem_slice_dce = np.rot90(gm_brainstem_mask_downsampled[:, :, i])
+        gm_cerebellum_slice_dce = np.rot90(gm_cerebellum_mask_downsampled[:, :, i])
+        wm_cerebellum_slice_dce = np.rot90(wm_cerebellum_mask_downsampled[:, :, i])
+        wm_cc_slice_dce = np.rot90(wm_cc_mask_downsampled[:, :, i])
 
+        # Create color overlay based on the same color scheme used in other plots
         color_overlay_dce = np.zeros((*dce_slice.shape, 3))
-        color_overlay_dce[:, :, 2] = wm_slice_dce  # Blue channel for white matter
 
-        # Assign bright red to cortical gray matter
-        color_overlay_dce[:, :, 0][cortical_gm_slice_dce == 1] = 1.0  # Bright red
+        # White Matter: Blue
+        color_overlay_dce[:, :, 2][wm_slice_dce == 1] = 1.0
 
-        # Assign dark red to subcortical gray matter
-        color_overlay_dce[:, :, 0][subcortical_gm_slice_dce == 1] = 0.5  # Darker red
+        # Cortical GM: Bright Red
+        color_overlay_dce[:, :, 0][cortical_gm_slice_dce == 1] = 1.0
+
+        # Subcortical GM: Dark Red
+        color_overlay_dce[:, :, 0][subcortical_gm_slice_dce == 1] = 0.5
+
+        # Brainstem GM: Orange (red + green)
+        color_overlay_dce[:, :, 0][gm_brainstem_slice_dce == 1] = 1.0
+        color_overlay_dce[:, :, 1][gm_brainstem_slice_dce == 1] = 0.5
+
+        # Cerebellum GM: Yellow (red + green)
+        color_overlay_dce[:, :, 0][gm_cerebellum_slice_dce == 1] = 1.0
+        color_overlay_dce[:, :, 1][gm_cerebellum_slice_dce == 1] = 1.0
+
+        # Cerebellum WM: Cyan (green + blue)
+        color_overlay_dce[:, :, 1][wm_cerebellum_slice_dce == 1] = 1.0
+        color_overlay_dce[:, :, 2][wm_cerebellum_slice_dce == 1] = 1.0
+
+        # Corpus Callosum WM: Magenta (red + blue)
+        color_overlay_dce[:, :, 0][wm_cc_slice_dce == 1] = 1.0
+        color_overlay_dce[:, :, 2][wm_cc_slice_dce == 1] = 1.0
 
         ax_dce = axes[row, col]
         ax_dce.imshow(dce_slice, cmap='gray', alpha=1)
@@ -347,14 +627,19 @@ def plot_dce_grid(dce_image, wm_mask_downsampled, cortical_gm_mask_downsampled, 
         ax_dce.set_title(f'Slice {i+1}')
         ax_dce.axis('off')
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(image_directory, 'AI', 'Tissue functions', f'AI_Tissue_slice_{i+1}.png'))
+    plt.tight_layout()
+    os.makedirs(os.path.join(image_directory, 'AI', 'Tissue functions'), exist_ok=True)
+
+    # Optionally save the figure as a grid image if desired
+    plt.savefig(os.path.join(image_directory, 'AI', 'Tissue functions', 'AI_Tissue_grid.png'), dpi=300)
+
     if not turbo_mode:
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
         close_plot_after_delay(3, fig)
         plt.show()
     else:
         plt.close(fig)
+
 
 def patlak_analysis_plotting(c_tissue, c_input, time):
     frame_no = len(time)
@@ -427,99 +712,216 @@ def find_baseline_point_advanced(y_data, fs=15, cutoff=4.0, order=3, radius=10):
     
     return baseline_point
 
-def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2, 
-                         wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce, 
-                         avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
-                         x_patlak_wm, y_patlak_wm, Ki_wm, lambda_wm, 
-                         x_patlak_cortical_gm, y_patlak_cortical_gm, Ki_cortical_gm, lambda_cortical_gm,
-                         x_patlak_subcortical_gm, y_patlak_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm, 
-                         slice_idx, save_path=None, boundary_mask=None, boundary_ctc=None, 
-                         x_patlak_boundary=None, y_patlak_boundary=None, Ki_boundary=None, lambda_boundary=None, 
-                         included_wm=None, included_cortical_gm=None, included_subcortical_gm=None, included_boundary=None):
-    
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from skimage.transform import resize
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from skimage.transform import resize
+
+def plot_ctcs_and_patlak(
+    t2_img_slice, dce_img_slice,
+    wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
+    wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
+    avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
+    x_patlak_wm, y_patlak_wm, Ki_wm, lambda_wm,
+    x_patlak_cortical_gm, y_patlak_cortical_gm, Ki_cortical_gm, lambda_cortical_gm,
+    x_patlak_subcortical_gm, y_patlak_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm,
+    slice_idx, save_path=None, boundary_mask=None, boundary_ctc=None,
+    x_patlak_boundary=None, y_patlak_boundary=None, Ki_boundary=None, lambda_boundary=None,
+    included_wm=None, included_cortical_gm=None, included_subcortical_gm=None, included_boundary=None,
+    gm_brainstem_ctc=None, x_patlak_gm_brainstem=None, y_patlak_gm_brainstem=None, Ki_gm_brainstem=None, lambda_gm_brainstem=None, included_gm_brainstem=None,
+    gm_cerebellum_ctc=None, x_patlak_gm_cerebellum=None, y_patlak_gm_cerebellum=None, Ki_gm_cerebellum=None, lambda_gm_cerebellum=None, included_gm_cerebellum=None,
+    wm_cerebellum_ctc=None, x_patlak_wm_cerebellum=None, y_patlak_wm_cerebellum=None, Ki_wm_cerebellum=None, lambda_wm_cerebellum=None, included_wm_cerebellum=None,
+    wm_cc_ctc=None, x_patlak_wm_cc=None, y_patlak_wm_cc=None, Ki_wm_cc=None, lambda_wm_cc=None, included_wm_cc=None,
+    gm_brainstem_mask_t2=None, gm_brainstem_mask_dce=None,
+    gm_cerebellum_mask_t2=None, gm_cerebellum_mask_dce=None,
+    wm_cerebellum_mask_t2=None, wm_cerebellum_mask_dce=None,
+    wm_cc_mask_t2=None, wm_cc_mask_dce=None
+):
+    """
+    Plots the T2 and DCE slices with tissue masks overlaid, the concentration-time curves (CTCs),
+    and the Patlak plots for various tissue types, including the new tissue types:
+    gm_brainstem, gm_cerebellum, wm_cerebellum, and wm_cc.
+
+    Parameters:
+    - t2_img_slice: 2D numpy array of the T2 image slice.
+    - dce_img_slice: 2D numpy array of the DCE image slice at a specific time point.
+    - *_mask_t2: 2D numpy arrays of masks in T2 space.
+    - *_mask_dce: 2D numpy arrays of masks in DCE space.
+    - avg_*_ctc: 1D numpy arrays of average CTCs for each tissue type.
+    - x_patlak_*, y_patlak_*: 1D numpy arrays for Patlak plot data.
+    - Ki_*, lambda_*: Ki and lambda values for each tissue type.
+    - included_*: Boolean arrays indicating which points were included in the Patlak fit.
+    - slice_idx: Integer indicating the slice number.
+    - save_path: Path to save the plot image.
+    - boundary_mask: 2D numpy array of the boundary mask.
+    - boundary_ctc: 1D numpy array of the boundary CTC.
+    - Additional parameters for the new tissue types.
+
+    Returns:
+    - None
+    """
+
+    # Function to resize and binarize masks
+    def resize_and_binarize(mask, target_shape):
+        resized_mask = resize(mask.astype(float), target_shape, order=0, preserve_range=True, anti_aliasing=False)
+        binarized_mask = (resized_mask > 0.5).astype(float)
+        return binarized_mask
+
     # Adjust image intensity to prevent overexposure
-    # Clip intensities to the 100th percentile to avoid extreme bright pixels
     t2_vmin, t2_vmax = np.percentile(t2_img_slice, (1, 99))
     dce_vmin, dce_vmax = np.percentile(dce_img_slice, (1, 99))
-    
-    # Normalize images within the specified intensity range
     t2_img_slice_norm = np.clip(t2_img_slice, t2_vmin, t2_vmax)
     t2_img_slice_norm = (t2_img_slice_norm - t2_vmin) / (t2_vmax - t2_vmin)
     dce_img_slice_norm = np.clip(dce_img_slice, dce_vmin, dce_vmax)
     dce_img_slice_norm = (dce_img_slice_norm - dce_vmin) / (dce_vmax - dce_vmin)
 
-    # Resize the masks to match the T2 and DCE image slice sizes
-    wm_mask_resized_t2 = resize(wm_mask_t2, t2_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-    cortical_gm_mask_resized_t2 = resize(cortical_gm_mask_t2, t2_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-    subcortical_gm_mask_resized_t2 = resize(subcortical_gm_mask_t2, t2_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-    wm_mask_resized_dce = resize(wm_mask_dce, dce_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-    cortical_gm_mask_resized_dce = resize(cortical_gm_mask_dce, dce_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-    subcortical_gm_mask_resized_dce = resize(subcortical_gm_mask_dce, dce_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
+    # Resize and binarize all masks
+    wm_mask_resized_t2 = resize_and_binarize(wm_mask_t2, t2_img_slice.shape)
+    cortical_gm_mask_resized_t2 = resize_and_binarize(cortical_gm_mask_t2, t2_img_slice.shape)
+    subcortical_gm_mask_resized_t2 = resize_and_binarize(subcortical_gm_mask_t2, t2_img_slice.shape)
+    wm_mask_resized_dce = resize_and_binarize(wm_mask_dce, dce_img_slice.shape)
+    cortical_gm_mask_resized_dce = resize_and_binarize(cortical_gm_mask_dce, dce_img_slice.shape)
+    subcortical_gm_mask_resized_dce = resize_and_binarize(subcortical_gm_mask_dce, dce_img_slice.shape)
 
-    # Create color overlays
-    color_overlay_t2 = np.zeros((*t2_img_slice.shape, 4))  # RGBA channels
-    color_overlay_dce = np.zeros((*dce_img_slice.shape, 4))  # RGBA channels
+    # Resize and binarize new tissue masks if provided
+    if gm_brainstem_mask_t2 is not None:
+        gm_brainstem_mask_resized_t2 = resize_and_binarize(gm_brainstem_mask_t2, t2_img_slice.shape)
+    else:
+        gm_brainstem_mask_resized_t2 = np.zeros_like(t2_img_slice)
+    if gm_brainstem_mask_dce is not None:
+        gm_brainstem_mask_resized_dce = resize_and_binarize(gm_brainstem_mask_dce, dce_img_slice.shape)
+    else:
+        gm_brainstem_mask_resized_dce = np.zeros_like(dce_img_slice)
+    if gm_cerebellum_mask_t2 is not None:
+        gm_cerebellum_mask_resized_t2 = resize_and_binarize(gm_cerebellum_mask_t2, t2_img_slice.shape)
+    else:
+        gm_cerebellum_mask_resized_t2 = np.zeros_like(t2_img_slice)
+    if gm_cerebellum_mask_dce is not None:
+        gm_cerebellum_mask_resized_dce = resize_and_binarize(gm_cerebellum_mask_dce, dce_img_slice.shape)
+    else:
+        gm_cerebellum_mask_resized_dce = np.zeros_like(dce_img_slice)
+    if wm_cerebellum_mask_t2 is not None:
+        wm_cerebellum_mask_resized_t2 = resize_and_binarize(wm_cerebellum_mask_t2, t2_img_slice.shape)
+    else:
+        wm_cerebellum_mask_resized_t2 = np.zeros_like(t2_img_slice)
+    if wm_cerebellum_mask_dce is not None:
+        wm_cerebellum_mask_resized_dce = resize_and_binarize(wm_cerebellum_mask_dce, dce_img_slice.shape)
+    else:
+        wm_cerebellum_mask_resized_dce = np.zeros_like(dce_img_slice)
+    if wm_cc_mask_t2 is not None:
+        wm_cc_mask_resized_t2 = resize_and_binarize(wm_cc_mask_t2, t2_img_slice.shape)
+    else:
+        wm_cc_mask_resized_t2 = np.zeros_like(t2_img_slice)
+    if wm_cc_mask_dce is not None:
+        wm_cc_mask_resized_dce = resize_and_binarize(wm_cc_mask_dce, dce_img_slice.shape)
+    else:
+        wm_cc_mask_resized_dce = np.zeros_like(dce_img_slice)
 
-    # Set blue channel for white matter
-    color_overlay_t2[..., 2] = wm_mask_resized_t2  # Blue channel
-    color_overlay_dce[..., 2] = wm_mask_resized_dce  # Blue channel
+    # Define specific colors for each tissue type (RGBA)
+    colors_t2 = {
+        'white_matter': [0, 0, 1, 0.5],            # Blue
+        'cortical_gm': [1, 0, 0, 0.5],            # Red
+        'subcortical_gm': [0.5, 0, 0, 0.5],       # Dark Red
+        'gm_brainstem': [1, 0.5, 0, 0.5],         # Orange
+        'gm_cerebellum': [1, 1, 0, 0.5],          # Yellow
+        'wm_cerebellum': [0, 1, 1, 0.5],          # Cyan
+        'wm_cc': [1, 0, 1, 0.5],                   # Magenta
+        'boundary': [0, 1, 0, 0.5]                 # Green
+    }
 
-    # Assign bright red to cortical gray matter
-    color_overlay_t2[..., 0][cortical_gm_mask_resized_t2 == 1] = 1.0  # Bright red
-    color_overlay_dce[..., 0][cortical_gm_mask_resized_dce == 1] = 1.0  # Bright red
+    colors_dce = {
+        'white_matter': [0, 0, 1, 0.5],            # Blue
+        'cortical_gm': [1, 0, 0, 0.5],            # Red
+        'subcortical_gm': [0.5, 0, 0, 0.5],       # Dark Red
+        'gm_brainstem': [1, 0.5, 0, 0.5],         # Orange
+        'gm_cerebellum': [1, 1, 0, 0.5],          # Yellow
+        'wm_cerebellum': [0, 1, 1, 0.5],          # Cyan
+        'wm_cc': [1, 0, 1, 0.5],                   # Magenta
+        'boundary': [0, 1, 0, 0.5]                 # Green
+    }
 
-    # Assign dark red to subcortical gray matter
-    color_overlay_t2[..., 0][subcortical_gm_mask_resized_t2 == 1] = 0.5  # Darker red
-    color_overlay_dce[..., 0][subcortical_gm_mask_resized_dce == 1] = 0.5  # Darker red
-
-    # Set alpha channel
-    color_overlay_t2[..., 3] = (cortical_gm_mask_resized_t2 + subcortical_gm_mask_resized_t2 + wm_mask_resized_t2) * 0.5
-    color_overlay_dce[..., 3] = (cortical_gm_mask_resized_dce + subcortical_gm_mask_resized_dce + wm_mask_resized_dce) * 0.5
-
-    if boundary_mask is not None:
-        boundary_mask_resized_t2 = resize(boundary_mask, t2_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-        boundary_mask_resized_dce = resize(boundary_mask, dce_img_slice.shape, order=0, preserve_range=True, anti_aliasing=False)
-        # Enhance green channel and alpha for boundary in T2
-        color_overlay_t2[..., 1] += boundary_mask_resized_t2  # Enhance green channel
-        color_overlay_t2[..., 3] += boundary_mask_resized_t2 * 0.5  # Adjust alpha
-        # Enhance green channel and alpha for boundary in DCE
-        color_overlay_dce[..., 1] += boundary_mask_resized_dce  # Enhance green channel
-        color_overlay_dce[..., 3] += boundary_mask_resized_dce * 0.5  # Adjust alpha
-
-    fig = plt.figure(figsize=(8, 18))
+    # Create the figure and adjust the layout
+    fig = plt.figure(figsize=(14, 18))
     gs = GridSpec(3, 2, figure=fig, height_ratios=[1, 1, 1], width_ratios=[1, 1])
+    gs.update(hspace=0.4)  # Adjust vertical spacing between subplots
 
     # Top row with two side-by-side plots
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
 
+    # Function to overlay masks with specific colors
+    def overlay_mask(ax, mask, color):
+        """
+        Overlays a mask on the given axis with the specified color.
+
+        Parameters:
+        - ax: Matplotlib axis to overlay the mask.
+        - mask: 2D numpy array of the mask (binary).
+        - color: List or tuple with RGBA values.
+
+        Returns:
+        - None
+        """
+        if mask.any():
+            # Create an RGBA image where the mask is colored
+            rgba_mask = np.zeros((*mask.shape, 4))
+            rgba_mask[..., :3] = color[:3]  # RGB channels
+            rgba_mask[..., 3] = color[3] * mask  # Alpha channel scaled by mask
+            ax.imshow(np.rot90(rgba_mask), interpolation='none')
+
     # T2 image with masks
-    ax1.imshow(np.rot90(t2_img_slice_norm), cmap='gray', vmin=0, vmax=2)
-    ax1.imshow(np.rot90(color_overlay_t2), interpolation='none')
+    ax1.imshow(np.rot90(t2_img_slice_norm), cmap='gray', vmin=0, vmax=1)
+    # Overlay each mask with its specific color
+    overlay_mask(ax1, wm_mask_resized_t2, colors_t2['white_matter'])
+    overlay_mask(ax1, cortical_gm_mask_resized_t2, colors_t2['cortical_gm'])
+    overlay_mask(ax1, subcortical_gm_mask_resized_t2, colors_t2['subcortical_gm'])
+    overlay_mask(ax1, gm_brainstem_mask_resized_t2, colors_t2['gm_brainstem'])
+    overlay_mask(ax1, gm_cerebellum_mask_resized_t2, colors_t2['gm_cerebellum'])
+    overlay_mask(ax1, wm_cerebellum_mask_resized_t2, colors_t2['wm_cerebellum'])
+    overlay_mask(ax1, wm_cc_mask_resized_t2, colors_t2['wm_cc'])
+    if boundary_mask is not None:
+        boundary_resized_t2 = resize_and_binarize(boundary_mask, t2_img_slice.shape)
+        overlay_mask(ax1, boundary_resized_t2, colors_t2['boundary'])
+
     ax1.set_title(f'T2 Slice {slice_idx} with Masks')
     ax1.axis('off')
 
     # DCE image with masks
-    ax2.imshow(np.rot90(dce_img_slice_norm), cmap='gray', vmin=0, vmax=2)
-    ax2.imshow(np.rot90(color_overlay_dce), interpolation='none')
+    ax2.imshow(np.rot90(dce_img_slice_norm), cmap='gray', vmin=0, vmax=1)
+    # Overlay each mask with its specific color
+    overlay_mask(ax2, wm_mask_resized_dce, colors_dce['white_matter'])
+    overlay_mask(ax2, cortical_gm_mask_resized_dce, colors_dce['cortical_gm'])
+    overlay_mask(ax2, subcortical_gm_mask_resized_dce, colors_dce['subcortical_gm'])
+    overlay_mask(ax2, gm_brainstem_mask_resized_dce, colors_dce['gm_brainstem'])
+    overlay_mask(ax2, gm_cerebellum_mask_resized_dce, colors_dce['gm_cerebellum'])
+    overlay_mask(ax2, wm_cerebellum_mask_resized_dce, colors_dce['wm_cerebellum'])
+    overlay_mask(ax2, wm_cc_mask_resized_dce, colors_dce['wm_cc'])
+    if boundary_mask is not None:
+        boundary_resized_dce = resize_and_binarize(boundary_mask, dce_img_slice.shape)
+        overlay_mask(ax2, boundary_resized_dce, colors_dce['boundary'])
+
     ax2.set_title(f'DCE Slice {slice_idx} with Masks')
     ax2.axis('off')
 
-    # Remove the axes and bounding box around the top plots
-    for ax in [ax1, ax2]:
-        ax.axis('off')
-        ax.get_xaxis().set_visible(False)
-        ax.get_yaxis().set_visible(False)
-        ax.set_frame_on(False)
-
     # CTC plot in the middle row
     ax3 = fig.add_subplot(gs[1, :])
-    ax3.plot(avg_wm_ctc, label='White Matter CTC', color='blue')
-    ax3.plot(avg_cortical_gm_ctc, label='Cortical Gray Matter CTC', color='red')
-    ax3.plot(avg_subcortical_gm_ctc, label='Subcortical Gray Matter CTC', color='darkred')
+    ax3.plot(avg_wm_ctc, label='Cortical WM', color='blue')
+    ax3.plot(avg_cortical_gm_ctc, label='Cortical GM', color='red')
+    ax3.plot(avg_subcortical_gm_ctc, label='Subcortical GM', color='darkred')
+    if gm_brainstem_ctc is not None and gm_brainstem_ctc.size > 0:
+        ax3.plot(gm_brainstem_ctc, label='Brainstem', color='orange')
+    if gm_cerebellum_ctc is not None and gm_cerebellum_ctc.size > 0:
+        ax3.plot(gm_cerebellum_ctc, label='Cerebellar GM', color='yellow')
+    if wm_cerebellum_ctc is not None and wm_cerebellum_ctc.size > 0:
+        ax3.plot(wm_cerebellum_ctc, label='Cerebellar WM', color='cyan')
     if boundary_ctc is not None and boundary_ctc.size > 0:
-        ax3.plot(boundary_ctc, label='Boundary CTC', color='green')
-    ax3.set_title('Concentration-Time Curves')
+        ax3.plot(boundary_ctc, label='Boundary', color='green')
+    ax3.set_title('Concentration functions')
     ax3.legend(loc='upper right')
     ax3.grid(True)
 
@@ -528,7 +930,7 @@ def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_ma
 
     # Plot White Matter Patlak data if available
     if not np.isnan(Ki_wm):
-        ax4.scatter(x_patlak_wm[included_wm], y_patlak_wm[included_wm], label='White Matter', color='blue', marker='o')
+        ax4.scatter(x_patlak_wm[included_wm], y_patlak_wm[included_wm], label='Cortical WM', color='blue', marker='o')
         ax4.scatter(x_patlak_wm[~included_wm], y_patlak_wm[~included_wm], facecolors='none', edgecolors='blue')
         ax4.plot(x_patlak_wm, lambda_wm / 100 + (Ki_wm / 6000) * x_patlak_wm, color='blue', linestyle='--')
 
@@ -544,65 +946,83 @@ def plot_ctcs_and_patlak(t2_img_slice, dce_img_slice, wm_mask_t2, cortical_gm_ma
         ax4.scatter(x_patlak_subcortical_gm[~included_subcortical_gm], y_patlak_subcortical_gm[~included_subcortical_gm], facecolors='none', edgecolors='darkred')
         ax4.plot(x_patlak_subcortical_gm, lambda_subcortical_gm / 100 + (Ki_subcortical_gm / 6000) * x_patlak_subcortical_gm, color='darkred', linestyle='--')
 
+    # Plot GM Brainstem Patlak data if available
+    if gm_brainstem_ctc is not None and not np.isnan(Ki_gm_brainstem):
+        ax4.scatter(x_patlak_gm_brainstem[included_gm_brainstem], y_patlak_gm_brainstem[included_gm_brainstem], label='Brainstem', color='orange', marker='o')
+        ax4.scatter(x_patlak_gm_brainstem[~included_gm_brainstem], y_patlak_gm_brainstem[~included_gm_brainstem], facecolors='none', edgecolors='orange')
+        ax4.plot(x_patlak_gm_brainstem, lambda_gm_brainstem / 100 + (Ki_gm_brainstem / 6000) * x_patlak_gm_brainstem, color='orange', linestyle='--')
+
+    # Plot GM Cerebellum Patlak data if available
+    if gm_cerebellum_ctc is not None and not np.isnan(Ki_gm_cerebellum):
+        ax4.scatter(x_patlak_gm_cerebellum[included_gm_cerebellum], y_patlak_gm_cerebellum[included_gm_cerebellum], label='Cerebellar GM', color='gold', marker='o')
+        ax4.scatter(x_patlak_gm_cerebellum[~included_gm_cerebellum], y_patlak_gm_cerebellum[~included_gm_cerebellum], facecolors='none', edgecolors='gold')
+        ax4.plot(x_patlak_gm_cerebellum, lambda_gm_cerebellum / 100 + (Ki_gm_cerebellum / 6000) * x_patlak_gm_cerebellum, color='gold', linestyle='--')
+
+    # Plot WM Cerebellum Patlak data if available
+    if wm_cerebellum_ctc is not None and not np.isnan(Ki_wm_cerebellum):
+        ax4.scatter(x_patlak_wm_cerebellum[included_wm_cerebellum], y_patlak_wm_cerebellum[included_wm_cerebellum], label='Cerebellar WM', color='cyan', marker='o')
+        ax4.scatter(x_patlak_wm_cerebellum[~included_wm_cerebellum], y_patlak_wm_cerebellum[~included_wm_cerebellum], facecolors='none', edgecolors='cyan')
+        ax4.plot(x_patlak_wm_cerebellum, lambda_wm_cerebellum / 100 + (Ki_wm_cerebellum / 6000) * x_patlak_wm_cerebellum, color='cyan', linestyle='--')
+
     # Plot Boundary Patlak data if available
     if boundary_ctc is not None and not np.isnan(Ki_boundary):
         ax4.scatter(x_patlak_boundary[included_boundary], y_patlak_boundary[included_boundary], label='Boundary', color='green', marker='o')
         ax4.scatter(x_patlak_boundary[~included_boundary], y_patlak_boundary[~included_boundary], facecolors='none', edgecolors='green')
         ax4.plot(x_patlak_boundary, lambda_boundary / 100 + (Ki_boundary / 6000) * x_patlak_boundary, color='green', linestyle='--')
 
-    ax4.set_title('Patlak Plot')
-    ax4.legend(loc='lower right')
+    ax4.set_title('Patlak Fit')
+    ax4.legend(loc='lower left')
     ax4.grid(True)
 
     # Compile fit text for display
     fit_text = ""
     if not np.isnan(Ki_wm):
-        fit_text += f"White Matter: Ki = {Ki_wm:.5f} ml/100g/min, λ = {lambda_wm:.5f} ml/100g\n"
+        fit_text += f"Cortical WM:    Ki = {Ki_wm:.5f} ml/100g/min, λ = {lambda_wm:.5f} ml/100g\n"
     if not np.isnan(Ki_cortical_gm):
-        fit_text += f"Cortical GM: Ki = {Ki_cortical_gm:.5f} ml/100g/min, λ = {lambda_cortical_gm:.5f} ml/100g\n"
+        fit_text += f"Cortical GM:    Ki = {Ki_cortical_gm:.5f} ml/100g/min, λ = {lambda_cortical_gm:.5f} ml/100g\n"
     if not np.isnan(Ki_subcortical_gm):
         fit_text += f"Subcortical GM: Ki = {Ki_subcortical_gm:.5f} ml/100g/min, λ = {lambda_subcortical_gm:.5f} ml/100g\n"
-    if boundary_ctc is not None and not np.isnan(Ki_boundary):
-        fit_text += f"Boundary: Ki = {Ki_boundary:.5f} ml/100g/min, λ = {lambda_boundary:.5f} ml/100g"
+    if not np.isnan(Ki_gm_brainstem):
+        fit_text += f"Brainstem:      Ki = {Ki_gm_brainstem:.5f} ml/100g/min, λ = {lambda_gm_brainstem:.5f} ml/100g\n"
+    if not np.isnan(Ki_gm_cerebellum):
+        fit_text += f"Cerebellar GM:  Ki = {Ki_gm_cerebellum:.5f} ml/100g/min, λ = {lambda_gm_cerebellum:.5f} ml/100g\n"
+    if not np.isnan(Ki_wm_cerebellum):
+        fit_text += f"Cerebellar WM:  Ki = {Ki_wm_cerebellum:.5f} ml/100g/min, λ = {lambda_wm_cerebellum:.5f} ml/100g\n"
+    if not np.isnan(Ki_boundary):
+        fit_text += f"Boundary:       Ki = {Ki_boundary:.5f} ml/100g/min, λ = {lambda_boundary:.5f} ml/100g"
 
-    # Display fit text
-    ax4.text(0.5, -0.4, fit_text.strip(), transform=ax4.transAxes, fontsize=10, color='black', ha='center', bbox=dict(facecolor='white', alpha=0.5))
+    # Adjust the position of the fit text to eliminate vertical whitespace and prevent cutoff
+    ax4.text(0.5, -0.2, fit_text.strip(), transform=ax4.transAxes, fontsize=10,
+             color='black', ha='center', va='top', bbox=dict(facecolor='white', alpha=0.7))
+
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
-    if not turbo_mode:
-        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-        close_plot_after_delay(1, fig)
-        plt.show()
-    else:
-        plt.close(fig)
 
-def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
-                                 wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
-                                 T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory,
-                                 dce_path, boundary=False, compute_per_voxel_Ki=False):
+
+def compute_and_plot_ctcs_median(
+    data_4d, t2_img,
+    wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
+    wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
+    T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory,
+    dce_path, boundary=False, compute_per_voxel_Ki=False, compute_per_voxel_CBF=False,
+    gm_brainstem_mask_t2=None, gm_brainstem_mask_dce=None,
+    gm_cerebellum_mask_t2=None, gm_cerebellum_mask_dce=None,
+    wm_cerebellum_mask_t2=None, wm_cerebellum_mask_dce=None,
+    wm_cc_mask_t2=None, wm_cc_mask_dce=None
+):
     """
     Computes median CTCs for different tissue types across slices, performs Patlak analysis,
     saves the results, and generates plots. Also computes the total median for the entire tissue volume.
-    Optionally computes K_i per voxel and generates overlay images and a NIfTI file.
-
-    Parameters:
-    - data_4d: 4D numpy array of DCE data.
-    - t2_img: 3D numpy array of T2-weighted image.
-    - wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2: 3D boolean arrays of tissue masks in T2 space.
-    - wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce: 3D boolean arrays of tissue masks in DCE space.
-    - T1_matrix, M0_matrix: 3D numpy arrays of T1 and M0 values.
-    - analysis_directory: Path to save analysis results.
-    - time_points_s: 1D numpy array of time points in seconds.
-    - image_directory: Path to save images.
-    - dce_path: Path to the DCE NIfTI file.
-    - boundary: Boolean indicating whether to compute boundary region.
-    - compute_per_voxel_Ki: Boolean indicating whether to compute K_i per voxel.
-
-    Returns:
-    - None
+    Optionally computes K_i and CBF per voxel and generates overlay images and NIfTI files.
     """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+    from scipy.ndimage import binary_dilation
 
     n_slices = t2_img.shape[2]
 
@@ -620,16 +1040,38 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
     Ki_wm_list = []
     Ki_cortical_gm_list = []
     Ki_subcortical_gm_list = []
+    Ki_gm_brainstem_list = []
+    Ki_gm_cerebellum_list = []
+    Ki_wm_cerebellum_list = []
+    Ki_wm_cc_list = []
     Ki_boundary_list = []
 
     # Initialize lists to collect all valid CTCs across slices
     wm_ctcs_total = []
     cortical_gm_ctcs_total = []
     subcortical_gm_ctcs_total = []
+    gm_brainstem_ctcs_total = []
+    gm_cerebellum_ctcs_total = []
+    wm_cerebellum_ctcs_total = []
+    wm_cc_ctcs_total = []
     boundary_ctcs_total = []
 
-    # Initialize an empty 3D array to store K_i values per voxel
-    Ki_per_voxel = np.full(data_4d.shape[:3], np.nan)
+    # Initialize empty 3D arrays to store K_i values per voxel
+    Ki_wm_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_cortical_gm_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_subcortical_gm_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_gm_brainstem_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_gm_cerebellum_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_wm_cerebellum_image = np.full(data_4d.shape[:3], np.nan)
+    Ki_wm_cc_image = np.full(data_4d.shape[:3], np.nan)
+    if boundary:
+        Ki_boundary_image = np.full(data_4d.shape[:3], np.nan)
+
+    # Initialize per-voxel Ki and CBF arrays if needed
+    if compute_per_voxel_Ki:
+        Ki_per_voxel = np.full(data_4d.shape[:3], np.nan)
+    if compute_per_voxel_CBF:
+        CBF_per_voxel = np.full(data_4d.shape[:3], np.nan)
 
     # Add tqdm progress bar to the loop
     for i in tqdm(range(n_slices), desc="Processing slices"):
@@ -637,9 +1079,18 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         wm_slice_t2 = wm_mask_t2[:, :, i]
         cortical_gm_slice_t2 = cortical_gm_mask_t2[:, :, i]
         subcortical_gm_slice_t2 = subcortical_gm_mask_t2[:, :, i]
+        gm_brainstem_slice_t2 = gm_brainstem_mask_t2[:, :, i]
+        gm_cerebellum_slice_t2 = gm_cerebellum_mask_t2[:, :, i]
+        wm_cerebellum_slice_t2 = wm_cerebellum_mask_t2[:, :, i]
+        wm_cc_slice_t2 = wm_cc_mask_t2[:, :, i]
+
         wm_slice_dce = wm_mask_dce[:, :, i]
         cortical_gm_slice_dce = cortical_gm_mask_dce[:, :, i]
         subcortical_gm_slice_dce = subcortical_gm_mask_dce[:, :, i]
+        gm_brainstem_slice_dce = gm_brainstem_mask_dce[:, :, i]
+        gm_cerebellum_slice_dce = gm_cerebellum_mask_dce[:, :, i]
+        wm_cerebellum_slice_dce = wm_cerebellum_mask_dce[:, :, i]
+        wm_cc_slice_dce = wm_cc_mask_dce[:, :, i]
 
         # Combine cortical and subcortical GM masks for boundary calculation
         gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
@@ -654,19 +1105,27 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
             boundary_mask = None
             boundary_indices = []
 
-        # Find voxel indices for white and gray matter in the slice
+        # Find voxel indices for each tissue type in the slice
         wm_indices = np.argwhere(wm_slice_dce)
         cortical_gm_indices = np.argwhere(cortical_gm_slice_dce)
         subcortical_gm_indices = np.argwhere(subcortical_gm_slice_dce)
+        gm_brainstem_indices = np.argwhere(gm_brainstem_slice_dce)
+        gm_cerebellum_indices = np.argwhere(gm_cerebellum_slice_dce)
+        wm_cerebellum_indices = np.argwhere(wm_cerebellum_slice_dce)
+        wm_cc_indices = np.argwhere(wm_cc_slice_dce)
 
         # Initialize lists to store valid CTCs
         wm_ctcs = []
         cortical_gm_ctcs = []
         subcortical_gm_ctcs = []
+        gm_brainstem_ctcs = []
+        gm_cerebellum_ctcs = []
+        wm_cerebellum_ctcs = []
+        wm_cc_ctcs = []
         boundary_ctcs = []
 
         # Function to process CTCs for a given set of indices
-        def process_ctcs(indices, label):
+        def process_ctcs(indices):
             ctcs = []
             for (x, y) in indices:
                 voxel_time_course = data_4d[x, y, i, :]
@@ -683,18 +1142,26 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
             return ctcs
 
         # Process CTCs for each tissue type
-        wm_ctcs = process_ctcs(wm_indices, 'White Matter')
-        cortical_gm_ctcs = process_ctcs(cortical_gm_indices, 'Cortical Gray Matter')
-        subcortical_gm_ctcs = process_ctcs(subcortical_gm_indices, 'Subcortical Gray Matter')
+        wm_ctcs = process_ctcs(wm_indices)
+        cortical_gm_ctcs = process_ctcs(cortical_gm_indices)
+        subcortical_gm_ctcs = process_ctcs(subcortical_gm_indices)
+        gm_brainstem_ctcs = process_ctcs(gm_brainstem_indices)
+        gm_cerebellum_ctcs = process_ctcs(gm_cerebellum_indices)
+        wm_cerebellum_ctcs = process_ctcs(wm_cerebellum_indices)
+        wm_cc_ctcs = process_ctcs(wm_cc_indices)
 
         # Process CTCs for boundary if required
-        if boundary and boundary_indices.size > 0:
-            boundary_ctcs = process_ctcs(boundary_indices, 'Boundary')
+        if boundary and len(boundary_indices) > 0:
+            boundary_ctcs = process_ctcs(boundary_indices)
 
         # Add the valid CTCs from this slice to the total lists
         wm_ctcs_total.extend(wm_ctcs)
         cortical_gm_ctcs_total.extend(cortical_gm_ctcs)
         subcortical_gm_ctcs_total.extend(subcortical_gm_ctcs)
+        gm_brainstem_ctcs_total.extend(gm_brainstem_ctcs)
+        gm_cerebellum_ctcs_total.extend(gm_cerebellum_ctcs)
+        wm_cerebellum_ctcs_total.extend(wm_cerebellum_ctcs)
+        wm_cc_ctcs_total.extend(wm_cc_ctcs)
         if boundary and boundary_ctcs:
             boundary_ctcs_total.extend(boundary_ctcs)
 
@@ -702,7 +1169,14 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         avg_wm_ctc = np.median(wm_ctcs, axis=0) if wm_ctcs else np.array([])
         avg_cortical_gm_ctc = np.median(cortical_gm_ctcs, axis=0) if cortical_gm_ctcs else np.array([])
         avg_subcortical_gm_ctc = np.median(subcortical_gm_ctcs, axis=0) if subcortical_gm_ctcs else np.array([])
-        avg_boundary_ctc = np.median(boundary_ctcs, axis=0) if boundary_ctcs else np.array([])
+        avg_gm_brainstem_ctc = np.median(gm_brainstem_ctcs, axis=0) if gm_brainstem_ctcs else np.array([])
+        avg_gm_cerebellum_ctc = np.median(gm_cerebellum_ctcs, axis=0) if gm_cerebellum_ctcs else np.array([])
+        avg_wm_cerebellum_ctc = np.median(wm_cerebellum_ctcs, axis=0) if wm_cerebellum_ctcs else np.array([])
+        avg_wm_cc_ctc = np.median(wm_cc_ctcs, axis=0) if wm_cc_ctcs else np.array([])
+        if boundary and boundary_ctcs:
+            avg_boundary_ctc = np.median(boundary_ctcs, axis=0)
+        else:
+            avg_boundary_ctc = np.array([])
 
         # Save the tissue concentration curves as .npy files
         save_dir_ctc = os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'AI')
@@ -711,19 +1185,23 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         np.save(os.path.join(save_dir_ctc, f'wm_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_wm_ctc)
         np.save(os.path.join(save_dir_ctc, f'cortical_gm_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_cortical_gm_ctc)
         np.save(os.path.join(save_dir_ctc, f'subcortical_gm_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_subcortical_gm_ctc)
+        np.save(os.path.join(save_dir_ctc, f'gm_brainstem_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_gm_brainstem_ctc)
+        np.save(os.path.join(save_dir_ctc, f'gm_cerebellum_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_gm_cerebellum_ctc)
+        np.save(os.path.join(save_dir_ctc, f'wm_cerebellum_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_wm_cerebellum_ctc)
+        np.save(os.path.join(save_dir_ctc, f'wm_cc_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_wm_cc_ctc)
         if boundary and avg_boundary_ctc.size > 0:
-            np.save(os.path.join(save_dir_ctc, f'bo_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_boundary_ctc)
+            np.save(os.path.join(save_dir_ctc, f'boundary_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_boundary_ctc)
 
         # Ensure the CTCs and C_a_full have the same length
         min_length = len(C_a_full)
-        if avg_wm_ctc.size > 0:
-            min_length = min(min_length, avg_wm_ctc.size)
-        if avg_cortical_gm_ctc.size > 0:
-            min_length = min(min_length, avg_cortical_gm_ctc.size)
-        if avg_subcortical_gm_ctc.size > 0:
-            min_length = min(min_length, avg_subcortical_gm_ctc.size)
-        if boundary and avg_boundary_ctc.size > 0:
-            min_length = min(min_length, avg_boundary_ctc.size)
+        ctc_list = [
+            avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
+            avg_gm_brainstem_ctc, avg_gm_cerebellum_ctc, avg_wm_cerebellum_ctc, avg_wm_cc_ctc,
+            avg_boundary_ctc
+        ]
+        for ctc in ctc_list:
+            if ctc.size > 0:
+                min_length = min(min_length, ctc.size)
 
         C_a_slice = C_a_full[:min_length]
         time_points = time_points_s[:min_length]
@@ -732,47 +1210,37 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         C_t_wm = avg_wm_ctc[:min_length] if avg_wm_ctc.size > 0 else np.array([])
         C_t_cortical_gm = avg_cortical_gm_ctc[:min_length] if avg_cortical_gm_ctc.size > 0 else np.array([])
         C_t_subcortical_gm = avg_subcortical_gm_ctc[:min_length] if avg_subcortical_gm_ctc.size > 0 else np.array([])
+        C_t_gm_brainstem = avg_gm_brainstem_ctc[:min_length] if avg_gm_brainstem_ctc.size > 0 else np.array([])
+        C_t_gm_cerebellum = avg_gm_cerebellum_ctc[:min_length] if avg_gm_cerebellum_ctc.size > 0 else np.array([])
+        C_t_wm_cerebellum = avg_wm_cerebellum_ctc[:min_length] if avg_wm_cerebellum_ctc.size > 0 else np.array([])
+        C_t_wm_cc = avg_wm_cc_ctc[:min_length] if avg_wm_cc_ctc.size > 0 else np.array([])
         if boundary and avg_boundary_ctc.size > 0:
             C_t_boundary = avg_boundary_ctc[:min_length]
         else:
             C_t_boundary = np.array([])
 
-        # Handle white matter
-        if C_t_wm.size > 0:
-            Ki_wm, lambda_wm, SD_Ki_wm, x_patlak_wm, y_patlak_wm, included_wm = patlak_analysis_plotting(C_t_wm, C_a_slice, time_points)
-        else:
-            Ki_wm = np.nan
-            lambda_wm = np.nan
-            SD_Ki_wm = np.nan
-            x_patlak_wm = np.array([])
-            y_patlak_wm = np.array([])
-            included_wm = np.array([], dtype=bool)
+        # Perform Patlak analysis for each tissue type
+        def perform_patlak(C_t):
+            if C_t.size > 0:
+                Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
+            else:
+                Ki = np.nan
+                lam = np.nan
+                SD_Ki = np.nan
+                x_patlak = np.array([])
+                y_patlak = np.array([])
+                included = np.array([], dtype=bool)
+            return Ki, lam, SD_Ki, x_patlak, y_patlak, included
 
-        # Handle cortical gray matter
-        if C_t_cortical_gm.size > 0:
-            Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, x_patlak_cortical_gm, y_patlak_cortical_gm, included_cortical_gm = patlak_analysis_plotting(C_t_cortical_gm, C_a_slice, time_points)
-        else:
-            Ki_cortical_gm = np.nan
-            lambda_cortical_gm = np.nan
-            SD_Ki_cortical_gm = np.nan
-            x_patlak_cortical_gm = np.array([])
-            y_patlak_cortical_gm = np.array([])
-            included_cortical_gm = np.array([], dtype=bool)
-
-        # Handle subcortical gray matter
-        if C_t_subcortical_gm.size > 0:
-            Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm = patlak_analysis_plotting(C_t_subcortical_gm, C_a_slice, time_points)
-        else:
-            Ki_subcortical_gm = np.nan
-            lambda_subcortical_gm = np.nan
-            SD_Ki_subcortical_gm = np.nan
-            x_patlak_subcortical_gm = np.array([])
-            y_patlak_subcortical_gm = np.array([])
-            included_subcortical_gm = np.array([], dtype=bool)
-
-        # Handle boundary if required
+        Ki_wm, lambda_wm, SD_Ki_wm, x_patlak_wm, y_patlak_wm, included_wm = perform_patlak(C_t_wm)
+        Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, x_patlak_cortical_gm, y_patlak_cortical_gm, included_cortical_gm = perform_patlak(C_t_cortical_gm)
+        Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm = perform_patlak(C_t_subcortical_gm)
+        Ki_gm_brainstem, lambda_gm_brainstem, SD_Ki_gm_brainstem, x_patlak_gm_brainstem, y_patlak_gm_brainstem, included_gm_brainstem = perform_patlak(C_t_gm_brainstem)
+        Ki_gm_cerebellum, lambda_gm_cerebellum, SD_Ki_gm_cerebellum, x_patlak_gm_cerebellum, y_patlak_gm_cerebellum, included_gm_cerebellum = perform_patlak(C_t_gm_cerebellum)
+        Ki_wm_cerebellum, lambda_wm_cerebellum, SD_Ki_wm_cerebellum, x_patlak_wm_cerebellum, y_patlak_wm_cerebellum, included_wm_cerebellum = perform_patlak(C_t_wm_cerebellum)
+        Ki_wm_cc, lambda_wm_cc, SD_Ki_wm_cc, x_patlak_wm_cc, y_patlak_wm_cc, included_wm_cc = perform_patlak(C_t_wm_cc)
         if boundary and C_t_boundary.size > 0:
-            Ki_boundary, lambda_boundary, SD_Ki_boundary, x_patlak_boundary, y_patlak_boundary, included_boundary = patlak_analysis_plotting(C_t_boundary, C_a_slice, time_points)
+            Ki_boundary, lambda_boundary, SD_Ki_boundary, x_patlak_boundary, y_patlak_boundary, included_boundary = perform_patlak(C_t_boundary)
         else:
             Ki_boundary = np.nan
             lambda_boundary = np.nan
@@ -781,36 +1249,80 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
             y_patlak_boundary = np.array([])
             included_boundary = np.array([], dtype=bool)
 
-        # Compute voxel counts
-        voxel_count_wm = np.sum(wm_slice_dce)
-        voxel_count_cortical_gm = np.sum(cortical_gm_slice_dce)
-        voxel_count_subcortical_gm = np.sum(subcortical_gm_slice_dce)
-        voxel_count_boundary = np.sum(boundary_mask) if boundary and boundary_mask is not None else 0
-
         # Collect Ki values for plotting
         Ki_wm_list.append(Ki_wm)
         Ki_cortical_gm_list.append(Ki_cortical_gm)
         Ki_subcortical_gm_list.append(Ki_subcortical_gm)
+        Ki_gm_brainstem_list.append(Ki_gm_brainstem)
+        Ki_gm_cerebellum_list.append(Ki_gm_cerebellum)
+        Ki_wm_cerebellum_list.append(Ki_wm_cerebellum)
+        Ki_wm_cc_list.append(Ki_wm_cc)
         if boundary:
             Ki_boundary_list.append(Ki_boundary)
+
+        # Assign Ki values to the masks in the current slice
+        Ki_wm_image[:, :, i][wm_slice_dce] = Ki_wm
+        Ki_cortical_gm_image[:, :, i][cortical_gm_slice_dce] = Ki_cortical_gm
+        Ki_subcortical_gm_image[:, :, i][subcortical_gm_slice_dce] = Ki_subcortical_gm
+        Ki_gm_brainstem_image[:, :, i][gm_brainstem_slice_dce] = Ki_gm_brainstem
+        Ki_gm_cerebellum_image[:, :, i][gm_cerebellum_slice_dce] = Ki_gm_cerebellum
+        Ki_wm_cerebellum_image[:, :, i][wm_cerebellum_slice_dce] = Ki_wm_cerebellum
+        Ki_wm_cc_image[:, :, i][wm_cc_slice_dce] = Ki_wm_cc
+        if boundary:
+            Ki_boundary_image[:, :, i][boundary_mask] = Ki_boundary
 
         # Plot the results for the current slice
         plot_ctcs_and_patlak(
             t2_img[:, :, i], data_4d[:, :, i, 20],
-            wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,  # Pass T2 masks
-            wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,  # Pass DCE masks
+            wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
+            wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,
             avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
             x_patlak_wm, y_patlak_wm, Ki_wm, lambda_wm,
             x_patlak_cortical_gm, y_patlak_cortical_gm, Ki_cortical_gm, lambda_cortical_gm,
             x_patlak_subcortical_gm, y_patlak_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm,
             slice_idx=i+1,
             save_path=os.path.join(image_directory, 'AI', 'Tissue functions', f"AI_Tissue_slice_{i+1}_segmented_median.png"),
-            boundary_mask=boundary_mask,  # Pass the boundary mask for visualization
+            boundary_mask=boundary_mask,
             boundary_ctc=avg_boundary_ctc,
             x_patlak_boundary=x_patlak_boundary, y_patlak_boundary=y_patlak_boundary,
-            Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary, included_wm=included_wm,
-            included_cortical_gm=included_cortical_gm, included_subcortical_gm=included_subcortical_gm, included_boundary=included_boundary
-        )
+            Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary,
+            included_wm=included_wm,
+            included_cortical_gm=included_cortical_gm,
+            included_subcortical_gm=included_subcortical_gm,
+            included_boundary=included_boundary,
+            gm_brainstem_ctc=avg_gm_brainstem_ctc,
+            x_patlak_gm_brainstem=x_patlak_gm_brainstem,
+            y_patlak_gm_brainstem=y_patlak_gm_brainstem,
+            Ki_gm_brainstem=Ki_gm_brainstem,
+            lambda_gm_brainstem=lambda_gm_brainstem,
+            included_gm_brainstem=included_gm_brainstem,
+            gm_cerebellum_ctc=avg_gm_cerebellum_ctc,
+            x_patlak_gm_cerebellum=x_patlak_gm_cerebellum,
+            y_patlak_gm_cerebellum=y_patlak_gm_cerebellum,
+            Ki_gm_cerebellum=Ki_gm_cerebellum,
+            lambda_gm_cerebellum=lambda_gm_cerebellum,
+            included_gm_cerebellum=included_gm_cerebellum,
+            wm_cerebellum_ctc=avg_wm_cerebellum_ctc,
+            x_patlak_wm_cerebellum=x_patlak_wm_cerebellum,
+            y_patlak_wm_cerebellum=y_patlak_wm_cerebellum,
+            Ki_wm_cerebellum=Ki_wm_cerebellum,
+            lambda_wm_cerebellum=lambda_wm_cerebellum,
+            included_wm_cerebellum=included_wm_cerebellum,
+            wm_cc_ctc=avg_wm_cc_ctc,
+            x_patlak_wm_cc=x_patlak_wm_cc,
+            y_patlak_wm_cc=y_patlak_wm_cc,
+            Ki_wm_cc=Ki_wm_cc,
+            lambda_wm_cc=lambda_wm_cc,
+            included_wm_cc=included_wm_cc,
+            gm_brainstem_mask_t2=gm_brainstem_slice_t2,           
+            gm_brainstem_mask_dce=gm_brainstem_slice_dce,          
+            gm_cerebellum_mask_t2=gm_cerebellum_slice_t2,          
+            gm_cerebellum_mask_dce=gm_cerebellum_slice_dce,        
+            wm_cerebellum_mask_t2=wm_cerebellum_slice_t2,          
+            wm_cerebellum_mask_dce=wm_cerebellum_slice_dce,        
+            wm_cc_mask_t2=wm_cc_slice_t2,                          
+            wm_cc_mask_dce=wm_cc_slice_dce                         
+    )
 
         # Collect data for JSON output
         patlak_data = {
@@ -819,19 +1331,43 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
                 'Ki': Ki_wm,
                 'SD_Ki': SD_Ki_wm,
                 'lambda': lambda_wm,
-                'voxel_count': int(voxel_count_wm)
+                'voxel_count': int(np.sum(wm_slice_dce))
             },
             'cortical_gray_matter_median': {
                 'Ki': Ki_cortical_gm,
                 'SD_Ki': SD_Ki_cortical_gm,
                 'lambda': lambda_cortical_gm,
-                'voxel_count': int(voxel_count_cortical_gm)
+                'voxel_count': int(np.sum(cortical_gm_slice_dce))
             },
             'subcortical_gray_matter_median': {
                 'Ki': Ki_subcortical_gm,
                 'SD_Ki': SD_Ki_subcortical_gm,
                 'lambda': lambda_subcortical_gm,
-                'voxel_count': int(voxel_count_subcortical_gm)
+                'voxel_count': int(np.sum(subcortical_gm_slice_dce))
+            },
+            'gm_brainstem_median': {
+                'Ki': Ki_gm_brainstem,
+                'SD_Ki': SD_Ki_gm_brainstem,
+                'lambda': lambda_gm_brainstem,
+                'voxel_count': int(np.sum(gm_brainstem_slice_dce))
+            },
+            'gm_cerebellum_median': {
+                'Ki': Ki_gm_cerebellum,
+                'SD_Ki': SD_Ki_gm_cerebellum,
+                'lambda': lambda_gm_cerebellum,
+                'voxel_count': int(np.sum(gm_cerebellum_slice_dce))
+            },
+            'wm_cerebellum_median': {
+                'Ki': Ki_wm_cerebellum,
+                'SD_Ki': SD_Ki_wm_cerebellum,
+                'lambda': lambda_wm_cerebellum,
+                'voxel_count': int(np.sum(wm_cerebellum_slice_dce))
+            },
+            'wm_cc_median': {
+                'Ki': Ki_wm_cc,
+                'SD_Ki': SD_Ki_wm_cc,
+                'lambda': lambda_wm_cc,
+                'voxel_count': int(np.sum(wm_cc_slice_dce))
             }
         }
 
@@ -840,22 +1376,25 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
                 'Ki': Ki_boundary,
                 'SD_Ki': SD_Ki_boundary,
                 'lambda': lambda_boundary,
-                'voxel_count': int(voxel_count_boundary)
+                'voxel_count': int(np.sum(boundary_mask))
             }
 
         all_patlak_data.append(patlak_data)
 
-        # Compute K_i per voxel if enabled
-        if compute_per_voxel_Ki:
+        # Compute K_i and/or CBF per voxel if enabled
+        if compute_per_voxel_Ki or compute_per_voxel_CBF:
             # Combine WM and GM masks for the current slice
             gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
             brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
             brain_indices = np.argwhere(brain_mask_slice)
 
-            # Initialize K_i slice array
-            Ki_slice = np.full(brain_mask_slice.shape, np.nan)
+            # Initialize K_i and CBF slice arrays
+            if compute_per_voxel_Ki:
+                Ki_slice = np.full(brain_mask_slice.shape, np.nan)
+            if compute_per_voxel_CBF:
+                CBF_slice = np.full(brain_mask_slice.shape, np.nan)
 
-            # For each voxel in the brain mask, compute K_i
+            # For each voxel in the brain mask, compute K_i and/or CBF
             for (x, y) in brain_indices:
                 voxel_time_course = data_4d[x, y, i, :]
                 T1 = T1_matrix[x, y, i]
@@ -868,27 +1407,67 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
                 if np.isnan(C_t).any() or np.all(C_t == 0):
                     continue
 
-                # Ensure C_t and C_a have the same length
+                # Ensure C_t and C_a_full have the same length
                 min_length_voxel = min(len(C_t), len(C_a_full))
                 C_t_voxel = C_t[:min_length_voxel]
                 C_a_voxel = C_a_full[:min_length_voxel]
                 time_points_voxel = time_points_s[:min_length_voxel]
 
-                # Perform Patlak analysis
-                Ki_voxel, _, _, _, _, _ = patlak_analysis_plotting(C_t_voxel, C_a_voxel, time_points_voxel)
+                if compute_per_voxel_Ki:
+                    # Perform Patlak analysis
+                    Ki_voxel, _, _, _, _, _ = patlak_analysis_plotting(C_t_voxel, C_a_voxel, time_points_voxel)
+                    Ki_slice[x, y] = Ki_voxel
 
-                Ki_slice[x, y] = Ki_voxel
+                if compute_per_voxel_CBF:
+                    delta_t = np.diff(time_points_voxel)[0]
+                    A = construct_convolution_matrix(C_a_voxel, delta_t)
+                    lambd = 0.1  # Adjust as needed
 
-            # Store the K_i slice in the 3D K_i array
-            Ki_per_voxel[:, :, i] = Ki_slice
+                    # Solve for the residue function
+                    try:
+                        R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
+                        CBF_voxel = R_estimated[0]
+                        CBF_slice[x, y] = CBF_voxel
+                    except np.linalg.LinAlgError:
+                        continue  # Skip if the matrix is singular
 
-    # Compute global minimum and maximum K_i values
+            # Store the K_i and/or CBF slice in the 3D arrays
+            if compute_per_voxel_Ki:
+                Ki_per_voxel[:, :, i] = Ki_slice
+            if compute_per_voxel_CBF:
+                CBF_per_voxel[:, :, i] = CBF_slice
+
+    # Save Ki images as NIfTI files
+    affine = nib.load(dce_path).affine
+
+    Ki_wm_nii = nib.Nifti1Image(Ki_wm_image, affine)
+    Ki_wm_path = os.path.join(analysis_directory, 'Ki_wm.nii.gz')
+    nib.save(Ki_wm_nii, Ki_wm_path)
+    print(f"K_i WM saved to {Ki_wm_path}")
+
+    Ki_cortical_gm_nii = nib.Nifti1Image(Ki_cortical_gm_image, affine)
+    Ki_cortical_gm_path = os.path.join(analysis_directory, 'Ki_cortical_gm.nii.gz')
+    nib.save(Ki_cortical_gm_nii, Ki_cortical_gm_path)
+    print(f"K_i Cortical GM saved to {Ki_cortical_gm_path}")
+
+    Ki_subcortical_gm_nii = nib.Nifti1Image(Ki_subcortical_gm_image, affine)
+    Ki_subcortical_gm_path = os.path.join(analysis_directory, 'Ki_subcortical_gm.nii.gz')
+    nib.save(Ki_subcortical_gm_nii, Ki_subcortical_gm_path)
+    print(f"K_i Subcortical GM saved to {Ki_subcortical_gm_path}")
+
+    if boundary:
+        Ki_boundary_nii = nib.Nifti1Image(Ki_boundary_image, affine)
+        Ki_boundary_path = os.path.join(analysis_directory, 'Ki_boundary.nii.gz')
+        nib.save(Ki_boundary_nii, Ki_boundary_path)
+        print(f"K_i Boundary saved to {Ki_boundary_path}")
+
+    # Compute global min and max for K_i
     if compute_per_voxel_Ki:
         global_Ki_min = np.nanmin(Ki_per_voxel)
         global_Ki_max = np.nanmax(Ki_per_voxel)
         print(f"Global K_i min: {global_Ki_min}, max: {global_Ki_max}")
 
-        # Generate and save the overlay images for each slice with consistent color scaling
+        # Generate overlay images for K_i
         for i in range(n_slices):
             Ki_slice = Ki_per_voxel[:, :, i]
             if np.isnan(Ki_slice).all():
@@ -901,6 +1480,38 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
                 data_4d[:, :, i, 20], Ki_slice, slice_idx=i+1, save_path=save_path_overlay,
                 vmin=global_Ki_min, vmax=global_Ki_max
             )
+
+        # Save Ki_per_voxel as a .nii file
+        Ki_per_voxel_nii = nib.Nifti1Image(Ki_per_voxel, affine=nib.load(dce_path).affine)
+        Ki_per_voxel_path = os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz')
+        nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
+        print(f"K_i per voxel saved to {Ki_per_voxel_path}")
+
+    # Compute global min and max for CBF
+    if compute_per_voxel_CBF:
+        global_CBF_min = np.nanmin(CBF_per_voxel)
+        global_CBF_max = np.nanmax(CBF_per_voxel)
+        print(f"Global CBF min: {global_CBF_min}, max: {global_CBF_max}")
+
+        # Generate overlay images for CBF
+        for i in range(n_slices):
+            CBF_slice = CBF_per_voxel[:, :, i]
+            if np.isnan(CBF_slice).all():
+                continue  # Skip slices without valid CBF values
+
+            save_dir_overlay = os.path.join(image_directory, 'AI', 'CBF Overlays')
+            os.makedirs(save_dir_overlay, exist_ok=True)
+            save_path_overlay = os.path.join(save_dir_overlay, f"CBF_overlay_slice_{i+1}.png")
+            plot_CBF_overlay(
+                data_4d[:, :, i, 20], CBF_slice, slice_idx=i+1, save_path=save_path_overlay,
+                vmin=global_CBF_min, vmax=global_CBF_max
+            )
+
+        # Save CBF_per_voxel as a .nii file
+        CBF_per_voxel_nii = nib.Nifti1Image(CBF_per_voxel, affine=nib.load(dce_path).affine)
+        CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel.nii.gz')
+        nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
+        print(f"CBF per voxel saved to {CBF_per_voxel_path}")
 
     # Save all Patlak data to JSON file after processing all slices
     json_file_path = os.path.join(analysis_directory, "AI_values_median.json")
@@ -928,13 +1539,7 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         save_dir = os.path.join(image_directory, 'AI', 'Tissue functions')
         os.makedirs(save_dir, exist_ok=True)
         plt.savefig(os.path.join(save_dir, 'Ki_vs_slice_median.png'))
-
-        if not turbo_mode:
-            plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-            close_plot_after_delay_plt(3)
-            plt.show()
-        else:
-            plt.close()
+        plt.close()
     else:
         print("No Ki values were computed; skipping Ki plot.")
 
@@ -1041,6 +1646,12 @@ def compute_and_plot_ctcs_median(data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t
         Ki_per_voxel_path = os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz')
         nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
         print(f"K_i per voxel saved to {Ki_per_voxel_path}")
+
+    if compute_per_voxel_CBF:
+        CBF_per_voxel_nii = nib.Nifti1Image(CBF_per_voxel, affine=nib.load(dce_path).affine)
+        CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel.nii.gz')
+        nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
+        print(f"CBF per voxel saved to {CBF_per_voxel_path}")
         
         
 def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path, vmin, vmax):
@@ -1082,6 +1693,45 @@ def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path, vmin, vmax):
     plt.savefig(save_path, dpi=300)
     plt.close()
 
+def plot_CBF_overlay(dce_slice, CBF_slice, slice_idx, save_path, vmin, vmax):
+    """
+    Plots the DCE image slice with an overlay of CBF values.
+
+    Parameters:
+    - dce_slice: 2D numpy array of the DCE image at a specific time point.
+    - CBF_slice: 2D numpy array of CBF values for the slice.
+    - slice_idx: Integer indicating the slice number.
+    - save_path: Path to save the overlay image.
+    - vmin: Global minimum CBF value for consistent color scaling.
+    - vmax: Global maximum CBF value for consistent color scaling.
+
+    Returns:
+    - None
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    import numpy.ma as ma
+
+    # Mask out NaN values in CBF
+    CBF_masked = ma.masked_invalid(CBF_slice)
+
+    # Set up the figure and axis
+    plt.figure(figsize=(8, 8))
+    plt.imshow(np.rot90(dce_slice), cmap='gray', interpolation='nearest')
+
+    # Overlay CBF values using a colormap
+    plt.imshow(np.rot90(CBF_masked), cmap='jet', interpolation='nearest', alpha=0.6,
+               norm=Normalize(vmin=vmin, vmax=vmax))
+
+    plt.colorbar(label='CBF (ml/100g/min)')
+    plt.title(f'Cerebral Blood Flow (CBF) per voxel - Slice {slice_idx}')
+    plt.axis('off')
+    plt.tight_layout()
+
+    # Save the figure
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
 
 def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
@@ -1110,18 +1760,24 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     wm_mask_path = os.path.join(mask_dir, 'wm.nii.gz')
 
     print('[!] Coregistering GM/WM masks onto T2 and DCE space')
-    wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce, \
-        subcortical_gm_mask_t2, subcortical_gm_mask_dce = coregistration(
-            seg_mgz_path=seg_mgz_path,
-            dce_path=dce_path,
-            t2_path=t2_path
-        )
+    (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
+     subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
+     gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
+     wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce) = coregistration(
+        seg_mgz_path=seg_mgz_path,
+        dce_path=dce_path,
+        t2_path=t2_path
+    )
 
     # Load the T2 image for visualization
     t2_img = nib.load(t2_path).get_fdata()
 
     # Plot the predictions with gray and white matter masks on T2
-    plot_predictions_with_masks(t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2, image_directory)
+    plot_predictions_with_masks(t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
+                                gm_brainstem_mask_t2, gm_cerebellum_mask_t2, wm_cerebellum_mask_t2,
+                                wm_cc_mask_t2, image_directory)
+
+    # Continue with the rest of your processing, ensuring to include the new masks in your analysis and plotting
 
     # Load the DCE 4D data
     data_4d = np.array(nib.load(dce_path).get_fdata())
@@ -1136,10 +1792,14 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     total_scan_duration = TR * num_volumes
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
 
-    # Compute and plot CTCs and Patlak fits, and save data
+    # Update compute_and_plot_ctcs_median function to include new tissue types
     compute_and_plot_ctcs_median(
         data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
         wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
         T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory,
-        dce_path=dce_path, boundary=boundary, compute_per_voxel_Ki=True
+        dce_path=dce_path, boundary=boundary, compute_per_voxel_Ki=True, compute_per_voxel_CBF=True,
+        gm_brainstem_mask_t2=gm_brainstem_mask_t2, gm_brainstem_mask_dce=gm_brainstem_mask_dce,
+        gm_cerebellum_mask_t2=gm_cerebellum_mask_t2, gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
+        wm_cerebellum_mask_t2=wm_cerebellum_mask_t2, wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
+        wm_cc_mask_t2=wm_cc_mask_t2, wm_cc_mask_dce=wm_cc_mask_dce
     )
