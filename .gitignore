@@ -5,3 +5,6 @@ __pycache__/
 data/*
 resources/.DS_Store
 AI/*
+!data/.gitkeep
+!AI/.gitkeep
+
