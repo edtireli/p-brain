@@ -147,13 +147,17 @@ The idea is to use the options in chronological order, as each step requires the
     ![CTC+ROI_slice_7](https://github.com/edtireli/p-brain/assets/129996957/32bc922a-dcce-4b9c-a31e-053d021351e4)
     -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
 
-## 6. Contributions
+## 6. Fully Automated Mode
+From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
+![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
+
+## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
-## 7. License
+## 8. License
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
 
-## 8. Acknowledgments
+## 9. Acknowledgments
 Special thanks to Henrik B. W. Larsson for collaborations and discussions.
 
 
