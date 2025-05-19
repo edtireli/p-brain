@@ -112,14 +112,9 @@ def welcome_screen():
     print('| '+colored('3', 'cyan')+' | Generate Time-Shifted Concentration Curves (TSCC) from CTC')
     print('| '+colored('4', 'cyan')+' | Create Tissue (Grey/White matter) CTCs')
     print('| '+colored('5', 'cyan')+' | Compute BBB permeability and perfusion parameters')
-<<<<<<< HEAD
     #print('| '+colored('6', 'cyan')+' | Cross-sequence axial reconstructions')
     print('| '+colored('6', 'cyan')+' | Full automatic AI enhanced analysis')
     print('| '+colored('7', 'cyan')+' | Add analysis notes')
-=======
-    print('| '+colored('6', 'cyan')+' | Add analysis notes')
-    print('| '+colored('7', 'cyan')+' | Cross-sequence axial reconstructions')
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     print('| '+colored('8', 'cyan')+' | Addons')
     print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
     print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
@@ -182,5 +177,4 @@ def parrec2nifti(directory, nifti_directory):
     else:
         # No .PAR files, so decompress gzipped files if present
         decompress_gz_in_directory(nifti_directory)
-
 

@@ -8,7 +8,6 @@ import json
 import matplotlib.pyplot as plt
 from utils.fonts import *
 from utils.loading import *
-<<<<<<< HEAD
 from utils.plotting import *
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
@@ -31,27 +30,32 @@ def close_plot_after_delay_plt(delay):
     plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
 
 
-=======
-import warnings
-warnings.filterwarnings('ignore', category=RuntimeWarning)
-
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 def extract_vfa_params(vfa_filenames, nifti_directory):
     repetition_times = []
     flip_angles = []
 
     for filename in vfa_filenames:
-        # Construct the path to the corresponding JSON file
-        json_filename = os.path.splitext(filename)[0] + ".json"
+        # Remove the extension and construct the JSON filename
+        base_name = os.path.splitext(filename)[0]  # Removes only the last extension (e.g., .nii)
+        if base_name.endswith("_DCE"):  # Specific to your case, adjust as necessary
+            base_name = base_name.rsplit("_", 1)[0]  # Remove the last part after '_'
+
+        json_filename = base_name + ".json"
         json_path = os.path.join(nifti_directory, json_filename)
 
-        # Read and extract data from the JSON file
-        with open(json_path, 'r') as json_file:
-            json_data = json.load(json_file)
-            repetition_times.append(json_data.get("RepetitionTime"))
-            flip_angles.append(json_data.get("FlipAngle"))
+        try:
+            # Read and extract data from the JSON file
+            with open(json_path, 'r') as json_file:
+                json_data = json.load(json_file)
+                repetition_times.append(json_data.get("RepetitionTime"))
+                flip_angles.append(json_data.get("FlipAngle"))
+        except FileNotFoundError:
+            print(f"Warning: JSON file not found: {json_path}")
+            repetition_times.append(None)  # Append None to keep data aligned
+            flip_angles.append(None)
 
     return repetition_times, flip_angles
+
 
 def build_voxel_matrix(dce_data):
     if not dce_data:
@@ -246,24 +250,15 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     if not turbo_mode:
         close_plot_after_delay(3, fig)
         plt.show()
-
-
-
-
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    
-<<<<<<< HEAD
-    IsVFA, IsIR,_,_ = parameters
-=======
-    IsVFA, IsIR = parameters
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
-    
+    IsSiemens, IsVFA, IsIR, _= parameters
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
     
     voxel_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl')
     M0_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')
     T1_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')
+    
     # Initialize alfas and TRs to default values (empty lists or None)
     alfas = []
     TRs = []
@@ -274,21 +269,33 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
         T1_matrix = load_from_pickle(T1_matrix_path)
     else:    
         # Handling for VFA
+        IsVFA = False
         if IsVFA:
             vfa_flip_angles = range(1, 6)  # Assuming 5 flip angles
-            # renaming logic from dce_filename to VFA files - change if needed
-            dce_filename_base = dce_filename.replace('_dce.nii', '')
-            vfa_filenames = [f"{dce_filename_base}_flip-{str(flip).zfill(2)}_VFA.nii" for flip in vfa_flip_angles]
-            vfa_data = [os.path.join(nifti_directory, fname) for fname in vfa_filenames]
+            # Extract base name without '_FLAIR_DCE' or similar
+            dce_filename_base = os.path.splitext(dce_filename)[0]
+            dce_filename_base = dce_filename_base.replace('_FLAIR_DCE', '').replace('_DCE', '')
 
+            # Generate VFA filenames
+            vfa_filenames = [f"{dce_filename_base}_flip-{str(flip).zfill(2)}_VFA.json" for flip in vfa_flip_angles]
+            vfa_data = [os.path.join(nifti_directory, f"{dce_filename_base}_flip-{str(flip).zfill(2)}_VFA.nii") for flip in vfa_flip_angles]
+
+            # Extract TRs and flip angles
             TRs, alfas = extract_vfa_params(vfa_filenames, nifti_directory)
+
+            # Check for missing files
+            for file_path in vfa_data:
+                if not os.path.exists(file_path):
+                    print(f"Warning: File not found: {file_path}")
+            
+            # Build voxel matrix and fit VFA model
             voxel_matrix = build_voxel_matrix(vfa_data)
             M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, alfas=alfas, TRs=TRs)
         
         # Handling for IR
         if not IsVFA:
             if IsIR: 
-                TI=['00120', '00300', '00600', '01000', '02000', '04000', '10000']
+                TI = ['00120', '00300', '00600', '01000', '02000', '04000', '10000']
                 TI_values = [int(times) for times in TI]
                 patterns = ['WIPTI_', 'WIPDelRec-TI_']
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
@@ -303,10 +310,5 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     Y_center = voxel_matrix.shape[2] // 2
     Z_center = voxel_matrix.shape[3] // 2
     
-    #if not IsVFA:
-    #    plot_voxel_fit(X_center, Y_center, Z_center, M0_matrix, T1_matrix, voxel_matrix, TI_values, isVFA=IsVFA)
-    #elif IsVFA:
-    #    plot_voxel_fit(X_center, Y_center, Z_center, M0_matrix, T1_matrix, voxel_matrix, alfas, isVFA=IsVFA)
-
     plot_histograms(M0_matrix, T1_matrix, image_directory) 
     plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory)

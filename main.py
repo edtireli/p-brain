@@ -42,7 +42,6 @@ def main():
 
         elif choice == 1: # T1/M0 fit
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-<<<<<<< HEAD
             if args.option:
                 break
 
@@ -51,12 +50,6 @@ def main():
             if args.option:
                 break
 
-=======
-
-        elif choice == 2: # Input function from ROI 
-            input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
         elif choice == 3: # Time shifting of input functions AND find maximum AIF
             time_shifting(analysis_directory, nifti_directory, image_directory)
             if args.option:
@@ -64,11 +57,8 @@ def main():
 
         elif choice == 4: # Tissue concentration functions
             tissue_function(analysis_directory, nifti_directory, image_directory, filenames)
-<<<<<<< HEAD
             if args.option:
                 break
-=======
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 
         elif choice == 5: # Compute BBB parameters
             BBB_parameters(analysis_directory, image_directory)
@@ -77,27 +67,16 @@ def main():
 
         elif choice == 7: # Analysis notes
             add_notes(analysis_directory) 
-<<<<<<< HEAD
             if args.option:
                 break
-=======
-        
-        elif choice == 7: # Axial FLAIR to axial T1&T2
-            check_axial(nifti_directory, filenames)
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 
         elif choice == 8: # Addons
             selected_addon = list_addons()
             load_addon(selected_addon, analysis_directory, nifti_directory, image_directory, filenames, parameters)
             time.sleep(3)
-<<<<<<< HEAD
             if args.option:
                 break
             
-=======
-    
-
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
         elif choice == 9:
             break
 

@@ -218,11 +218,7 @@ def input_function(analysis_directory, nifti_directory, image_directory, filenam
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
     refresh_nifti_directory(nifti_directory)
     
-<<<<<<< HEAD
     IsVFA, IsIR, _, _ = parameters
-=======
-    IsVFA, IsIR = parameters
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
     TR = nifti_img.header.get_zooms()[-1] #*1e3

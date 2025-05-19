@@ -24,12 +24,8 @@ from .opt04_tissue_function import * # option 4
 from .opt05_BBB_parameters import * # option 5
 from .opt06_analysis_notes import * # option 6
 from .opt07_axials import * # option 8
-<<<<<<< HEAD
 
 from .AI_input_functions import * # AI module 1 (input functions)
 from .AI_tissue_functions import * # AI module 2 (tissue functions)
 
-
-=======
->>>>>>> a0de673fc033368a127dc6bae55e4b3363958e21
 
