@@ -28,6 +28,7 @@ from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 from scipy.ndimage import zoom
+import re
 
 
 def downscale_nifti(in_path, out_path, factor):
@@ -214,6 +215,28 @@ _custom_shifter = None
 _patlak_analysis_plotting = None
 
 
+def _load_label_lookup(lut_path=None):
+    """Return a dict mapping segmentation indices to region names."""
+    if lut_path is None:
+        fs_home = os.environ.get("FREESURFER_HOME")
+        if fs_home:
+            lut_path = os.path.join(fs_home, "FreeSurferColorLUT.txt")
+    lookup = {}
+    if lut_path and os.path.exists(lut_path):
+        try:
+            with open(lut_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = re.split(r"\s+", line)
+                    if len(parts) >= 2 and parts[0].isdigit():
+                        lookup[int(parts[0])] = parts[1]
+        except Exception:
+            pass
+    return lookup
+
+
 def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
                      C_a_full, compute_CTC, find_baseline_point_advanced,
                      custom_shifter, patlak_analysis_plotting):
@@ -299,6 +322,8 @@ def compute_Ki_from_atlas(
     unique_labels = np.unique(atlas_data)
     unique_labels = unique_labels[unique_labels != 0]  # exclude background label=0 if present
 
+    label_lookup = _load_label_lookup()
+
     # Prepare empty 3D volumes for Ki, SD(Ki), and vp
     Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     SD_Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
@@ -349,7 +374,8 @@ def compute_Ki_from_atlas(
         Ki_map[mask] = Ki
         SD_Ki_map[mask] = SD_Ki
         vp_map[mask] = lam
-        atlas_results[str(lbl)] = {
+        label_key = label_lookup.get(int(lbl), str(lbl))
+        atlas_results[label_key] = {
             "Ki": float(Ki),
             "SD_Ki": float(SD_Ki),
             "vp": float(lam),
