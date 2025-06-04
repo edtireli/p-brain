@@ -1255,6 +1255,7 @@ def compute_and_plot_ctcs_median(
     Computes median CTCs for different tissue types across slices, performs Patlak analysis,
     saves the results, and generates plots. Also computes the total median for the entire tissue volume.
     Optionally computes K_i and CBF per voxel and generates overlay images and NIfTI files.
+    CBF values are scaled to millilitres per 100 grams of tissue per minute (ml/100g/min).
     """
     import os
     import numpy as np
@@ -1691,7 +1692,8 @@ def compute_and_plot_ctcs_median(
                     # Solve for the residue function
                     try:
                         R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
-                        CBF_voxel = R_estimated[0]
+                        # R[0] represents flow in 1/s. Scale to ml/100g/min.
+                        CBF_voxel = R_estimated[0] * 6000
                         CBF_slice[x, y] = CBF_voxel
                     except np.linalg.LinAlgError:
                         continue  # Skip if the matrix is singular
