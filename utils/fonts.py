@@ -17,7 +17,9 @@ for i in range(len(original_colors) - 1):
     extended_colors.extend(interpolate_colors(original_colors[i], original_colors[i + 1]))
 extended_colors.append(original_colors[-1])
 
-base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-font_directory = os.path.join(base_path, 'resources')
-font_path = os.path.join(font_directory,'AcademySans.ttf')
-prop = fm.FontProperties(fname=font_path)
+# Use the default matplotlib font. The previous implementation loaded a
+# custom font from the ``resources`` directory. As custom fonts are no
+# longer used, ``prop`` simply holds an empty ``FontProperties`` instance
+# so that the rest of the code can keep passing ``fontproperties=prop``
+# without modification.
+prop = fm.FontProperties()
