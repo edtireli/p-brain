@@ -59,6 +59,19 @@ control dataset is processed, p-Brain will automatically create a
 `control.json` file inside the respective control directory to mark it as
 such.
 
+The script accepts a list of log numbers or the `--all` flag. Use
+`--controls` to mark the provided numbers as control datasets. Combining
+`--controls` with `--all` processes every available control dataset.
+
+Example usage:
+
+```
+python enumerator.py 1001 1002
+python enumerator.py --controls 01 02
+python enumerator.py --all
+python enumerator.py --controls --all
+```
+
 NIfTI files can also be used directly by simply creating a folder of the same name and placing the .nii files therein. This will avoid the automatic conversion from .PAR/.REC to .nii/.json. 
 
 There are several files that are important to the analysis, I will list the variables below, which can be changed in the parameters.py file to fit your naming scheme: 
