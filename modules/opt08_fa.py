@@ -16,14 +16,29 @@ def find_wm_mask(nifti_directory):
 
 
 def find_dwi_files(nifti_directory):
+    """Locate a DWI NIfTI file and its corresponding ``.bval`` and ``.bvec`` files.
+
+    The conversion step may create ``.nii`` *or* ``.nii.gz`` files.  This
+    function therefore checks for both extensions and strips them correctly when
+    forming the paths to the gradient files.
+    """
+
     for root, _, files in os.walk(nifti_directory):
         for file in files:
-            if re.search(r"dwi", file, re.IGNORECASE) and file.endswith(".nii"):
+            if re.search(r"dwi", file, re.IGNORECASE) and (
+                file.endswith(".nii") or file.endswith(".nii.gz")
+            ):
+                # Handle both .nii and .nii.gz extensions when deriving the base
                 base = os.path.splitext(os.path.join(root, file))[0]
+                if file.endswith(".nii.gz"):
+                    base = os.path.splitext(base)[0]
+
                 bval = base + ".bval"
                 bvec = base + ".bvec"
+
                 if os.path.exists(bval) and os.path.exists(bvec):
                     return os.path.join(root, file), bval, bvec
+
     return None, None, None
 
 
