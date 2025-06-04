@@ -37,7 +37,10 @@ def downscale_nifti(in_path, out_path, factor):
     scaled = zoom(data, factor, order=1)
     affine = img.affine.copy()
     affine[:3, :3] /= factor
-    nib.save(nib.Nifti1Image(scaled, affine, img.header), out_path)
+    hdr = img.header.copy()
+    hdr.set_qform(affine, int(hdr.get("qform_code", 1)) or 1)
+    hdr.set_sform(affine, int(hdr.get("sform_code", 1)) or 1)
+    nib.save(nib.Nifti1Image(scaled, affine, hdr), out_path)
 
 
 def upscale_segmentation(seg_path, ref_path, out_path):
@@ -47,7 +50,10 @@ def upscale_segmentation(seg_path, ref_path, out_path):
     factor = np.array(ref_img.shape[:3]) / np.array(seg_img.shape[:3])
     seg_data = seg_img.get_fdata()
     seg_up = zoom(seg_data, factor, order=0)
-    nib.save(nib.Nifti1Image(seg_up, ref_img.affine, ref_img.header), out_path)
+    hdr = ref_img.header.copy()
+    hdr.set_qform(ref_img.affine, int(hdr.get("qform_code", 1)) or 1)
+    hdr.set_sform(ref_img.affine, int(hdr.get("sform_code", 1)) or 1)
+    nib.save(nib.Nifti1Image(seg_up, ref_img.affine, hdr), out_path)
 
 def patlak_total(C_t, C_a, t):
     """Optional drop correction then Patlak fit."""
