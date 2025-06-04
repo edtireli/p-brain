@@ -6,6 +6,8 @@ import numpy as np
 import pickle
 import json
 import matplotlib.pyplot as plt
+import multiprocessing
+from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
@@ -104,49 +106,59 @@ def model_residuals(params, TIs, voxel_values):
 
 def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     shape_x, shape_y, shape_z = voxel_matrix.shape[1:]
-    M0_matrix = np.zeros((shape_x, shape_y, shape_z))
-    T1_matrix = np.zeros((shape_x, shape_y, shape_z))
-
     total_voxels = shape_x * shape_y * shape_z
-    with tqdm(total=total_voxels, desc=" Fitting Voxel Matrix") as pbar:
-        for i in range(shape_x):
-            for j in range(shape_y):
-                for k in range(shape_z):
-                    voxel_values = voxel_matrix[:, i, j, k]
-                    if max(voxel_values) == 0:
-                        pbar.update(1)
-                        continue
 
-                    #if IsVFA:
-                        # Skip voxels with low signal for VFA method
-                    #    if max(voxel_values) < 0.1 * np.max(voxel_matrix[:, i, j, :]):
-                    #        pbar.update(1)
-                    #        continue
+    voxels = voxel_matrix.reshape(voxel_matrix.shape[0], -1).T
+    alfas = kwargs.get('alfas')
+    TRs = kwargs.get('TRs')
 
-                    if IsVFA:
-                        # Extract alfas and TRs from kwargs
-                        alfas = kwargs.get('alfas')
-                        alfas_rad = np.radians(alfas)
-                        TRs = kwargs.get('TRs')
+    def _fit_single(voxel_values):
+        if max(voxel_values) == 0:
+            return (0.0, 0.0)
+        if IsVFA:
+            alfas_rad = np.radians(alfas)
+            initial_M0 = max(voxel_values) / np.sin(alfas_rad[0])
+            initial_T1 = 750
+            bounds = ([0, 500], [2 * initial_M0, 5000])
+            result = least_squares(
+                model_residuals_VFA,
+                [initial_M0, initial_T1],
+                args=(voxel_values,),
+                kwargs={"alfas": alfas, "TRs": TRs},
+                bounds=bounds,
+                method="trf",
+            )
+        else:
+            initial_M0 = max(voxel_values) / np.sin(np.pi / 2)
+            max_signal = max(voxel_values)
+            initial_T1 = 750
+            bounds = ([1e-3, 500], [max_signal, 5000])
+            result = least_squares(
+                model_residuals,
+                [initial_M0, initial_T1],
+                args=(TI_values, voxel_values),
+                bounds=bounds,
+                method="trf",
+            )
+        return result.x[0], result.x[1]
 
-                        initial_M0 = max(voxel_values)/np.sin(alfas_rad[0])
+    if MULTIPROCESSING:
+        with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(_fit_single, voxels),
+                    total=total_voxels,
+                    desc=" Fitting Voxel Matrix",
+                )
+            )
+    else:
+        results = [
+            _fit_single(v) for v in tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
+        ]
 
-                        initial_T1 = 750  # Adjust initial guess as needed
-                        bounds = ([0, 500], [2*initial_M0, 5000])  # Adjust bounds as needed
-
-                        result = least_squares(model_residuals_VFA, [initial_M0, initial_T1], args=(voxel_values,), kwargs={'alfas': alfas, 'TRs': TRs}, bounds=bounds, method='trf')
-                    else:
-                        initial_M0 = max(voxel_values)/np.sin(np.pi/2)
-                        max_signal = max(voxel_values)
-                        initial_T1 = 750  # Adjust initial guess as needed
-                        bounds = ([1e-3, 500], [max_signal, 5000])  # Adjust bounds as needed
-
-                        result = least_squares(model_residuals, [initial_M0, initial_T1], args=(TI_values, voxel_values), bounds=bounds, method='trf')
-
-                    M0_matrix[i, j, k], T1_matrix[i, j, k] = result.x
-                    pbar.update(1)
-
-    return M0_matrix, T1_matrix
+    M0_values = np.array([r[0] for r in results]).reshape(shape_x, shape_y, shape_z)
+    T1_values = np.array([r[1] for r in results]).reshape(shape_x, shape_y, shape_z)
+    return M0_values, T1_values
 
 
 
