@@ -52,9 +52,12 @@ Place your .PAR/.REC MRI data in the `data` directory under any folder name of y
 If you would like to analyse control datasets, add a folder named `controls` inside
 the `data` directory and place the control subfolders there (for example
 `data/controls/log1`). Setting the `CONTROLS` flag to `True` in
-`utils/settings.py` enables this behaviour. When a control dataset is processed,
-p-Brain will automatically create a `control.json` file inside the respective
-control directory to mark it as such.
+`utils/settings.py` or exporting the environment variable
+`PBRAIN_CONTROLS=1` enables this behaviour. The `enumerator.py` script
+automatically sets this variable when invoked with `--controls`. When a
+control dataset is processed, p-Brain will automatically create a
+`control.json` file inside the respective control directory to mark it as
+such.
 
 NIfTI files can also be used directly by simply creating a folder of the same name and placing the .nii files therein. This will avoid the automatic conversion from .PAR/.REC to .nii/.json. 
 
