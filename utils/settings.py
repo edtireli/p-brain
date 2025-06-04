@@ -4,8 +4,10 @@ import json
 import matplotlib
 matplotlib.use("TkAgg")
 
-# Global toggle for analysing control data
-CONTROLS = False
+# Global toggle for analysing control data. The flag can also be
+# overridden by setting the environment variable ``PBRAIN_CONTROLS`` to
+# ``1``/``true``.
+CONTROLS = os.environ.get("PBRAIN_CONTROLS", "False").lower() in ("1", "true", "yes")
 CONTROL_FLAG_FILENAME = "control.json"
 
 # Paths to the neural network models used for artery and vein ROI extraction.

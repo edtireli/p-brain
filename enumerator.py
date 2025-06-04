@@ -11,10 +11,11 @@ args = sys.argv[1:]
 # Normalize args for easy checks
 args_lower = [arg.lower() for arg in args]
 
-# Check if '--all' is specified
+# Determine which datasets to process and whether they are controls
+datasets = []  # list of tuples (id, is_control)
+
 if "--all" in args_lower:
     # Collect subfolder names in alphanumeric order
-    ids = []
     for name in sorted(os.listdir(data_directory)):
         full_path = os.path.join(data_directory, name)
         if not os.path.isdir(full_path):
@@ -27,12 +28,11 @@ if "--all" in args_lower:
             for ctrl in sorted(os.listdir(full_path)):
                 ctrl_path = os.path.join(full_path, ctrl)
                 if os.path.isdir(ctrl_path):
-                    ids.append(ctrl)
+                    datasets.append((ctrl, True))
         else:
-            ids.append(name)
+            datasets.append((name, False))
 elif "--controls" in args_lower:
     # Only enumerate over the control datasets
-    ids = []
     for name in sorted(os.listdir(data_directory)):
         full_path = os.path.join(data_directory, name)
         if not os.path.isdir(full_path):
@@ -41,17 +41,27 @@ elif "--controls" in args_lower:
             for ctrl in sorted(os.listdir(full_path)):
                 ctrl_path = os.path.join(full_path, ctrl)
                 if os.path.isdir(ctrl_path):
-                    ids.append(ctrl)
+                    datasets.append((ctrl, True))
             break
 else:
     # Otherwise, use the supplied IDs
-    ids = [arg for arg in args if not arg.startswith("--")]
+    for arg in args:
+        if arg.startswith("--"):
+            continue
+        ctrl_path = os.path.join(data_directory, "controls", arg)
+        is_ctrl = os.path.isdir(ctrl_path)
+        datasets.append((arg, is_ctrl))
 
 # Template for the command to run
 command_template = "python3 main.py --id {} --option 66"
 
-# Iterate through IDs and execute the command
-for id in ids:
+# Iterate through datasets and execute the command
+for id, is_control in datasets:
     command = command_template.format(id)
-    print(f"Running: {command}")
-    subprocess.run(command, shell=True)
+    env = os.environ.copy()
+    if is_control:
+        env["PBRAIN_CONTROLS"] = "true"
+    else:
+        env.pop("PBRAIN_CONTROLS", None)
+    print(f"Running: {command} (control={is_control})")
+    subprocess.run(command, shell=True, env=env)
