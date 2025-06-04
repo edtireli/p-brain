@@ -2005,6 +2005,15 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
     dce_path = os.path.join(nifti_directory, dce_filename)
 
+    # Fallback to DCE data if the axial T2 image is missing
+    if not os.path.exists(t2_path):
+        print("[!] Axial T2 not found, using first DCE volume as fallback.")
+        dce_img = nib.load(dce_path)
+        dce_first_vol = dce_img.get_fdata()[..., 0]
+        t2_fallback_path = os.path.join(nifti_directory, "T2_from_DCE.nii")
+        nib.save(nib.Nifti1Image(dce_first_vol, dce_img.affine, dce_img.header), t2_fallback_path)
+        t2_path = t2_fallback_path
+
     # Ensure segmentation directory exists
     os.makedirs(seg_dir, exist_ok=True)
 
