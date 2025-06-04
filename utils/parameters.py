@@ -56,19 +56,19 @@ def global_filenames(nifti_directory):
 # Separate filenames for control datasets used by the AI pipeline
 def control_filenames(nifti_directory):
     refresh_nifti_directory(nifti_directory)
-    t1_3D_filename = 'control_WIPcs_T1W_3D_TFE_32channel.nii'
+    t1_3D_filename = 'Ax_VWIPT1W_3D_TFE.nii'
     axial_t1_3D_filename = r'control_ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'
 
-    t2_3D_filename = r'control_WIPcs_3D_Brain_VIEW_T2_32chSHC.nii'
+    t2_3D_filename = r'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii'
     axial_t2_3D_filename = r'control_ax([-_ ])?vwipcs_3D_Brain_VIEW_T2_32chSHC\.nii'
 
-    flair_3D_filename = 'control_WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
-    axial_flair_3D_filename = r'control_ax([-_ ])?VWIPcs_3D_Brain_VIEW_FLAIR_SHC\.nii'
+    flair_3D_filename = 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
+    axial_flair_3D_filename = 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
 
-    axial_t2_2D_filename = 'control_WIPAxT2TSEmatrix.nii'
+    axial_t2_2D_filename = 'WIPAxT2TSEmatrix.nii'
 
-    dce_filename_primary = 'control_WIPhperf120long.nii'
-    dce_filename_fallback = 'control_WIPDelRec-hperf120long.nii'
+    dce_filename_primary = 'WIPhperf120long.nii'
+    dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
     return (
         t1_3D_filename,
