@@ -11,6 +11,11 @@ correct_signal_jumps = False
 # corresponds to 20% of the original size.
 segmentation_downscale = 0.2
 
+# When True, a two-step FLIRT registration is used when aligning
+# segmentation masks to DCE and T2 images.  When False (default), the
+# previous one-step "-applyxfm -usesqform" approach is retained.
+use_flirt_registration = False
+
 import nibabel as nib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -780,19 +785,42 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     if not os.path.exists(aseg_nii_path):
         raise FileNotFoundError(f"Converted segmentation file not found: {aseg_nii_path}")
 
-    # Step 2: Align the segmentation image to the DCE space using -applyxfm -usesqform
+    # Step 2: Align the segmentation image to the DCE space
     aseg_in_dce_path = aseg_nii_path.replace('.nii.gz', '_in_DCE.nii.gz')
     if not os.path.exists(aseg_in_dce_path):
-        flirt_cmd_dce = [
-            'flirt', '-in', aseg_nii_path, '-ref', dce_path,
-            '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
-            '-out', aseg_in_dce_path
-        ]
-        print(f"Running FLIRT command for DCE: {' '.join(flirt_cmd_dce)}")
-        result = subprocess.run(flirt_cmd_dce, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"FLIRT failed for DCE with error:\n{result.stderr}")
-            raise RuntimeError("FLIRT command for DCE failed.")
+        if use_flirt_registration:
+            mat_dce = aseg_nii_path.replace('.nii.gz', '_to_DCE.mat')
+            flirt_reg_dce = [
+                'flirt', '-in', aseg_nii_path, '-ref', dce_path,
+                '-omat', mat_dce, '-dof', '6'
+            ]
+            print(f"Running FLIRT registration for DCE: {' '.join(flirt_reg_dce)}")
+            result = subprocess.run(flirt_reg_dce, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT registration failed for DCE with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT registration for DCE failed.")
+
+            flirt_apply_dce = [
+                'flirt', '-in', aseg_nii_path, '-ref', dce_path,
+                '-applyxfm', '-init', mat_dce, '-interp', 'nearestneighbour',
+                '-out', aseg_in_dce_path
+            ]
+            print(f"Applying transform for DCE: {' '.join(flirt_apply_dce)}")
+            result = subprocess.run(flirt_apply_dce, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT applyxfm failed for DCE with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT applyxfm for DCE failed.")
+        else:
+            flirt_cmd_dce = [
+                'flirt', '-in', aseg_nii_path, '-ref', dce_path,
+                '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
+                '-out', aseg_in_dce_path
+            ]
+            print(f"Running FLIRT command for DCE: {' '.join(flirt_cmd_dce)}")
+            result = subprocess.run(flirt_cmd_dce, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT failed for DCE with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT command for DCE failed.")
     else:
         print(f"Aligned segmentation to DCE already exists at {aseg_in_dce_path}.")
 
@@ -800,19 +828,42 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     if not os.path.exists(aseg_in_dce_path):
         raise FileNotFoundError(f"Expected output not found: {aseg_in_dce_path}")
 
-    # Step 3: Align the segmentation image to the T2 space using -applyxfm -usesqform
+    # Step 3: Align the segmentation image to the T2 space
     aseg_in_t2_path = aseg_nii_path.replace('.nii.gz', '_in_T2.nii.gz')
     if not os.path.exists(aseg_in_t2_path):
-        flirt_cmd_t2 = [
-            'flirt', '-in', aseg_nii_path, '-ref', t2_path,
-            '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
-            '-out', aseg_in_t2_path
-        ]
-        print(f"Running FLIRT command for T2: {' '.join(flirt_cmd_t2)}")
-        result = subprocess.run(flirt_cmd_t2, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"FLIRT failed for T2 with error:\n{result.stderr}")
-            raise RuntimeError("FLIRT command for T2 failed.")
+        if use_flirt_registration:
+            mat_t2 = aseg_nii_path.replace('.nii.gz', '_to_T2.mat')
+            flirt_reg_t2 = [
+                'flirt', '-in', aseg_nii_path, '-ref', t2_path,
+                '-omat', mat_t2, '-dof', '6'
+            ]
+            print(f"Running FLIRT registration for T2: {' '.join(flirt_reg_t2)}")
+            result = subprocess.run(flirt_reg_t2, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT registration failed for T2 with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT registration for T2 failed.")
+
+            flirt_apply_t2 = [
+                'flirt', '-in', aseg_nii_path, '-ref', t2_path,
+                '-applyxfm', '-init', mat_t2, '-interp', 'nearestneighbour',
+                '-out', aseg_in_t2_path
+            ]
+            print(f"Applying transform for T2: {' '.join(flirt_apply_t2)}")
+            result = subprocess.run(flirt_apply_t2, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT applyxfm failed for T2 with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT applyxfm for T2 failed.")
+        else:
+            flirt_cmd_t2 = [
+                'flirt', '-in', aseg_nii_path, '-ref', t2_path,
+                '-applyxfm', '-usesqform', '-interp', 'nearestneighbour',
+                '-out', aseg_in_t2_path
+            ]
+            print(f"Running FLIRT command for T2: {' '.join(flirt_cmd_t2)}")
+            result = subprocess.run(flirt_cmd_t2, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"FLIRT failed for T2 with error:\n{result.stderr}")
+                raise RuntimeError("FLIRT command for T2 failed.")
     else:
         print(f"Aligned segmentation to T2 already exists at {aseg_in_t2_path}.")
 
@@ -2165,6 +2216,12 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     if os.path.exists(jumpfix_file):
         print('[!] apply_jumpfix.json detected – enabling signal jump correction')
         correct_signal_jumps = True
+
+    # Allow optional FLIRT-based coregistration via an environment variable
+    global use_flirt_registration
+    if os.getenv('USE_FLIRT_REGISTRATION') == '1':
+        print('[!] USE_FLIRT_REGISTRATION=1 – enabling FLIRT-based coregistration')
+        use_flirt_registration = True
 
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
