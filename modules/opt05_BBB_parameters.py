@@ -148,7 +148,6 @@ def compute_average_permeability(c_in, c_out, time_array, baseline_point):
     
     Ktrans_fitted, ve_fitted, vp_fitted = popt
     
-    residuals = c_out - extended_tofts_model(time_array, Ktrans_fitted, ve_fitted, vp_fitted, c_in)
     std_dev_Ktrans = np.sqrt(np.diag(pcov))[0]
     
     # Convert to mM/min

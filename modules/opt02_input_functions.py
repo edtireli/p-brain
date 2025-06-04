@@ -19,11 +19,8 @@ class ROISelector:
         self.roi_slices = {}
         self.zoom_level = 0
         self.zoom_center = None
-        self.roi_values = []
         self.fig, self.ax = plt.subplots()
         self.redraw()
-        self.cid = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
-        self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         plt.show()
 
     def onclick(self, event):

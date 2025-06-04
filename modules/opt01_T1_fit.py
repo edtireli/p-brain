@@ -1,5 +1,5 @@
 import os
-from scipy.optimize import least_squares, curve_fit, minimize
+from scipy.optimize import least_squares, curve_fit
 import nibabel as nib
 from tqdm import tqdm
 import numpy as np
@@ -149,38 +149,6 @@ def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     return M0_matrix, T1_matrix
 
 
-def plot_voxel_fit(X, Y, Z, M0_matrix, T1_matrix, voxel_matrix, values, isVFA=False):
-    def on_esc(event):
-        if event.key == 'escape':
-            plt.close(event.canvas.figure)
-
-    voxel_values = voxel_matrix[:, X, Y, Z]
-    M0_value = M0_matrix[X, Y, Z]
-    T1_value = T1_matrix[X, Y, Z]
-
-    # Choose the model function based on the method
-    if isVFA:
-        fine_values = np.linspace(min(values), max(values), 1000)
-        fitted_values = model_function_VFA(fine_values, TRs, M0_value, 1/T1_value)  # Assuming TR is defined globally or passed as an argument
-        xlabel = 'Flip Angle [degrees]'
-    else:
-        fine_values = np.linspace(min(values), max(values), 1000)
-        fitted_values = model_function(fine_values, M0_value, T1_value)
-        xlabel = 'TI Values [ms]'
-
-    # Plotting
-    plt.plot(values, voxel_values, 'o', color='red', markersize=3, label='Voxel Signal Values')
-    plt.plot(fine_values, fitted_values, '--', color='black', alpha=0.75, label='Fitted Curve')
-    plt.xlabel(xlabel)
-    plt.ylabel('Signal Intensity')
-    plt.legend()
-    plt.title(f'Voxel Signal and Fitted Curve at X={X}, Y={Y}, Z={Z}')
-    plt.grid(which='minor', alpha=0.25)
-    plt.minorticks_on()
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
-    if not turbo_mode:
-        close_plot_after_delay_plt(3)
-        plt.show()
 
 def plot_histograms(M0_matrix, T1_matrix, image_directory):
     def on_esc(event):
@@ -251,7 +219,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
         close_plot_after_delay(3, fig)
         plt.show()
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    IsSiemens, IsVFA, IsIR, _, _ = parameters
+    _, IsVFA, IsIR, _, _ = parameters
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
     
@@ -306,9 +274,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
         save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
 
-    X_center = voxel_matrix.shape[1] // 2
-    Y_center = voxel_matrix.shape[2] // 2
-    Z_center = voxel_matrix.shape[3] // 2
+
     
     plot_histograms(M0_matrix, T1_matrix, image_directory) 
     plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory)

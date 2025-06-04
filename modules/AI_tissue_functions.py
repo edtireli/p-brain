@@ -3,27 +3,17 @@ force_recreate_masks = True  # If True: recreate all masks regardless of existen
 
 import nibabel as nib
 import matplotlib.pyplot as plt
-from skimage import color
-import torch
 import numpy as np
-from torchvision import utils
-import subprocess 
+import subprocess
 import os
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
-from scipy.ndimage import zoom
 from skimage.transform import resize
 import json
-import os
 from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
-from skimage.exposure import rescale_intensity
 from tqdm import tqdm
-
-import numpy as np
-import nibabel as nib
-import os
 
 def patlak_total(C_t, C_a, t):
     """Run mask_problematic *after* trimming, then Patlak."""
@@ -913,83 +903,6 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
             subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
             gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
             wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce)
-
-def plot_dce_grid(
-    dce_image,
-    wm_mask_downsampled,
-    cortical_gm_mask_downsampled,
-    subcortical_gm_mask_downsampled,
-    gm_brainstem_mask_downsampled,
-    gm_cerebellum_mask_downsampled,
-    wm_cerebellum_mask_downsampled,
-    wm_cc_mask_downsampled,
-    image_directory
-):
-    n_slices = dce_image.shape[2]
-    n_cols = 5
-    n_rows = 2
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 6))
-
-    for i in range(n_slices):
-        row = i // n_cols
-        col = i % n_cols
-
-        dce_slice = np.rot90(dce_image[:, :, i])
-        wm_slice_dce = np.rot90(wm_mask_downsampled[:, :, i])
-        cortical_gm_slice_dce = np.rot90(cortical_gm_mask_downsampled[:, :, i])
-        subcortical_gm_slice_dce = np.rot90(subcortical_gm_mask_downsampled[:, :, i])
-        gm_brainstem_slice_dce = np.rot90(gm_brainstem_mask_downsampled[:, :, i])
-        gm_cerebellum_slice_dce = np.rot90(gm_cerebellum_mask_downsampled[:, :, i])
-        wm_cerebellum_slice_dce = np.rot90(wm_cerebellum_mask_downsampled[:, :, i])
-        wm_cc_slice_dce = np.rot90(wm_cc_mask_downsampled[:, :, i])
-
-        # Create color overlay based on the same color scheme used in other plots
-        color_overlay_dce = np.zeros((*dce_slice.shape, 3))
-
-        # White Matter: Blue
-        color_overlay_dce[:, :, 2][wm_slice_dce == 1] = 1.0
-
-        # Cortical GM: Bright Red
-        color_overlay_dce[:, :, 0][cortical_gm_slice_dce == 1] = 1.0
-
-        # Subcortical GM: Dark Red
-        color_overlay_dce[:, :, 0][subcortical_gm_slice_dce == 1] = 0.5
-
-        # Brainstem GM: Orange (red + green)
-        color_overlay_dce[:, :, 0][gm_brainstem_slice_dce == 1] = 1.0
-        color_overlay_dce[:, :, 1][gm_brainstem_slice_dce == 1] = 0.5
-
-        # Cerebellum GM: Yellow (red + green)
-        color_overlay_dce[:, :, 0][gm_cerebellum_slice_dce == 1] = 1.0
-        color_overlay_dce[:, :, 1][gm_cerebellum_slice_dce == 1] = 1.0
-
-        # Cerebellum WM: Cyan (green + blue)
-        color_overlay_dce[:, :, 1][wm_cerebellum_slice_dce == 1] = 1.0
-        color_overlay_dce[:, :, 2][wm_cerebellum_slice_dce == 1] = 1.0
-
-        # Corpus Callosum WM: Magenta (red + blue)
-        color_overlay_dce[:, :, 0][wm_cc_slice_dce == 1] = 1.0
-        color_overlay_dce[:, :, 2][wm_cc_slice_dce == 1] = 1.0
-
-        ax_dce = axes[row, col]
-        ax_dce.imshow(dce_slice, cmap='gray', alpha=1)
-        ax_dce.imshow(color_overlay_dce, alpha=0.5)
-        ax_dce.set_title(f'Slice {i+1}')
-        ax_dce.axis('off')
-
-    plt.tight_layout()
-    os.makedirs(os.path.join(image_directory, 'AI', 'Tissue functions'), exist_ok=True)
-
-    # Optionally save the figure as a grid image if desired
-    plt.savefig(os.path.join(image_directory, 'AI', 'Tissue functions', 'AI_Tissue_grid.png'), dpi=300)
-
-    if not turbo_mode:
-        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-        close_plot_after_delay(3, fig)
-        plt.show()
-    else:
-        plt.close(fig)
 
 
 def patlak_analysis_plotting(c_tissue, c_input, time):

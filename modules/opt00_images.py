@@ -15,7 +15,7 @@ class MRIViewer:
         self.frame_idx = 0
 
     def find_matching_file(self, patterns):
-        for root, dirs, files in os.walk(self.nifti_directory):
+        for root, _, files in os.walk(self.nifti_directory):
             for file in files:
                 for pattern in patterns:
                     if re.fullmatch(pattern, file, re.IGNORECASE):
@@ -58,7 +58,7 @@ class MRIViewer:
             try:
                 choice = int(choice)
                 if choice in available_files:
-                    selected_file, selected_name = available_files[choice]
+                    selected_file, _ = available_files[choice]
 
                     # Load the NIFTI file
                     img = nib.load(os.path.join(self.nifti_directory, selected_file))
