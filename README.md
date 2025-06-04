@@ -168,6 +168,7 @@ The idea is to use the options in chronological order, as each step requires the
 - Option 3 - Time shifting:  The venous CTC is shifted in time to the arterial CTC this is done by peak analysis so that a sufficient input function can be used. If the arterial CTC has taller peaks than the venous, then the venous curve is also rescaled to match.
 - Option 4 - Tissue Concentration Time Curves: Generates Tissue CTCs via ROI selection (GUI) in the same way as in Option 2: using the DCE file and the 2D T2W image for this step.
 - Option 5 - BBB Permeability Estimation: Estimates BBB permeability using both Patlak and the extended Tofts models.
+- Automatic DWI processing computes Fractional Anisotropy (FA) maps per patient when DWI data are present.
 - Addons:
     -  Boundary: Computes the concentration time function for Grey Matter/White Matter boundary (segmented with fsl_anat).
     ![CTC+ROI_slice_7](https://github.com/edtireli/p-brain/assets/129996957/32bc922a-dcce-4b9c-a31e-053d021351e4)

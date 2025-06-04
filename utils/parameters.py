@@ -21,6 +21,7 @@ def global_parameters():
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
     RERUN_SEGMENTATION = False  # Force rerun of FastSurfer segmentation
     SEGMENTATION_METHOD = "fastsurfer"  # Choose segmentation tool (default FastSurfer)
+    COMPUTE_FA = True  # Compute fractional anisotropy from DWI
     return (
         IsVFA,
         IsIR,
@@ -28,6 +29,7 @@ def global_parameters():
         boundary,
         RERUN_SEGMENTATION,
         SEGMENTATION_METHOD,
+        COMPUTE_FA,
     )
 
 def refresh_nifti_directory(nifti_directory):

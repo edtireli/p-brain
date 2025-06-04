@@ -1995,7 +1995,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
 
-    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD = parameters
+    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
 
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)

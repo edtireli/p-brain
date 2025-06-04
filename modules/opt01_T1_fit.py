@@ -231,7 +231,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
         close_plot_after_delay(3, fig)
         plt.show()
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    _, IsVFA, IsIR, _, _, _ = parameters
+    _, IsVFA, IsIR, _, _, _, _ = parameters
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
     

@@ -6,3 +6,4 @@ seaborn
 nibabel
 tqdm
 numpy
+dipy
