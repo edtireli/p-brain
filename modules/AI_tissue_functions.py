@@ -9,7 +9,7 @@ correct_signal_jumps = False
 # fails due to memory constraints. The resulting segmentation will
 # be upscaled back to the original resolution. A value of ``0.8``
 # corresponds to 80% of the original size.
-segmentation_downscale = 0.5
+segmentation_downscale = 0.4
 
 # When True, a two-step FLIRT registration is used when aligning
 # segmentation masks to DCE and T2 images.  When False (default), the
@@ -37,20 +37,29 @@ import re
 
 
 def downsample_to_factor(in_path: str, out_path: str, factor: float):
-    """Downsample ``in_path`` so voxel size increases by ``1/factor``."""
+    """Downsample ``in_path`` along ``x`` and ``y`` only by ``factor``."""
     img_orig = nib.load(in_path)
     orig_aff = img_orig.affine
     orig_hdr = img_orig.header
     orig_zooms = orig_hdr.get_zooms()[:3]
 
-    new_zooms = tuple(z / factor for z in orig_zooms)
+    # keep slice thickness unchanged, only scale x/y
+    new_zooms = (
+        orig_zooms[0] / factor,
+        orig_zooms[1] / factor,
+        orig_zooms[2],
+    )
 
     new_aff = orig_aff.copy()
     R = orig_aff[:3, :3] @ np.diag([1.0 / oz for oz in orig_zooms])
     new_aff[:3, :3] = R @ np.diag(new_zooms)
 
     orig_shape = img_orig.shape[:3]
-    new_shape = tuple(int(np.round(osz * factor)) for osz in orig_shape)
+    new_shape = (
+        int(np.round(orig_shape[0] * factor)),
+        int(np.round(orig_shape[1] * factor)),
+        orig_shape[2],
+    )
 
     hdr_down = orig_hdr.copy()
     if len(orig_hdr.get_zooms()) > 3:
