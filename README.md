@@ -99,6 +99,12 @@ For advanced functionalities, p-Brain supports optional addons. To install the a
 
 By following these steps, the `boundary` addon will be available for use within p-Brain.
 
+### Automatic Versioning
+
+The application derives its version directly from the Git tags. `modules/__init__.py`
+will read the most recent tag via `git describe --tags` when executed, so you do
+not need to manually update the version string.
+
 ## 4. How to use
 To start p-Brain, navigate to the project directory and execute the following command:
 ```bash

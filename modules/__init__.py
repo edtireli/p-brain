@@ -4,7 +4,7 @@ p-Brain: Advanced Neuroimaging Analysis Tool
 This package provides functionalities for in-depth analysis of .PAR/.REC MRI data, including...
 """
 
-__version__ = "1.2.1"
+from .version import __version__
 __author__ = "Edis Devin Tireli"
 __affiliation__ = "Copenhagen University"
 
