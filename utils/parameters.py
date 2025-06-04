@@ -16,10 +16,11 @@ def get_dce_filename(primary, fallback, nifti_directory):
 
 def global_parameters():
     IsVFA = False #Variable flip angle for the T1/M0 fit
-    IsIR = True #Inversion recovery method 
+    IsIR = True #Inversion recovery method
     apple_metal = True # Enable if running on apple M1/M2/M3...
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
-    return (IsVFA, IsIR, apple_metal, boundary)
+    RERUN_SEGMENTATION = False  # Force rerun of FastSurfer segmentation
+    return (IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION)
 
 def refresh_nifti_directory(nifti_directory):
     return os.listdir(nifti_directory)
