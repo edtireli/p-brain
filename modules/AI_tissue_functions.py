@@ -5,12 +5,19 @@ force_recreate_masks = True  # If True: recreate all masks regardless of existen
 # is used for the Patlak analysis.
 correct_signal_jumps = False
 
+# Factor used to downscale the T1 image if FastSurfer segmentation
+# fails due to memory constraints. The resulting segmentation will
+# be upscaled back to the original resolution. A value of ``0.2``
+# corresponds to 20% of the original size.
+segmentation_downscale = 0.2
+
 import nibabel as nib
 import matplotlib.pyplot as plt
 import numpy as np
 import subprocess
 import os
 import multiprocessing
+import shutil
 from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
@@ -20,6 +27,27 @@ import json
 from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
+from scipy.ndimage import zoom
+
+
+def downscale_nifti(in_path, out_path, factor):
+    """Downscale a NIfTI/MGH image by ``factor`` along each axis."""
+    img = nib.load(in_path)
+    data = img.get_fdata()
+    scaled = zoom(data, factor, order=1)
+    affine = img.affine.copy()
+    affine[:3, :3] /= factor
+    nib.save(nib.Nifti1Image(scaled, affine, img.header), out_path)
+
+
+def upscale_segmentation(seg_path, ref_path, out_path):
+    """Upscale ``seg_path`` to match ``ref_path`` geometry."""
+    seg_img = nib.load(seg_path)
+    ref_img = nib.load(ref_path)
+    factor = np.array(ref_img.shape[:3]) / np.array(seg_img.shape[:3])
+    seg_data = seg_img.get_fdata()
+    seg_up = zoom(seg_data, factor, order=0)
+    nib.save(nib.Nifti1Image(seg_up, ref_img.affine, ref_img.header), out_path)
 
 def patlak_total(C_t, C_a, t):
     """Optional drop correction then Patlak fit."""
@@ -399,7 +427,35 @@ def segmentation(
                     f"--sid {sid} "
                     f"--sd {output_dir}"
                 )
-            subprocess.run(command, shell=True)
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            if result.returncode != 0 or not os.path.exists(seg_mgz_path):
+                print("FastSurfer segmentation failed, attempting downscaled run ...")
+                tmp_t1 = t1_path.replace('.nii', '_ds.nii')
+                downscale_nifti(t1_path, tmp_t1, segmentation_downscale)
+                tmp_sid = f"{sid}_ds"
+                tmp_dir = os.path.join(output_dir, tmp_sid)
+                if apple_metal:
+                    command = (
+                        f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
+                        f"{fastsurfer_path} --seg_only --device mps "
+                        f"--t1 {tmp_t1} "
+                        f"--sid {tmp_sid} "
+                        f"--sd {output_dir}"
+                    )
+                else:
+                    command = (
+                        f"{fastsurfer_path} --seg_only "
+                        f"--t1 {tmp_t1} "
+                        f"--sid {tmp_sid} "
+                        f"--sd {output_dir}"
+                    )
+                subprocess.run(command, shell=True)
+                tmp_seg = os.path.join(tmp_dir, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
+                if not os.path.exists(tmp_seg):
+                    raise RuntimeError("FastSurfer segmentation failed even after downscaling")
+                upscale_segmentation(tmp_seg, t1_path, seg_mgz_path)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                os.remove(tmp_t1)
         else:
             print("Segmentation file already exists, skipping FastSurfer segmentation.")
     else:
