@@ -53,7 +53,7 @@ else:
         datasets.append((arg, is_ctrl))
 
 # Template for the command to run
-command_template = "python3 main.py --id {} --option 66"
+command_template = "python3 main.py --id {} --option 6"
 
 # Iterate through datasets and execute the command
 for id, is_control in datasets:
