@@ -7,9 +7,9 @@ correct_signal_jumps = False
 
 # Factor used to downscale the T1 image if FastSurfer segmentation
 # fails due to memory constraints. The resulting segmentation will
-# be upscaled back to the original resolution. A value of ``0.2``
-# corresponds to 20% of the original size.
-segmentation_downscale = 0.2
+# be upscaled back to the original resolution. A value of ``0.8``
+# corresponds to 80% of the original size.
+segmentation_downscale = 0.5
 
 # When True, a two-step FLIRT registration is used when aligning
 # segmentation masks to DCE and T2 images.  When False (default), the
