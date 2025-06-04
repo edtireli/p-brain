@@ -5,11 +5,6 @@ force_recreate_masks = True  # If True: recreate all masks regardless of existen
 # is used for the Patlak analysis.
 correct_signal_jumps = False
 
-# Factor used to downscale the T1 image if FastSurfer segmentation
-# fails due to memory constraints. The resulting segmentation will
-# be upscaled back to the original resolution. A value of ``0.8``
-# corresponds to 80% of the original size.
-segmentation_downscale = 0.4
 
 # When True, a two-step FLIRT registration is used when aligning
 # segmentation masks to DCE and T2 images.  When False (default), the
@@ -32,60 +27,7 @@ import json
 from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
-from nibabel.processing import resample_from_to
 import re
-
-
-def downsample_to_factor(in_path: str, out_path: str, factor: float):
-    """Downsample ``in_path`` along ``x`` and ``y`` only by ``factor``."""
-    img_orig = nib.load(in_path)
-    orig_aff = img_orig.affine
-    orig_hdr = img_orig.header
-    orig_zooms = orig_hdr.get_zooms()[:3]
-
-    # keep slice thickness unchanged, only scale x/y
-    new_zooms = (
-        orig_zooms[0] / factor,
-        orig_zooms[1] / factor,
-        orig_zooms[2],
-    )
-
-    new_aff = orig_aff.copy()
-    R = orig_aff[:3, :3] @ np.diag([1.0 / oz for oz in orig_zooms])
-    new_aff[:3, :3] = R @ np.diag(new_zooms)
-
-    orig_shape = img_orig.shape[:3]
-    new_shape = (
-        int(np.round(orig_shape[0] * factor)),
-        int(np.round(orig_shape[1] * factor)),
-        orig_shape[2],
-    )
-
-    hdr_down = orig_hdr.copy()
-    if len(orig_hdr.get_zooms()) > 3:
-        hdr_down.set_zooms(new_zooms + (orig_hdr.get_zooms()[3],))
-    else:
-        hdr_down.set_zooms(new_zooms)
-    dummy_array = np.zeros(new_shape, dtype=img_orig.get_fdata().dtype)
-    down_img = nib.Nifti1Image(dummy_array, new_aff, hdr_down)
-
-    img_down = resample_from_to(img_orig, (down_img.shape, down_img.affine), order=1)
-    nib.save(img_down, out_path)
-
-
-def upsample_segmentation_to_reference(seg_path: str, ref_path: str, out_path: str):
-    """Resample ``seg_path`` onto ``ref_path`` grid using nearest neighbour."""
-    seg_img = nib.load(seg_path)
-    ref_img = nib.load(ref_path)
-
-    ref_shape = ref_img.shape[:3]
-    ref_affine = ref_img.affine
-    ref_hdr = ref_img.header.copy()
-    dummy_ref_array = np.zeros(ref_shape, dtype=seg_img.get_fdata().dtype)
-    dummy_ref_img = nib.Nifti1Image(dummy_ref_array, ref_affine, ref_hdr)
-
-    seg_up = resample_from_to(seg_img, (dummy_ref_img.shape, dummy_ref_img.affine), order=0)
-    nib.save(seg_up, out_path)
 
 def patlak_total(C_t, C_a, t):
     """Optional drop correction then Patlak fit."""
@@ -564,33 +506,29 @@ def segmentation(
                 )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             if result.returncode != 0 or not os.path.exists(seg_mgz_path):
-                print("FastSurfer segmentation failed, attempting downscaled run ...")
-                tmp_t1 = t1_path.replace('.nii', '_ds.nii')
-                downsample_to_factor(t1_path, tmp_t1, segmentation_downscale)
-                tmp_sid = f"{sid}_ds"
-                tmp_dir = os.path.join(output_dir, tmp_sid)
+                print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
                 if apple_metal:
                     command = (
                         f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
                         f"{fastsurfer_path} --seg_only --device mps "
-                        f"--t1 {tmp_t1} "
-                        f"--sid {tmp_sid} "
-                        f"--sd {output_dir}"
+                        f"--t1 {t1_path} "
+                        f"--vox_size 1 "
+                        f"--sid {sid} "
+                        f"--sd {output_dir} "
+                        f"--no_cereb"
                     )
                 else:
                     command = (
                         f"{fastsurfer_path} --seg_only "
-                        f"--t1 {tmp_t1} "
-                        f"--sid {tmp_sid} "
-                        f"--sd {output_dir}"
+                        f"--t1 {t1_path} "
+                        f"--vox_size 1 "
+                        f"--sid {sid} "
+                        f"--sd {output_dir} "
+                        f"--no_cereb"
                     )
                 subprocess.run(command, shell=True)
-                tmp_seg = os.path.join(tmp_dir, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
-                if not os.path.exists(tmp_seg):
-                    raise RuntimeError("FastSurfer segmentation failed even after downscaling")
-                upsample_segmentation_to_reference(tmp_seg, t1_path, seg_mgz_path)
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                os.remove(tmp_t1)
+                if not os.path.exists(seg_mgz_path):
+                    raise RuntimeError("FastSurfer segmentation failed even with vox_size 1")
         else:
             print("Segmentation file already exists, skipping FastSurfer segmentation.")
     else:
