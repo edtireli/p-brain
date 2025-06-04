@@ -7,6 +7,7 @@ import pickle
 import json
 import matplotlib.pyplot as plt
 import multiprocessing
+import functools
 from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
@@ -104,6 +105,37 @@ def model_residuals(params, TIs, voxel_values):
     M0, T1 = params
     return model_function(TIs, M0, T1) - voxel_values
 
+
+def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
+    if max(voxel_values) == 0:
+        return (0.0, 0.0)
+    if IsVFA:
+        alfas_rad = np.radians(alfas)
+        initial_M0 = max(voxel_values) / np.sin(alfas_rad[0])
+        initial_T1 = 750
+        bounds = ([0, 500], [2 * initial_M0, 5000])
+        result = least_squares(
+            model_residuals_VFA,
+            [initial_M0, initial_T1],
+            args=(voxel_values,),
+            kwargs={"alfas": alfas, "TRs": TRs},
+            bounds=bounds,
+            method="trf",
+        )
+    else:
+        initial_M0 = max(voxel_values) / np.sin(np.pi / 2)
+        max_signal = max(voxel_values)
+        initial_T1 = 750
+        bounds = ([1e-3, 500], [max_signal, 5000])
+        result = least_squares(
+            model_residuals,
+            [initial_M0, initial_T1],
+            args=(TI_values, voxel_values),
+            bounds=bounds,
+            method="trf",
+        )
+    return result.x[0], result.x[1]
+
 def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     shape_x, shape_y, shape_z = voxel_matrix.shape[1:]
     total_voxels = shape_x * shape_y * shape_z
@@ -112,48 +144,20 @@ def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     alfas = kwargs.get('alfas')
     TRs = kwargs.get('TRs')
 
-    def _fit_single(voxel_values):
-        if max(voxel_values) == 0:
-            return (0.0, 0.0)
-        if IsVFA:
-            alfas_rad = np.radians(alfas)
-            initial_M0 = max(voxel_values) / np.sin(alfas_rad[0])
-            initial_T1 = 750
-            bounds = ([0, 500], [2 * initial_M0, 5000])
-            result = least_squares(
-                model_residuals_VFA,
-                [initial_M0, initial_T1],
-                args=(voxel_values,),
-                kwargs={"alfas": alfas, "TRs": TRs},
-                bounds=bounds,
-                method="trf",
-            )
-        else:
-            initial_M0 = max(voxel_values) / np.sin(np.pi / 2)
-            max_signal = max(voxel_values)
-            initial_T1 = 750
-            bounds = ([1e-3, 500], [max_signal, 5000])
-            result = least_squares(
-                model_residuals,
-                [initial_M0, initial_T1],
-                args=(TI_values, voxel_values),
-                bounds=bounds,
-                method="trf",
-            )
-        return result.x[0], result.x[1]
+    partial_fit = functools.partial(_fit_single, IsVFA=IsVFA, TI_values=TI_values, alfas=alfas, TRs=TRs)
 
     if MULTIPROCESSING:
         with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
             results = list(
                 tqdm(
-                    pool.imap(_fit_single, voxels),
+                    pool.imap(partial_fit, voxels),
                     total=total_voxels,
                     desc=" Fitting Voxel Matrix",
                 )
             )
     else:
         results = [
-            _fit_single(v) for v in tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
+            partial_fit(v) for v in tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
         ]
 
     M0_values = np.array([r[0] for r in results]).reshape(shape_x, shape_y, shape_z)
