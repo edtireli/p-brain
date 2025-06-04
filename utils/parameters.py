@@ -58,14 +58,14 @@ def global_filenames(nifti_directory):
 # Separate filenames for control datasets used by the AI pipeline
 def control_filenames(nifti_directory):
     refresh_nifti_directory(nifti_directory)
-    t1_3D_filename = 'Ax_VWIPT1W_3D_TFE.nii'
+    t1_3D_filename = 'WIPT1W_3D_TFE.nii'
     axial_t1_3D_filename = r'ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'
 
     t2_3D_filename = r'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii'
     axial_t2_3D_filename = r'ax([-_ ])?vwipcs_3D_Brain_VIEW_T2_32chSHC\.nii'
 
     flair_3D_filename = 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
-    axial_flair_3D_filename = 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
+    axial_flair_3D_filename = 'Ax_VWIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
 
     axial_t2_2D_filename = 'WIPAxT2TSEmatrix.nii'
 
