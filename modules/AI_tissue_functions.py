@@ -190,6 +190,87 @@ def identify_drop_points(signal, tail_start: int = 100, threshold_factor: float 
     drop_idxs = np.where((resid < thresh) & (np.arange(n) >= tail_start))[0]
     return drop_idxs.astype(int), trend, thresh
 
+# -- Helper functions for compute_Ki_from_atlas -----------------------------
+
+# These globals are populated in ``_init_compute_Ki`` and used by
+# ``_process_label``.  They allow child processes spawned by
+# ``multiprocessing`` to access the large numpy arrays without needing to
+# pickle and send them with every task.
+_atlas_data = None
+_data_4d = None
+_T1_matrix = None
+_M0_matrix = None
+_time_points_s = None
+_C_a_full = None
+_compute_CTC = None
+_find_baseline_point_advanced = None
+_custom_shifter = None
+_patlak_analysis_plotting = None
+
+
+def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
+                     C_a_full, compute_CTC, find_baseline_point_advanced,
+                     custom_shifter, patlak_analysis_plotting):
+    """Initialise global read-only data for compute_Ki_from_atlas workers."""
+
+    global _atlas_data, _data_4d, _T1_matrix, _M0_matrix, _time_points_s
+    global _C_a_full, _compute_CTC, _find_baseline_point_advanced
+    global _custom_shifter, _patlak_analysis_plotting
+
+    _atlas_data = atlas_data
+    _data_4d = data_4d
+    _T1_matrix = T1_matrix
+    _M0_matrix = M0_matrix
+    _time_points_s = time_points_s
+    _C_a_full = C_a_full
+    _compute_CTC = compute_CTC
+    _find_baseline_point_advanced = find_baseline_point_advanced
+    _custom_shifter = custom_shifter
+    _patlak_analysis_plotting = patlak_analysis_plotting
+
+
+def _process_label(lbl):
+    """Worker for ``compute_Ki_from_atlas`` to process a single label."""
+
+    mask = (_atlas_data == lbl)
+    indices = np.argwhere(mask)
+    if len(indices) < 1:
+        return (lbl, np.nan, np.nan, np.nan, 0)
+
+    curves_for_label = []
+    for (x, y, z) in indices:
+        voxel_time_course = _data_4d[x, y, z, :]
+        if np.isnan(voxel_time_course).any():
+            continue
+        T1 = _T1_matrix[x, y, z]
+        M0 = _M0_matrix[x, y, z]
+        c_t_0 = _compute_CTC(voxel_time_course, T1, m0=M0)
+        if np.isnan(c_t_0).any():
+            continue
+        baseline_point = _find_baseline_point_advanced(c_t_0)
+        c_t = _custom_shifter(c_t_0, baseline_point)
+        if np.isnan(c_t).any():
+            continue
+        if np.all(c_t == 0.0):
+            continue
+        curves_for_label.append(c_t)
+
+    if len(curves_for_label) == 0:
+        return (lbl, np.nan, np.nan, np.nan, 0)
+
+    curves_for_label = np.array(curves_for_label)
+    median_ct = np.median(curves_for_label, axis=0)
+
+    min_len = min(len(median_ct), len(_C_a_full))
+    C_t_label = median_ct[:min_len]
+    C_a_label = _C_a_full[:min_len]
+    t_label = _time_points_s[:min_len]
+
+    Ki, lam, SD_Ki, _, _, _ = _patlak_analysis_plotting(
+        C_t_label, C_a_label, t_label)
+    return (lbl, Ki, SD_Ki, lam, len(indices))
+
+
 def compute_Ki_from_atlas(
     atlas_path,
     data_4d,
@@ -220,46 +301,37 @@ def compute_Ki_from_atlas(
     # Dictionary to keep numerical results per label for JSON output
     atlas_results = {}
 
-    def _process_label(lbl):
-        mask = (atlas_data == lbl)
-        indices = np.argwhere(mask)
-        if len(indices) < 1:
-            return (lbl, np.nan, np.nan, np.nan, 0)
-
-        curves_for_label = []
-        for (x, y, z) in indices:
-            voxel_time_course = data_4d[x, y, z, :]
-            if np.isnan(voxel_time_course).any():
-                continue
-            T1 = T1_matrix[x, y, z]
-            M0 = M0_matrix[x, y, z]
-            c_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
-            if np.isnan(c_t_0).any():
-                continue
-            baseline_point = find_baseline_point_advanced(c_t_0)
-            c_t = custom_shifter(c_t_0, baseline_point)
-            if np.isnan(c_t).any():
-                continue
-            if np.all(c_t == 0.0):
-                continue
-            curves_for_label.append(c_t)
-
-        if len(curves_for_label) == 0:
-            return (lbl, np.nan, np.nan, np.nan, 0)
-
-        curves_for_label = np.array(curves_for_label)
-        median_ct = np.median(curves_for_label, axis=0)
-
-        min_len = min(len(median_ct), len(C_a_full))
-        C_t_label = median_ct[:min_len]
-        C_a_label = C_a_full[:min_len]
-        t_label = time_points_s[:min_len]
-
-        Ki, lam, SD_Ki, _, _, _ = patlak_analysis_plotting(C_t_label, C_a_label, t_label)
-        return (lbl, Ki, SD_Ki, lam, len(indices))
+    # Initialise worker globals for multiprocessing or direct execution
+    _init_compute_Ki(
+        atlas_data,
+        data_4d,
+        T1_matrix,
+        M0_matrix,
+        time_points_s,
+        C_a_full,
+        compute_CTC,
+        find_baseline_point_advanced,
+        custom_shifter,
+        patlak_analysis_plotting,
+    )
 
     if MULTIPROCESSING:
-        with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
+        with multiprocessing.Pool(
+            NUMBER_OF_CORES,
+            initializer=_init_compute_Ki,
+            initargs=(
+                atlas_data,
+                data_4d,
+                T1_matrix,
+                M0_matrix,
+                time_points_s,
+                C_a_full,
+                compute_CTC,
+                find_baseline_point_advanced,
+                custom_shifter,
+                patlak_analysis_plotting,
+            ),
+        ) as pool:
             results = pool.map(_process_label, unique_labels)
     else:
         results = [_process_label(lbl) for lbl in unique_labels]
