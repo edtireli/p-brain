@@ -1354,16 +1354,19 @@ def plot_ctcs_and_patlak(
     # ---------------- Patlak panel (bottom) ------------------
     ax_pat.set_facecolor('#f7f7f7')
 
+    included_y_values = []
+
     def add_patlak(xp, yp, inc_mask, Ki, lam, colour, label):
         if xp.size == 0 or np.isnan(Ki):
             return
         # used points
         ax_pat.scatter(xp[inc_mask], yp[inc_mask],
                        color=colour, marker='o', s=25, label=label)
+        included_y_values.extend(yp[inc_mask].tolist())
         # excluded points – hollow circles now, NOT crosses
-        excl = ~inc_mask & np.isfinite(xp) & np.isfinite(yp)     # new
-        ax_pat.scatter(xp[excl], yp[excl],                       # edited
-                    facecolors='none', edgecolors=colour, s=40)
+        excl = ~inc_mask & np.isfinite(xp) & np.isfinite(yp)
+        ax_pat.scatter(xp[excl], yp[excl],
+                       facecolors='none', edgecolors=colour, s=40)
         # fit line
         ax_pat.plot(xp, lam/100 + (Ki/6000)*xp,
                     color=colour, linestyle='--')
@@ -1376,6 +1379,10 @@ def plot_ctcs_and_patlak(
     add_patlak(x_patlak_wm_cerebellum,  y_patlak_wm_cerebellum,  included_wm_cerebellum,  Ki_wm_cerebellum,  lambda_wm_cerebellum,  'cyan',    'Cerebellar WM')
     add_patlak(x_patlak_wm_cc,          y_patlak_wm_cc,          included_wm_cc,          Ki_wm_cc,          lambda_wm_cc,          'magenta', 'WM CC')
     add_patlak(x_patlak_boundary,       y_patlak_boundary,       included_boundary,       Ki_boundary,       lambda_boundary,       'green',   'Boundary')
+
+    if included_y_values:
+        ymin, ymax = min(included_y_values), max(included_y_values)
+        ax_pat.set_ylim(ymin, ymax)
 
     ax_pat.set_title('Patlak fit')
     ax_pat.set_xlim(0, 800)
