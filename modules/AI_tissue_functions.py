@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import subprocess
 import os
+import multiprocessing
+from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
@@ -190,14 +192,12 @@ def compute_Ki_from_atlas(
     # Dictionary to keep numerical results per label for JSON output
     atlas_results = {}
 
-    # For each label, gather voxels and compute median C(t)
-    for lbl in unique_labels:
+    def _process_label(lbl):
         mask = (atlas_data == lbl)
         indices = np.argwhere(mask)
         if len(indices) < 1:
-            continue
+            return (lbl, np.nan, np.nan, np.nan, 0)
 
-        # Collect all valid C(t)s for this label
         curves_for_label = []
         for (x, y, z) in indices:
             voxel_time_course = data_4d[x, y, z, :]
@@ -205,49 +205,49 @@ def compute_Ki_from_atlas(
                 continue
             T1 = T1_matrix[x, y, z]
             M0 = M0_matrix[x, y, z]
-
-            # Convert intensities => concentration-time curve
             c_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
             if np.isnan(c_t_0).any():
                 continue
-
-            # Find baseline
             baseline_point = find_baseline_point_advanced(c_t_0)
             c_t = custom_shifter(c_t_0, baseline_point)
             if np.isnan(c_t).any():
                 continue
-            
-            # Possibly check for all-zero or nonsense curves
             if np.all(c_t == 0.0):
                 continue
-
             curves_for_label.append(c_t)
 
         if len(curves_for_label) == 0:
-            continue
+            return (lbl, np.nan, np.nan, np.nan, 0)
 
-        # Compute median curve
         curves_for_label = np.array(curves_for_label)
         median_ct = np.median(curves_for_label, axis=0)
 
-        # Truncate to match length of C_a_full
         min_len = min(len(median_ct), len(C_a_full))
         C_t_label = median_ct[:min_len]
         C_a_label = C_a_full[:min_len]
         t_label = time_points_s[:min_len]
 
-        # Patlak analysis
         Ki, lam, SD_Ki, _, _, _ = patlak_analysis_plotting(C_t_label, C_a_label, t_label)
+        return (lbl, Ki, SD_Ki, lam, len(indices))
+
+    if MULTIPROCESSING:
+        with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
+            results = pool.map(_process_label, unique_labels)
+    else:
+        results = [_process_label(lbl) for lbl in unique_labels]
+
+    for lbl, Ki, SD_Ki, lam, voxel_count in results:
+        if np.isnan(Ki):
+            continue
+        mask = (atlas_data == lbl)
         Ki_map[mask] = Ki
         SD_Ki_map[mask] = SD_Ki
         vp_map[mask] = lam
-
-        # Store numeric results for this label
         atlas_results[str(lbl)] = {
             "Ki": float(Ki),
             "SD_Ki": float(SD_Ki),
             "vp": float(lam),
-            "voxel_count": int(len(indices))
+            "voxel_count": int(voxel_count)
         }
 
     # Save results as NIfTI

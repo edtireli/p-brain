@@ -10,6 +10,11 @@ matplotlib.use("TkAgg")
 CONTROLS = os.environ.get("PBRAIN_CONTROLS", "False").lower() in ("1", "true", "yes")
 CONTROL_FLAG_FILENAME = "control.json"
 
+# Toggle multiprocessing for compute-heavy routines
+MULTIPROCESSING = True
+# Default number of CPU cores used when multiprocessing is enabled
+NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
+
 # Paths to the neural network models used for artery and vein ROI extraction.
 # These can be overridden by environment variables to use custom models.
 AI_MODEL_PATHS = {
