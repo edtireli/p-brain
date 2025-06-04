@@ -6,3 +6,7 @@ seaborn
 nibabel
 tqdm
 numpy
+
+opencv-python
+scikit-image
+tensorflow
