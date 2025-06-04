@@ -1,7 +1,12 @@
 import os
 import sys
+import json
 import matplotlib
 matplotlib.use("TkAgg")
+
+# Global toggle for analysing control data
+CONTROLS = False
+CONTROL_FLAG_FILENAME = "control.json"
 
 def create_directory(path):
     if not os.path.exists(path):
@@ -10,6 +15,16 @@ def create_directory(path):
 def setup_directories(log_number):
     base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
     data_directory = os.path.join(base_path, 'Data', log_number)
+
+    # Look for control data if enabled
+    if CONTROLS:
+        control_directory = os.path.join(base_path, 'Data', 'controls', log_number)
+        if os.path.isdir(control_directory):
+            data_directory = control_directory
+            flag_path = os.path.join(control_directory, CONTROL_FLAG_FILENAME)
+            if not os.path.exists(flag_path):
+                with open(flag_path, 'w') as f:
+                    json.dump({"control": True, "id": log_number}, f, indent=4)
     analysis_directory = os.path.join(data_directory, 'Analysis')
     nifti_directory = os.path.join(data_directory, 'NIfTI')
     image_directory = os.path.join(data_directory, 'Images')
