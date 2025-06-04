@@ -2,18 +2,6 @@
 import matplotlib.pyplot as plt 
 
 artery_names = ["Left Interior Carotid", "Right Interior Carotid", "Basilar", "Left Middle Cerebral", "Right Middle Cerebral"]
-def choice2num(choice):
-    if choice=='lica':
-        value = 0
-    elif choice=='rica':
-        value = 1
-    elif choice=='b':
-        value=2 
-    elif choice=='lmca':
-        value=3   
-    elif choice=='rmca':
-        value=4
-    return value   
 
 def choicestr2int(choice):
     if choice=='s':

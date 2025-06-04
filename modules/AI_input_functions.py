@@ -48,14 +48,6 @@ def get_available_slices(analysis_directory, structure_type, structure_subtype):
             available_slices.append(i)
     return available_slices
 
-def select_slices(available_arterial_slices, available_venous_slices):
-    print("Available arterial slices:", available_arterial_slices)
-    arterial_slice = int(input("Select an arterial slice: "))
-    
-    print("Available venous slices:", available_venous_slices)
-    venous_slice = int(input("Select a venous slice: "))
-    
-    return arterial_slice, venous_slice
 
 from scipy.signal import correlate, find_peaks
 
@@ -201,7 +193,6 @@ def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_inde
     cutoff = 4.0
     order = 3
     smoothed_vein = butter_lowpass_filter(shifted_vein_curve, cutoff, fs, order)
-    smoothed_artery = butter_lowpass_filter(shifted_artery_curve, cutoff, fs, order)
     plt.figure(figsize=(10, 5))
     if scaling == 1:
         plt.title(f" Time-shifted Concentration Curve for {subtype} (Veinous Slice {slice_index}, Arterial Slice {arterial_slice_index})", fontproperties=prop, fontsize=16)
@@ -380,7 +371,6 @@ def time_shifting(analysis_directory, nifti_directory, image_directory):
     print('[!] Finding maximum')
     
     max_file_path, max_value, max_subtype, max_slice_index, max_arterial_slice_index = find_max_npy_file(analysis_directory)
-    max_curve = np.load(max_file_path)
     corresponding_vein_curve = np.load(os.path.join(analysis_directory, 'TSCC Data', max_subtype, f'TSCC_slice_{max_slice_index}_{max_arterial_slice_index}.npy'))
     [os.remove(f) for f in glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))]
     plot_transformed_curves_max(corresponding_vein_curve, slice_index=max_slice_index, artery_index=max_arterial_slice_index, vein_top2_peaks=[0,0], subtype=max_subtype, time_points_s=time_points_s, analysis_directory=analysis_directory, image_directory=image_directory)

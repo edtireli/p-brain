@@ -21,13 +21,6 @@ def load_from_pickle(file_path):
     return matrix
 
 
-def normalize_ctc(C_t, baseline_point):
-    baseline_length = baseline_point
-    mean_baseline = np.mean(C_t[:baseline_length])
-    C_t = (C_t - mean_baseline) / mean_baseline
-    C_t[:baseline_length] = 0
-
-
 def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True):
     theta = 90 #flip angle
     theta_rad = np.radians(theta)
@@ -138,9 +131,6 @@ def find_shifted_baseline(data, height_threshold=0.5, skip_points=10):
         return None
 
 
-
-def moving_average(data, window_size=3):
-    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
 
 def butter_lowpass(cutoff, fs, order=5):
     nyquist = 0.5 * fs
@@ -407,7 +397,6 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     order = 3
 
     # Compute Concentration-Time Curves
-    S0 = voxel_time_course_max[0]
     x, y, z = max_voxel[0], max_voxel[1], slice_index
     T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
     M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
@@ -512,7 +501,6 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
     order = 3
 
     # Compute Concentration-Time Curves
-    S0 = voxel_time_course_max[0]
     x, y, z = max_voxel[0], max_voxel[1], slice_index
     T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
     M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
@@ -598,13 +586,8 @@ def close_plot_after_delay_special(delay, default_save_callback):
         plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
     
 
-from scipy.optimize import minimize_scalar
-
-def objective_function(offset, original_data, new_curve_segment):
-    return np.sum((original_data + offset - new_curve_segment)**2)
-
 class ConcentrationCurveEditor:
-    def __init__(self, curve_path, curve2_path, curve_path_actual):
+    def __init__(self, curve_path, curve2_path):
         self.data = curve_path
         self.original_data = np.copy(self.data)
         self.annotated_points = []
@@ -615,13 +598,10 @@ class ConcentrationCurveEditor:
 
         self.fig, self.ax = plt.subplots()
         self.redraw()
-        self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
-        self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         if not turbo_mode:
             plt.show()
 
     def update(self, val):
-        self.scale_factor = self.slider.val
         self.redraw()
 
     def onclick(self, event):
@@ -708,20 +688,9 @@ class ConcentrationCurveEditor:
         self.ax.legend()
         self.fig.canvas.draw()
 
-    def post_exit_dialog(self):
-        decision = input("[!] Keep changes (y) or restart (r)? ")
-        if decision == 'y':
-            self.save_corrected_curve()
-        elif decision == 'r':
-            self.__init__(self.curve_path, self.curve2_path)
-
     def save_corrected_curve(self):
         save_path = os.path.splitext(self.curve_path)[0] + '.npy'
         np.save(save_path, self.data)
-
-    def restart_GUI(self):
-        plt.close(self.fig)
-        self.__init__(self.curve_path, self.curve2_path)
 
 def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_index, type='test', time_points_s=1, image_directory = 'dir', rot90 = False, final_curve_path='dir'):
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})

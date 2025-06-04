@@ -6,7 +6,6 @@ from scipy.signal import argrelextrema
 from scipy.optimize import curve_fit
 from matplotlib.path import Path
 from collections import defaultdict
-from scipy.ndimage import zoom
 from termcolor import colored
 from utils.mapping import *
 import glob
@@ -132,7 +131,6 @@ def compute_average_permeability(c_in, c_out, time_array, baseline_point):
     
     Ktrans_fitted, ve_fitted, vp_fitted = popt
     
-    residuals = c_out - extended_tofts_model(time_array, Ktrans_fitted, ve_fitted, vp_fitted, c_in)
     std_dev_Ktrans = np.sqrt(np.diag(pcov))[0]
     
     # Convert to mM/min
@@ -210,7 +208,7 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
     plt.tight_layout()
     plt.close()
 
-def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', skipshift=False, time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir'):
+def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir'):
     N = data.shape[0]
     
     all_C_t = []
@@ -334,8 +332,6 @@ class ROISelector_tissue:
         self.zoom_level = 0
         self.fig, self.ax = plt.subplots()
         self.redraw()
-        self.cid = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
-        self.cid_key = self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         plt.show()
 
     def onclick(self, event):
@@ -474,7 +470,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
 
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
-            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, skipshift=False)
+            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type)
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
                 correction_text = f'{type} signal jump corrected. '
@@ -484,7 +480,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                 curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                 while True:
-                    editor = editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
+                    editor = editor = ConcentrationCurveEditor(curve, curve_path2)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                     plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                     break
@@ -492,7 +488,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             for slice_index, roi_list in selected_voxels.items():
                 for roi_voxels in roi_list:
                     roi_voxels_downsampled = roi_voxels // 2
-                    curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, roi_voxels_downsampled, roi_voxels, slice_index, type=type, skipshift=False, analysis_directory= analysis_directory, image_directory = image_directory)
+                    curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, roi_voxels_downsampled, roi_voxels, slice_index, type=type, analysis_directory= analysis_directory, image_directory = image_directory)
                     correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
                     if correction_prompt == 'y':
                         correction_text = f'{type} signal jump corrected. '
@@ -502,7 +498,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                         curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
                         curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                         while True:
-                            editor = editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
+                            editor = editor = ConcentrationCurveEditor(curve, curve_path2)
                             corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
                             plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                             break
@@ -540,7 +536,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
-            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, skipshift=False, time_points_s = time_points, analysis_directory = analysis_directory, image_directory = image_directory)
+            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, time_points_s = time_points, analysis_directory = analysis_directory, image_directory = image_directory)
             
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
@@ -551,7 +547,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                 curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
                 while True:
-                    editor = ConcentrationCurveEditor(curve, curve_path2, curve_path)
+                    editor = ConcentrationCurveEditor(curve, curve_path2)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
                     plot_corrected_tissue_curve(editor.data, data_3d, selected_roi_voxels, selected_slice_idx, type=type, time_points_s=time_points, image_directory=image_directory, final_curve_path = corrected_curve_path)
                     break

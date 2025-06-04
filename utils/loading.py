@@ -7,15 +7,6 @@ import json
 import importlib
 import time
 
-def find_file_with_regex(directory, regex_pattern):
-    # List all files in the directory
-    all_files = os.listdir(directory)
-    # Compile the regex pattern
-    pattern = re.compile(regex_pattern)
-    # Filter files using the regex pattern
-    filtered_files = [file for file in all_files if pattern.match(file)]
-    # Return the first matched file or None if no match found
-    return filtered_files[0] if filtered_files else None
 
 
 def list_addons():
@@ -132,31 +123,6 @@ def leaver():
         time.sleep(2)
         leaver()      
 
-def quitter():
-    leave = input('[!] Quit program? (y/n): ')    
-    if leave == 'y':
-        exit()
-    elif leave == 'n':
-        leaver()  
-
-
-def nii2anat_extension(filename):
-    import os
-
-    # Extract the base name and directory from the filename
-    base_name = os.path.basename(filename)
-    directory = os.path.dirname(filename)
-
-    # Remove the .nii extension and append .anat
-    base_name_without_extension = os.path.splitext(base_name)[0]
-    new_base_name = base_name_without_extension + ".anat"
-
-    # Create the new directory path
-    new_directory = os.path.join(directory, new_base_name)
-
-    return new_directory
-
-
 def find_matching_file(directory, pattern):
     regex = re.compile(pattern, re.IGNORECASE)
     for filename in os.listdir(directory):
@@ -204,17 +170,3 @@ def first_existing_file(directory, patterns, time, suffix):
             return file_path
     return None
 
-def first_existing_dce_file(directory, filenames, preferred_filename='WIPDelRec-hperf120long.nii'):
-    # Check the preferred filename first
-    preferred_file_path = os.path.join(directory, preferred_filename)
-    if os.path.exists(preferred_file_path):
-        return preferred_file_path
-    
-    for fname in filenames:
-        if fname == preferred_filename:
-            continue 
-        file_path = os.path.join(directory, fname)
-        if os.path.exists(file_path):
-            return file_path
-            
-    return None
