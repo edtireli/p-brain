@@ -8,6 +8,23 @@ matplotlib.use("TkAgg")
 CONTROLS = False
 CONTROL_FLAG_FILENAME = "control.json"
 
+# Paths to the neural network models used for artery and vein ROI extraction.
+# These can be overridden by environment variables to use custom models.
+AI_MODEL_PATHS = {
+    'slice_classifier_rica': os.environ.get(
+        'SLICE_CLASSIFIER_RICA_MODEL', 'AI/slice_classifier_model_rica.keras'
+    ),
+    'rica_roi': os.environ.get(
+        'RICA_ROI_MODEL', 'AI/rica_roi_model.keras'
+    ),
+    'slice_classifier_ss': os.environ.get(
+        'SLICE_CLASSIFIER_SS_MODEL', 'AI/ss_slice_classifier.keras'
+    ),
+    'ss_roi': os.environ.get(
+        'SS_ROI_MODEL', 'AI/ss_roi_model.keras'
+    ),
+}
+
 def create_directory(path):
     if not os.path.exists(path):
         os.makedirs(path)
