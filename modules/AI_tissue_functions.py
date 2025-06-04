@@ -32,34 +32,51 @@ import json
 from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
-from scipy.ndimage import zoom
+from nibabel.processing import resample_from_to
 import re
 
 
-def downscale_nifti(in_path, out_path, factor):
-    """Downscale a NIfTI/MGH image by ``factor`` along each axis."""
-    img = nib.load(in_path)
-    data = img.get_fdata()
-    scaled = zoom(data, factor, order=1)
-    affine = img.affine.copy()
-    affine[:3, :3] /= factor
-    hdr = img.header.copy()
-    hdr.set_qform(affine, int(hdr.get("qform_code", 1)) or 1)
-    hdr.set_sform(affine, int(hdr.get("sform_code", 1)) or 1)
-    nib.save(nib.Nifti1Image(scaled, affine, hdr), out_path)
+def downsample_to_factor(in_path: str, out_path: str, factor: float):
+    """Downsample ``in_path`` so voxel size increases by ``1/factor``."""
+    img_orig = nib.load(in_path)
+    orig_aff = img_orig.affine
+    orig_hdr = img_orig.header
+    orig_zooms = orig_hdr.get_zooms()[:3]
+
+    new_zooms = tuple(z / factor for z in orig_zooms)
+
+    new_aff = orig_aff.copy()
+    R = orig_aff[:3, :3] @ np.diag([1.0 / oz for oz in orig_zooms])
+    new_aff[:3, :3] = R @ np.diag(new_zooms)
+
+    orig_shape = img_orig.shape[:3]
+    new_shape = tuple(int(np.round(osz * factor)) for osz in orig_shape)
+
+    hdr_down = orig_hdr.copy()
+    if len(orig_hdr.get_zooms()) > 3:
+        hdr_down.set_zooms(new_zooms + (orig_hdr.get_zooms()[3],))
+    else:
+        hdr_down.set_zooms(new_zooms)
+    dummy_array = np.zeros(new_shape, dtype=img_orig.get_fdata().dtype)
+    down_img = nib.Nifti1Image(dummy_array, new_aff, hdr_down)
+
+    img_down = resample_from_to(img_orig, (down_img.shape, down_img.affine), order=1)
+    nib.save(img_down, out_path)
 
 
-def upscale_segmentation(seg_path, ref_path, out_path):
-    """Upscale ``seg_path`` to match ``ref_path`` geometry."""
+def upsample_segmentation_to_reference(seg_path: str, ref_path: str, out_path: str):
+    """Resample ``seg_path`` onto ``ref_path`` grid using nearest neighbour."""
     seg_img = nib.load(seg_path)
     ref_img = nib.load(ref_path)
-    factor = np.array(ref_img.shape[:3]) / np.array(seg_img.shape[:3])
-    seg_data = seg_img.get_fdata()
-    seg_up = zoom(seg_data, factor, order=0)
-    hdr = ref_img.header.copy()
-    hdr.set_qform(ref_img.affine, int(hdr.get("qform_code", 1)) or 1)
-    hdr.set_sform(ref_img.affine, int(hdr.get("sform_code", 1)) or 1)
-    nib.save(nib.Nifti1Image(seg_up, ref_img.affine, hdr), out_path)
+
+    ref_shape = ref_img.shape[:3]
+    ref_affine = ref_img.affine
+    ref_hdr = ref_img.header.copy()
+    dummy_ref_array = np.zeros(ref_shape, dtype=seg_img.get_fdata().dtype)
+    dummy_ref_img = nib.Nifti1Image(dummy_ref_array, ref_affine, ref_hdr)
+
+    seg_up = resample_from_to(seg_img, (dummy_ref_img.shape, dummy_ref_img.affine), order=0)
+    nib.save(seg_up, out_path)
 
 def patlak_total(C_t, C_a, t):
     """Optional drop correction then Patlak fit."""
@@ -540,7 +557,7 @@ def segmentation(
             if result.returncode != 0 or not os.path.exists(seg_mgz_path):
                 print("FastSurfer segmentation failed, attempting downscaled run ...")
                 tmp_t1 = t1_path.replace('.nii', '_ds.nii')
-                downscale_nifti(t1_path, tmp_t1, segmentation_downscale)
+                downsample_to_factor(t1_path, tmp_t1, segmentation_downscale)
                 tmp_sid = f"{sid}_ds"
                 tmp_dir = os.path.join(output_dir, tmp_sid)
                 if apple_metal:
@@ -562,7 +579,7 @@ def segmentation(
                 tmp_seg = os.path.join(tmp_dir, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
                 if not os.path.exists(tmp_seg):
                     raise RuntimeError("FastSurfer segmentation failed even after downscaling")
-                upscale_segmentation(tmp_seg, t1_path, seg_mgz_path)
+                upsample_segmentation_to_reference(tmp_seg, t1_path, seg_mgz_path)
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 os.remove(tmp_t1)
         else:
