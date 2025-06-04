@@ -39,6 +39,13 @@ data
 ```
 Place your .PAR/.REC MRI data in the 'data' directory under the appropriate data folder. p-Brain will create subdirectories within the data folders (data_1, data_2 etc.) automatically. The names of the data folders are irrelevant, but listed above as data_1 and data_2 for clarity.  Further, analysis images will be placed in the Images subfolder, and the NIfTI files will be placed in the subfolder of the same name.
 
+If you would like to analyse control datasets, add a folder named `controls` inside
+the `data` directory and place the control subfolders there (for example
+`data/controls/log1`). Setting the `CONTROLS` flag to `True` in
+`utils/settings.py` enables this behaviour. When a control dataset is processed,
+p-Brain will automatically create a `control.json` file inside the respective
+control directory to mark it as such.
+
 NIfTI files can also be used directly by simply creating a folder of the same name and placing the .nii files therein. This will avoid the automatic conversion from .PAR/.REC to .nii/.json. 
 
 There are several files that are important to the analysis, I will list the variables below, which can be changed in the parameters.py file to fit your naming scheme: 
