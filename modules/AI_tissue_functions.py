@@ -1,5 +1,9 @@
 turbo_mode = False  # Set to True to suppress all plots
 force_recreate_masks = True  # If True: recreate all masks regardless of existence
+# If True, drop detection is performed on tissue CTCs and the ignored
+# regions are excluded from the Patlak fit.  When False, every sample
+# is used for the Patlak analysis.
+correct_signal_jumps = False
 
 import nibabel as nib
 import matplotlib.pyplot as plt
@@ -16,10 +20,13 @@ from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 
 def patlak_total(C_t, C_a, t):
-    """Run mask_problematic *after* trimming, then Patlak."""
+    """Optional drop correction then Patlak fit."""
     if C_t.size == 0:
         return (np.nan, np.nan, np.nan)          # Ki, λ, SD_Ki
-    _, bad, _ = mask_problematic(C_t)            # <- same length as C_t
+    if correct_signal_jumps:
+        _, bad, _ = mask_problematic(C_t)        # <- same length as C_t
+    else:
+        bad = None
     Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a, t, bad_mask=bad)
     return Ki, lam, SD
 
@@ -503,7 +510,10 @@ def plot_total_ct_and_patlak(time_points, C_t_total, C_a,
     if C_t_total.size == 0 or C_a.size == 0:
         return
 
-    drop_idxs, trend, thresh = identify_drop_points(C_t_total)
+    if correct_signal_jumps:
+        drop_idxs, trend, thresh = identify_drop_points(C_t_total)
+    else:
+        drop_idxs = np.array([], dtype=int)
 
     # Patlak co-ordinates
     dt = np.diff(time_points)
@@ -1396,18 +1406,23 @@ def compute_and_plot_ctcs_median(
         else:
             avg_boundary_ctc = np.array([])
 
-        avg_wm_ctc,               bad_wm,_               = mask_problematic(avg_wm_ctc)
-        avg_cortical_gm_ctc,      bad_cortical_gm,_      = mask_problematic(avg_cortical_gm_ctc)
-        avg_subcortical_gm_ctc,   bad_subcortical_gm,_   = mask_problematic(avg_subcortical_gm_ctc)
+        if correct_signal_jumps:
+            avg_wm_ctc,               bad_wm,_               = mask_problematic(avg_wm_ctc)
+            avg_cortical_gm_ctc,      bad_cortical_gm,_      = mask_problematic(avg_cortical_gm_ctc)
+            avg_subcortical_gm_ctc,   bad_subcortical_gm,_   = mask_problematic(avg_subcortical_gm_ctc)
 
-        avg_gm_brainstem_ctc,  bad_gm_brainstem,  _ = mask_problematic(avg_gm_brainstem_ctc)
-        avg_gm_cerebellum_ctc, bad_gm_cerebellum, _ = mask_problematic(avg_gm_cerebellum_ctc)
-        avg_wm_cerebellum_ctc, bad_wm_cerebellum, _ = mask_problematic(avg_wm_cerebellum_ctc)
-        avg_wm_cc_ctc,         bad_wm_cc,         _ = mask_problematic(avg_wm_cc_ctc)
-        if boundary and avg_boundary_ctc.size:
-            avg_boundary_ctc, bad_boundary,_ = mask_problematic(avg_boundary_ctc)
+            avg_gm_brainstem_ctc,  bad_gm_brainstem,  _ = mask_problematic(avg_gm_brainstem_ctc)
+            avg_gm_cerebellum_ctc, bad_gm_cerebellum, _ = mask_problematic(avg_gm_cerebellum_ctc)
+            avg_wm_cerebellum_ctc, bad_wm_cerebellum, _ = mask_problematic(avg_wm_cerebellum_ctc)
+            avg_wm_cc_ctc,         bad_wm_cc,         _ = mask_problematic(avg_wm_cc_ctc)
+            if boundary and avg_boundary_ctc.size:
+                avg_boundary_ctc, bad_boundary,_ = mask_problematic(avg_boundary_ctc)
+            else:
+                bad_boundary = None
         else:
-            bad_boundary = None
+            bad_wm = bad_cortical_gm = bad_subcortical_gm = None
+            bad_gm_brainstem = bad_gm_cerebellum = bad_wm_cerebellum = None
+            bad_wm_cc = bad_boundary = None
         # Save the tissue concentration curves as .npy files
         save_dir_ctc = os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'AI')
         os.makedirs(save_dir_ctc, exist_ok=True)
@@ -1819,7 +1834,10 @@ def compute_and_plot_ctcs_median(
     def patlak_total(C_t):
         if not C_t.size:
             return np.nan, np.nan, np.nan      # Ki, λ, SD_Ki
-        _, bad, _ = mask_problematic(C_t)      # same length as C_t
+        if correct_signal_jumps:
+            _, bad, _ = mask_problematic(C_t)  # same length as C_t
+        else:
+            bad = None
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
         return Ki, lam, SD
 
