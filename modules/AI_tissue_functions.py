@@ -2127,6 +2127,13 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
 
     IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD = parameters
 
+    # Automatically enable jump correction when requested via a JSON file
+    global correct_signal_jumps
+    jumpfix_file = os.path.join(os.path.dirname(analysis_directory), 'apply_jumpfix.json')
+    if os.path.exists(jumpfix_file):
+        print('[!] apply_jumpfix.json detected – enabling signal jump correction')
+        correct_signal_jumps = True
+
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
     seg_dir = os.path.join(nifti_directory, 'segmentation')
