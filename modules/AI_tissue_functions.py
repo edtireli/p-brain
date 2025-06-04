@@ -362,14 +362,25 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
     else:
         plt.close(fig)
 
-def segmentation(fastsurfer_path, seg_mgz_path, t1_path, output_dir, sid, apple_metal=True):
+def segmentation(
+    fastsurfer_path,
+    seg_mgz_path,
+    t1_path,
+    output_dir,
+    sid,
+    apple_metal=True,
+    rerun=False,
+):
     # Check if FastSurfer is installed
     if not os.path.exists(fastsurfer_path):
         raise Exception("FastSurfer not found, ensure correct installation and configuration of path.")
 
-    # Run FastSurfer if the segmentation file doesn't exist
-    if not os.path.exists(seg_mgz_path):
-        print("Segmentation file not found, running FastSurfer...")
+    # Run FastSurfer if the segmentation file doesn't exist or rerun is forced
+    if rerun or not os.path.exists(seg_mgz_path):
+        if os.path.exists(seg_mgz_path):
+            print("Rerunning FastSurfer segmentation...")
+        else:
+            print("Segmentation file not found, running FastSurfer...")
         if apple_metal:
             command = (
                 f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
@@ -2041,7 +2052,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
 
-    IsVFA, IsIR, apple_metal, boundary = parameters
+    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION = parameters
 
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
@@ -2055,7 +2066,15 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     os.makedirs(seg_dir, exist_ok=True)
 
     # Run segmentation and create masks
-    segmentation(fastsurfer_path, seg_mgz_path, t1_path, seg_dir, sid, apple_metal)
+    segmentation(
+        fastsurfer_path,
+        seg_mgz_path,
+        t1_path,
+        seg_dir,
+        sid,
+        apple_metal,
+        RERUN_SEGMENTATION,
+    )
 
     # Paths to masks in the same directory as aparc.DKTatlas+aseg.deep.mgz
     mask_dir = os.path.dirname(seg_mgz_path)
