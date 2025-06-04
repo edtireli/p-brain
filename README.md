@@ -162,7 +162,16 @@ The idea is to use the options in chronological order, as each step requires the
 
 ## 6. Fully Automated Mode
 From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
+
 ![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
+
+### Custom AI model paths
+The four neural networks used for Right Internal Carotid Artery (RICA) and sinus
+ sagittalis segmentation can be replaced with your own models. The default
+ locations are defined in `utils/settings.py` under `AI_MODEL_PATHS`. Set these
+ paths or provide the environment variables `SLICE_CLASSIFIER_RICA_MODEL`,
+ `RICA_ROI_MODEL`, `SLICE_CLASSIFIER_SS_MODEL` and `SS_ROI_MODEL` to override the
+ defaults.
 
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 

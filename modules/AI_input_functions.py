@@ -10,6 +10,7 @@ from utils.mapping import *
 from utils.plotting import *
 from utils.loading import *
 from matplotlib.path import Path
+from utils.settings import AI_MODEL_PATHS
 import glob
 import json
 import time
@@ -308,10 +309,18 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
 def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, IsVFA=False, filenames='filenames'):
     print(colored('Starting AI-based ROI extraction...', 'green'))
 
-    slice_classifier_rica = load_model('AI/slice_classifier_model_rica.keras', compile=False)
-    rica_roi_model = load_model('AI/rica_roi_model.keras', compile=False)
-    slice_classifier_ss = load_model('AI/ss_slice_classifier.keras', compile=False)
-    ss_roi_model = load_model('AI/ss_roi_model.keras', compile=False)
+    slice_classifier_rica = load_model(
+        AI_MODEL_PATHS['slice_classifier_rica'], compile=False
+    )
+    rica_roi_model = load_model(
+        AI_MODEL_PATHS['rica_roi'], compile=False
+    )
+    slice_classifier_ss = load_model(
+        AI_MODEL_PATHS['slice_classifier_ss'], compile=False
+    )
+    ss_roi_model = load_model(
+        AI_MODEL_PATHS['ss_roi'], compile=False
+    )
 
     rotated_data, mri_data = preprocess_data(filename)
 
