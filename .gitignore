@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 *.log
 data/*
-resources/.DS_Store
 AI/*
 !data/.gitkeep
 !AI/.gitkeep
