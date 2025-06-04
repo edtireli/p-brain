@@ -360,35 +360,47 @@ def segmentation(
     sid,
     apple_metal=True,
     rerun=False,
+    method="fastsurfer",
 ):
-    # Check if FastSurfer is installed
-    if not os.path.exists(fastsurfer_path):
-        raise Exception("FastSurfer not found, ensure correct installation and configuration of path.")
+    method = (method or "fastsurfer").lower()
 
-    # Run FastSurfer if the segmentation file doesn't exist or rerun is forced
-    if rerun or not os.path.exists(seg_mgz_path):
-        if os.path.exists(seg_mgz_path):
-            print("Rerunning FastSurfer segmentation...")
-        else:
-            print("Segmentation file not found, running FastSurfer...")
-        if apple_metal:
-            command = (
-                f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
-                f"{fastsurfer_path} --seg_only --device mps "
-                f"--t1 {t1_path} "
-                f"--sid {sid} "
-                f"--sd {output_dir}"
+    if method == "fastsurfer":
+        # Check if FastSurfer is installed
+        if not os.path.exists(fastsurfer_path):
+            raise Exception(
+                "FastSurfer not found, ensure correct installation and configuration of path."
             )
+
+        # Run FastSurfer if the segmentation file doesn't exist or rerun is forced
+        if rerun or not os.path.exists(seg_mgz_path):
+            if os.path.exists(seg_mgz_path):
+                print("Rerunning FastSurfer segmentation...")
+            else:
+                print("Segmentation file not found, running FastSurfer...")
+            if apple_metal:
+                command = (
+                    f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
+                    f"{fastsurfer_path} --seg_only --device mps "
+                    f"--t1 {t1_path} "
+                    f"--sid {sid} "
+                    f"--sd {output_dir}"
+                )
+            else:
+                command = (
+                    f"{fastsurfer_path} --seg_only "
+                    f"--t1 {t1_path} "
+                    f"--sid {sid} "
+                    f"--sd {output_dir}"
+                )
+            subprocess.run(command, shell=True)
         else:
-            command = (
-                f"{fastsurfer_path} --seg_only "
-                f"--t1 {t1_path} "
-                f"--sid {sid} "
-                f"--sd {output_dir}"
-            )
-        subprocess.run(command, shell=True)
+            print("Segmentation file already exists, skipping FastSurfer segmentation.")
     else:
-        print("Segmentation file already exists, skipping FastSurfer segmentation.")
+        print(f"Segmentation method '{method}' selected. Skipping FastSurfer execution.")
+        if not os.path.exists(seg_mgz_path):
+            raise FileNotFoundError(
+                f"Segmentation file not found: {seg_mgz_path}. Provide your own segmentation before running."
+            )
 
     aseg_mgz_path = seg_mgz_path
 
@@ -1965,7 +1977,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
 
-    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION = parameters
+    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD = parameters
 
     fastsurfer_path = '/Users/edt/FastSurfer/run_fastsurfer.sh'
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
@@ -1987,6 +1999,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
         sid,
         apple_metal,
         RERUN_SEGMENTATION,
+        SEGMENTATION_METHOD,
     )
 
     # Paths to masks in the same directory as aparc.DKTatlas+aseg.deep.mgz
