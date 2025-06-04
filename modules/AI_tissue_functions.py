@@ -190,6 +190,9 @@ def compute_Ki_from_atlas(
     SD_Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     vp_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
 
+    # Dictionary to keep numerical results per label for JSON output
+    atlas_results = {}
+
     # For each label, gather voxels and compute median C(t)
     for lbl in unique_labels:
         mask = (atlas_data == lbl)
@@ -242,6 +245,14 @@ def compute_Ki_from_atlas(
         SD_Ki_map[mask] = SD_Ki
         vp_map[mask] = lam
 
+        # Store numeric results for this label
+        atlas_results[str(lbl)] = {
+            "Ki": float(Ki),
+            "SD_Ki": float(SD_Ki),
+            "vp": float(lam),
+            "voxel_count": int(len(indices))
+        }
+
     # Save results as NIfTI
     os.makedirs(output_directory, exist_ok=True)
 
@@ -252,6 +263,11 @@ def compute_Ki_from_atlas(
     nib.save(Ki_nii, os.path.join(output_directory, 'Ki_map_atlas.nii.gz'))
     nib.save(SD_Ki_nii, os.path.join(output_directory, 'SD_Ki_map_atlas.nii.gz'))
     nib.save(vp_nii, os.path.join(output_directory, 'vp_map_atlas.nii.gz'))
+
+    # Save numerical results to JSON
+    json_path = os.path.join(output_directory, 'Ki_values_atlas.json')
+    with open(json_path, 'w') as jf:
+        json.dump(atlas_results, jf, indent=4)
 
     print("Done. Wrote:")
     print("  Ki_map_atlas.nii.gz")
