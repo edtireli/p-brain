@@ -11,13 +11,16 @@ Affiliation: [Copenhagen University](https://www.ku.dk/english/)
 3. Installation
 4. How to use
 5. Core Features
-6. Contributions
-7. License
-8. Acknowledgments
+6. Fully Automated Mode
+7. Contributions
+8. License
+9. Acknowledgments
 
 
 ## 1. Introduction
-p-Brain is a specialized neuroimaging software designed for analysis of MRI data either in .PAR/.REC or .nii format. The application streamlines certain workflows to do with the analysis of the blood-brain barrier with e.g. T1/M0 fitting, drawing of regions of interest (ROIs) for signal and concentration time curves. Additionally, the tool offers sophisticated methods for Grey Matter/White Matter (GM/WM) segmentation and Blood-Brain Barrier (BBB) permeability estimation, utilizing both the Patlak and the extended Tofts models. GUI modules are incorporated for high-precision drawing of Regions of Interest (ROIs) across tissue and arterial/venous structures, as well as multiprocessing to speed up computation. 
+p-Brain is a Python toolkit for quantitative analysis of MRI data with a focus on dynamic contrast-enhanced (DCE) protocols. It supports both Philips PAR/REC and NIfTI files and provides a set of modules for converting, viewing and processing images. The pipeline covers the full workflow from T1/M0 fitting, input function extraction and tissue segmentation to blood‑brain barrier permeability estimation.
+
+All core functionality resides in the `modules/` package while helper routines are located under `utils/`. Optional neural networks for artery and vein identification are stored in the `AI/` directory. A small GUI is used to select a dataset, after which a terminal menu guides the user through each processing step. For cohort processing the script `enumerator.py` can launch `main.py` for multiple subjects in sequence, enabling unattended analysis.
 
 ## 2. Directory & Data Structure
 The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
@@ -37,7 +40,14 @@ data
 └── data_2
 ...
 ```
-Place your .PAR/.REC MRI data in the 'data' directory under the appropriate data folder. p-Brain will create subdirectories within the data folders (data_1, data_2 etc.) automatically. The names of the data folders are irrelevant, but listed above as data_1 and data_2 for clarity.  Further, analysis images will be placed in the Images subfolder, and the NIfTI files will be placed in the subfolder of the same name.
+Place your .PAR/.REC MRI data in the `data` directory under any folder name of your choosing. p-Brain will create the required subdirectories (e.g. `Analysis`, `Images`, `NIfTI`) automatically. NIfTI files generated from PAR/REC input or provided directly are stored under `NIfTI`, while derived figures are written to the `Images` directory.
+
+### Repository overview
+- **modules/** – implementation of the menu options such as T1 fitting and permeability models.
+- **utils/** – helper utilities for plotting, configuration and file handling.
+- **AI/** – default neural network models used in the fully automated mode.
+- **addons/** – optional plugins, e.g. boundary ROI extraction.
+- **enumerator.py** – convenience script to process multiple datasets automatically.
 
 If you would like to analyse control datasets, add a folder named `controls` inside
 the `data` directory and place the control subfolders there (for example
