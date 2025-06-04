@@ -2157,7 +2157,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
 
-    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD = parameters
+    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
 
     # Automatically enable jump correction when requested via a JSON file
     global correct_signal_jumps

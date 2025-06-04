@@ -398,7 +398,7 @@ def input_function_AI(analysis_directory, nifti_directory, image_directory, file
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
     refresh_nifti_directory(nifti_directory)
     
-    IsVFA, IsIR, apple_metal, boundary, _, _ = parameters
+    IsVFA, IsIR, apple_metal, boundary, _, _, _ = parameters
 
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
