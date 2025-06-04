@@ -7,3 +7,6 @@ nibabel
 tqdm
 numpy
 dipy
+opencv-python
+scikit-image
+tensorflow

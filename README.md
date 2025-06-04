@@ -74,6 +74,17 @@ There are several files that are important to the analysis, I will list the vari
     - **axial_t2_3D_filename**: An axial reconstruction of the 3D T2 sequence above.
     - **axial_t1_3D_filename**: : An axial reconstruction of the 3D T1 sequence above.
 
+### Control filenames
+Control datasets may use different filenames. These can be configured in the `control_filenames` function inside `utils/parameters.py`. Only the sequences required by the AI methods are listed:
+- **control_t1_3D_filename**
+- **control_axial_t1_3D_filename**
+- **control_t2_3D_filename**
+- **control_axial_t2_3D_filename**
+- **control_flair_3D_filename**
+- **control_axial_flair_3D_filename**
+- **control_axial_t2_2D_filename**
+- **control_dce_filename**
+
 The above files can be renamed to suit different purposes/sequences which can be done globally in the `utils/parameters.py` file. This file also contains a `SEGMENTATION_METHOD` setting that controls which tool is used for the automated tissue segmentation (default `fastsurfer`). See below for some of the most useful, especially with the _boundary_ addon:
 ![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
 
@@ -175,7 +186,7 @@ The idea is to use the options in chronological order, as each step requires the
     -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
 
 ## 6. Fully Automated Mode
-From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
+From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
 
 ![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
 

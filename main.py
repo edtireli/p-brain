@@ -19,10 +19,16 @@ def main():
         log_number = select_log_number()
     
     data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(log_number)
-    filenames = global_filenames(nifti_directory)
+    if CONTROLS:
+        filenames = control_filenames(nifti_directory)
+    else:
+        filenames = global_filenames(nifti_directory)
     parameters = global_parameters()
     parrec2nifti(data_directory, nifti_directory)
-    filenames = global_filenames(nifti_directory)
+    if CONTROLS:
+        filenames = control_filenames(nifti_directory)
+    else:
+        filenames = global_filenames(nifti_directory)
     parameters = global_parameters()
     refresh_nifti_directory(nifti_directory)
     check_axial(nifti_directory, filenames)
