@@ -47,32 +47,28 @@ data
 Place your .PAR/.REC MRI data in the `data` directory under any folder name of your choosing. p-Brain will create the required subdirectories (e.g. `Analysis`, `Images`, `NIfTI`) automatically. NIfTI files generated from PAR/REC input or provided directly are stored under `NIfTI`, while derived figures are written to the `Images` directory.
 
 ### Repository overview
-- **modules/** – implementation of the menu options such as T1 fitting and permeability models.
-- **utils/** – helper utilities for plotting, configuration and file handling.
-- **AI/** – default neural network models used in the fully automated mode.
-- **addons/** – optional plugins, e.g. boundary ROI extraction.
-- **enumerator.py** – convenience script to process multiple datasets automatically.
+- **modules/** – menu implementations such as T1 fitting and permeability models.
+- **utils/** – utilities for configuration, plotting and file handling.
+- **AI/** – default neural network models used for the automated pipeline.
+- **addons/** – optional plugins (e.g. boundary ROI extraction).
+- **enumerator.py** – helper script that invokes `main.py` for multiple datasets.
 
-If you would like to analyse control datasets, add a folder named `controls` inside
-the `data` directory and place the control subfolders there (for example
-`data/controls/log1`). Setting the `CONTROLS` flag to `True` in
-`utils/settings.py` or exporting the environment variable
-`PBRAIN_CONTROLS=1` enables this behaviour. The `enumerator.py` script
-automatically sets this variable when invoked with `--controls`. When a
-control dataset is processed, p-Brain will automatically create a
-`control.json` file inside the respective control directory to mark it as
-such.
-
-The script accepts a list of log numbers or the `--all` flag. Use
-`--controls` to mark the provided numbers as control datasets. Combining
+Place control datasets in `data/controls/<id>` and enable control handling by
+setting the `CONTROLS` flag in `utils/settings.py` or by exporting
+`PBRAIN_CONTROLS=1`. The `enumerator.py` helper honours the `--controls` flag
+and will set this environment variable automatically. When a control run is
+processed, a small `control.json` file is written to the dataset directory.  The
+script accepts a list of log numbers or the `--all` flag. Combining
 `--controls` with `--all` processes every available control dataset.
 
-Example usage:
+Placing an `apply_jumpfix.json` file next to a dataset enables automatic
+correction of sudden signal jumps during the analysis.
 
+Usage examples:
 ```
 python enumerator.py 1001 1002
-python enumerator.py --controls 01 02
 python enumerator.py --all
+python enumerator.py --controls 01 02
 python enumerator.py --controls --all
 ```
 
