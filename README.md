@@ -5,24 +5,29 @@ Author: Edis Devin Tireli, M.Sc, Ph.D. student
 
 Affiliation: [Copenhagen University](https://www.ku.dk/english/)
 
+## 1. Motivation
+Understanding blood-brain barrier permeability is essential for assessing neurological disease and treatment response. p-Brain integrates segmentation, neural network-based ROI detection, and advanced kinetic modeling to compute Ki and cerebral blood flow (CBF). The toolkit can operate fully automatically, minimizing user error while allowing manual ROI delineation when desired. Patlak analysis, Tikhonov model-free deconvolution and Fick's two-compartment model underpin the Ki estimation workflow.
+
+
 # Table of Contents
-1. Introduction
-2. Directory & Data Structure
-3. Installation
-4. How to use
-5. Core Features
-6. Fully Automated Mode
-7. Contributions
-8. License
-9. Acknowledgments
+1. Motivation
+2. Introduction
+3. Directory & Data Structure
+4. Installation
+5. How to use
+6. Core Features
+7. Fully Automated Mode
+8. Contributions
+9. License
+10. Acknowledgments
 
 
-## 1. Introduction
+## 2. Introduction
 p-Brain is a Python toolkit for quantitative analysis of MRI data with a focus on dynamic contrast-enhanced (DCE) protocols. It supports both Philips PAR/REC and NIfTI files and provides a set of modules for converting, viewing and processing images. The pipeline covers the full workflow from T1/M0 fitting, input function extraction and tissue segmentation to blood‑brain barrier permeability estimation.
 
 All core functionality resides in the `modules/` package while helper routines are located under `utils/`. Optional neural networks for artery and vein identification are stored in the `AI/` directory. A small GUI is used to select a dataset, after which a terminal menu guides the user through each processing step. For cohort processing the script `enumerator.py` can launch `main.py` for multiple subjects in sequence, enabling unattended analysis.
 
-## 2. Directory & Data Structure
+## 3. Directory & Data Structure
 The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
 
 ```
@@ -102,22 +107,19 @@ The above files can be renamed to suit different purposes/sequences which can be
 ![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
 
 
-## 3. Installation
+## 4. Installation
 
 To get started with p-Brain, please follow the steps below to install the software on your local machine. Before you do so, make sure you have python and git installed. 
 
 ### Required Installation
-
 1. **Clone the Repository**: Clone the p-Brain repository to your local machine using the following command:
     ```bash
     git clone https://github.com/edtireli/p-brain.git
     ```
-
 2. **Navigate to the Directory**: Change to the directory containing the cloned repository:
     ```bash
     cd p-brain
     ```
-
 3. **Install Dependencies**: Install the required Python packages listed in `requirements.txt`:
     ```bash
     pip install -r requirements.txt
@@ -128,7 +130,6 @@ At this point, p-Brain is installed and you can run the program.
 ### Optional Addon Installation
 
 For advanced functionalities, p-Brain supports optional addons. To install the addons:
-
 1. **Initialize the Submodule**: While in the root directory of the p-Brain repository, run the following command to initialize and update the `addons`:
     ```bash
     git submodule update --init -- addons/addon_name
@@ -142,7 +143,7 @@ The application derives its version directly from the Git tags. `modules/__init_
 will read the most recent tag via `git describe --tags` when executed, so you do
 not need to manually update the version string.
 
-## 4. How to use
+## 5. How to use
 To start p-Brain, navigate to the project directory and execute the following command:
 ```bash
 python3 main.py
@@ -180,7 +181,7 @@ eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee
 
 The idea is to use the options in chronological order, as each step requires the files of each subsequent step. See below for a detailed description of the options and features. The software displays usage instructions as well.  
 
-## 5. Core Features
+## 6. Core Features
 
 - Option 0 - View MRI images: This option opens a GUI that allows for the selection and viewing of axial and saggital images of the aforementioned data types.
 - Option 1 - T1/M0 Fitting: This option utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting: it uses the WIPTI_xxxx.nii files to do so.
@@ -198,7 +199,7 @@ The idea is to use the options in chronological order, as each step requires the
     ![CTC+ROI_slice_7](https://github.com/edtireli/p-brain/assets/129996957/32bc922a-dcce-4b9c-a31e-053d021351e4)
     -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
 
-## 6. Fully Automated Mode
+## 7. Fully Automated Mode
 From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
 
 ![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
@@ -211,13 +212,13 @@ The four neural networks used for Right Internal Carotid Artery (RICA) and sinus
  `RICA_ROI_MODEL`, `SLICE_CLASSIFIER_SS_MODEL` and `SS_ROI_MODEL` to override the
  defaults.
 
-## 7. Contributions
+## 8. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
-## 8. License
+## 9. License
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
 
-## 9. Acknowledgments
+## 10. Acknowledgments
 Special thanks to Henrik B. W. Larsson for collaborations and discussions.
 
 
