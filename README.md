@@ -201,7 +201,7 @@ The idea is to use the options in chronological order, as each step requires the
 ## 6. Fully Automated Mode
 From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing, see below: 
 
-![AI_input_function_ROIs](https://github.com/user-attachments/assets/17844819-7fde-4dd5-8ef1-a9a3151bb5c4)
+![AI_input_function_ROIs](https://github.com/user-attachments/assets/adda1abb-c1b7-4a49-937b-cf64ea51acef)
 
 Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
 
