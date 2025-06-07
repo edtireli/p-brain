@@ -199,9 +199,26 @@ The idea is to use the options in chronological order, as each step requires the
     -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
 
 ## 6. Fully Automated Mode
-From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing. Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
+From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing, see below: 
+
+![AI_input_function_ROIs](https://github.com/user-attachments/assets/17844819-7fde-4dd5-8ef1-a9a3151bb5c4)
+
+Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
 
 ![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
+
+The pipeline produces a large collection of data in the form of .nii files, e.g. the BBB permeability per voxel, per slice (as shown above) per tissue type, and per parcel from segmentation, as well as a global estimation (using whole-brain tissue segments as one large ROI per major tissue type). The following is a per-voxel BBB permeability over few slices:
+
+![kipervoxel](https://github.com/user-attachments/assets/560a42eb-1670-4b0a-a3ae-6bb3c004b359)
+
+Below is the BBB permeability per parcel from segmentation: 
+
+![kimap](https://github.com/user-attachments/assets/e80c23e6-8880-4c63-bd6e-7a10080ad9fe)
+
+And finally, a CBF estimation per voxel: 
+
+![cbfmap](https://github.com/user-attachments/assets/2fe56e0b-1d29-4f89-88f9-175105d4436e)
+
 
 ### Custom AI model paths
 The four neural networks used for Right Internal Carotid Artery (RICA) and sinus
