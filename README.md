@@ -5,6 +5,10 @@ Author: Edis Devin Tireli, M.Sc, Ph.D. student
 
 Affiliation: [Copenhagen University](https://www.ku.dk/english/)
 
+## Motivation
+Understanding blood-brain barrier permeability is essential for assessing neurological disease and treatment response. p-Brain integrates segmentation, neural network-based ROI detection, and advanced kinetic modeling to compute Ki and cerebral blood flow (CBF). The toolkit can operate fully automatically, minimizing user error while allowing manual ROI delineation when desired. Patlak analysis, Tikhonov model-free deconvolution and Fick's two-compartment model underpin the Ki estimation workflow.
+
+
 # Table of Contents
 1. Introduction
 2. Directory & Data Structure
