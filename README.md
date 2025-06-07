@@ -1,4 +1,4 @@
-# p-Brain: Advanced Neuroimaging Analysis Tool
+# _p_-Brain: Advanced Neuroimaging Analysis Tool
 ![411586563-4f8bdcba-dbe6-41c7-b644-c0cdaf031fe9](https://github.com/user-attachments/assets/3376d87a-26af-4b73-ba57-e906aaf8e13c)
 
 Author: Edis Devin Tireli, M.Sc, Ph.D. student
@@ -22,7 +22,7 @@ Understanding blood-brain barrier permeability is essential for assessing neurol
 
 
 ## 1. Introduction
-p-Brain is a Python toolkit for quantitative analysis of MRI data with a focus on dynamic contrast-enhanced (DCE) protocols. It supports both Philips PAR/REC and NIfTI files and provides a set of modules for converting, viewing and processing images. The pipeline covers the full workflow from T1/M0 fitting, input function extraction and tissue segmentation to blood‑brain barrier permeability estimation.
+_p_-Brain is a Python toolkit for quantitative analysis of MRI data with a focus on dynamic contrast-enhanced (DCE) protocols. It supports both Philips PAR/REC and NIfTI files and provides a set of modules for converting, viewing and processing images. The pipeline covers the full workflow from T1/M0 fitting, input function extraction and tissue segmentation to blood‑brain barrier permeability estimation.
 
 All core functionality resides in the `modules/` package while helper routines are located under `utils/`. Optional neural networks for artery and vein identification are stored in the `AI/` directory. A small GUI is used to select a dataset, after which a terminal menu guides the user through each processing step. For cohort processing the script `enumerator.py` can launch `main.py` for multiple subjects in sequence, enabling unattended analysis.
 
