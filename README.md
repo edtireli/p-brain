@@ -235,6 +235,6 @@ For contributions, feature requests, and bug reporting, please contact me (Edis 
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
 
 ## 9. Acknowledgments
-Special thanks to Henrik B. W. Larsson for collaborations and discussions.
+Special thanks to Henrik B. W. Larsson, Ulrich Lindberg, Stig P. Cramer, Mark Vestergaard and Antonis Asiminas for collaborations and discussions.
 
 
