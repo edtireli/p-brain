@@ -228,6 +228,10 @@ The four neural networks used for Right Internal Carotid Artery (RICA) and sinus
  `RICA_ROI_MODEL`, `SLICE_CLASSIFIER_SS_MODEL` and `SS_ROI_MODEL` to override the
  defaults.
 
+Pre-trained models are available at
+[Zenodo](https://doi.org/10.5281/zenodo.15655347). Download and extract them
+into the `AI/` directory so the default paths resolve.
+
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
