@@ -5,5 +5,6 @@ __pycache__/
 data/*
 AI/*
 !data/.gitkeep
+!AI/*.keras
 !AI/.gitkeep
 
