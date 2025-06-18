@@ -20,6 +20,9 @@ class ROISelector:
         self.zoom_level = 0
         self.zoom_center = None
         self.fig, self.ax = plt.subplots()
+        # Connect event handlers for mouse clicks and key presses
+        self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.redraw()
         plt.show()
 
