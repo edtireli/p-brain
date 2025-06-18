@@ -44,13 +44,20 @@ def parse_args():
 
 
 def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
-                    image_directory, filenames, parameters):
-    """Run the classic CLI interface."""
+                    image_directory, filenames, parameters, pseudo: bool = False):
+    """Run the classic CLI interface.
+
+    When ``pseudo`` is True the menu text changes to reflect that the automatic
+    pipeline has already been executed.
+    """
     while True:
         if option is not None:
             choice = option
         else:
-            welcome_screen()
+            if pseudo:
+                welcome_screen_pseudo()
+            else:
+                welcome_screen()
             choice = welcome_screen_choice()
 
         if choice == 0:
@@ -85,12 +92,12 @@ def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
             if option is not None:
                 break
 
-        elif choice == 7:
+        elif choice == 6:
             add_notes(analysis_directory)
             if option is not None:
                 break
 
-        elif choice == 8:
+        elif choice == 7:
             selected_addon = list_addons()
             load_addon(selected_addon, analysis_directory, nifti_directory,
                        image_directory, filenames, parameters)
@@ -99,15 +106,6 @@ def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
                 break
 
         elif choice == 9:
-            break
-
-        elif choice == 6:
-            T1_fit(data_directory, analysis_directory, nifti_directory,
-                   image_directory, filenames, parameters)
-            input_function_AI(analysis_directory, nifti_directory, image_directory,
-                               filenames, parameters)
-            tissue_function_AI(analysis_directory, nifti_directory, image_directory,
-                                filenames, parameters)
             break
 
         elif choice == 66:
@@ -181,6 +179,6 @@ def main():
         input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
-                        image_directory, filenames, parameters)
+                        image_directory, filenames, parameters, pseudo=True)
 if __name__ == '__main__':
     main()

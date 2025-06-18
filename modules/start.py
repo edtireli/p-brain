@@ -158,15 +158,28 @@ def welcome_screen():
     print('| '+colored('3', 'cyan')+' | Generate Time-Shifted Concentration Curves (TSCC) from CTC')
     print('| '+colored('4', 'cyan')+' | Create Tissue (Grey/White matter) CTCs')
     print('| '+colored('5', 'cyan')+' | Compute BBB permeability and perfusion parameters')
-    #print('| '+colored('6', 'cyan')+' | Cross-sequence axial reconstructions')
-    print('| '+colored('6', 'cyan')+' | Full automatic AI enhanced analysis')
-    print('| '+colored('7', 'cyan')+' | Add analysis notes')
-    print('| '+colored('8', 'cyan')+' | Addons')
+    print('| '+colored('6', 'cyan')+' | Add analysis notes')
+    print('| '+colored('7', 'cyan')+' | Addons')
+    print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
+    print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
+
+def welcome_screen_pseudo():
+    """Menu shown after running the automatic pipeline in pseudo mode."""
+    print_banner()
+    print(colored('=-=-= Choose between the following options =-=-==-=-==-=-==-=-=-=-=', 'white'))
+    print('| '+colored('0', 'cyan')+' | View MRI images')
+    print('| '+colored('1', 'cyan')+' | Compute M0 and T1 map from MRI data')
+    print('| '+colored('2', 'cyan')+' | Change Input Function')
+    print('| '+colored('3', 'cyan')+' | Generate Time-Shifted Concentration Curves (TSCC) from CTC')
+    print('| '+colored('4', 'cyan')+' | Change Tissue (Grey/White matter) CTCs')
+    print('| '+colored('5', 'cyan')+' | Compute BBB permeability and perfusion parameters')
+    print('| '+colored('6', 'cyan')+' | Add analysis notes')
+    print('| '+colored('7', 'cyan')+' | Addons')
     print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     
 def welcome_screen_choice():
-    choice = input('['+colored('!', 'cyan')+'] Enter option ('+colored('1', 'cyan')+'-'+colored('9', 'cyan')+'): ')
+    choice = input('['+colored('!', 'cyan')+'] Enter option ('+colored('1', 'cyan')+'-'+colored('7', 'cyan')+', or 9 to exit): ')
     
     if not choice.isdigit():
         print('[' +colored('!', 'red') +"] Only integer input!")
