@@ -19,18 +19,16 @@ import threading
 turbo_mode = True #doesnt show plots
 
 def close_plot_after_delay_plt(delay):
-    """
-    Close the plot automatically after a delay if no interaction occurs.
-    :param delay: Time in seconds to wait before closing the plot.
-    """
-    def close():
-        plt.close(plt.gcf())  # Close the current figure
+    """Close the plot after ``delay`` seconds when running in turbo mode."""
+    if turbo_mode:
+        def close():
+            plt.close(plt.gcf())  # Close the current figure
 
-    timer = threading.Timer(delay, close)
-    timer.start()
+        timer = threading.Timer(delay, close)
+        timer.start()
 
-    # If there is user interaction, cancel the timer
-    plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
+        # If there is user interaction, cancel the timer
+        plt.gcf().canvas.mpl_connect('key_press_event', lambda event: timer.cancel())
 
 
 def extract_vfa_params(vfa_filenames, nifti_directory):

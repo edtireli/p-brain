@@ -120,19 +120,17 @@ def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
 def main():
     args = parse_args()
 
-    # Show figures when running interactively unless explicitly disabled via the
-    # ``PBRAIN_TURBO`` environment variable. The enumerator sets this variable to
-    # keep plotting off during batch processing.
-    if os.environ.get("PBRAIN_TURBO") != "1":
-        plotting.turbo_mode = False
-        opt01_T1_fit.turbo_mode = False
-        AI_input_functions.turbo_mode = False
-        AI_tissue_functions.turbo_mode = False
-        opt03_time_shifting.turbo_mode = False
-        opt02_input_functions.turbo_mode = False
-        opt04_tissue_function.turbo_mode = False
-        opt05_BBB_parameters.turbo_mode = False
-        opt00_images.turbo_mode = False
+    # Respect ``PBRAIN_TURBO`` to disable plotting when running in batch mode.
+    # Individual modes may override this later (manual/pseudo always show plots).
+    def set_turbo_mode(enabled: bool):
+        modules = [plotting, opt01_T1_fit, AI_input_functions, AI_tissue_functions,
+                   opt03_time_shifting, opt02_input_functions,
+                   opt04_tissue_function, opt05_BBB_parameters, opt00_images]
+        for m in modules:
+            m.turbo_mode = enabled
+
+    turbo_env = os.environ.get("PBRAIN_TURBO") == "1"
+    set_turbo_mode(turbo_env)
 
     if args.id:
         log_number = args.id
@@ -168,6 +166,7 @@ def main():
             return
 
     if mode == 'manual' or args.option is not None:
+        set_turbo_mode(False)
         manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
                         image_directory, filenames, parameters)
     elif mode == 'auto':
@@ -176,6 +175,7 @@ def main():
         input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
     elif mode == 'pseudo':
+        set_turbo_mode(False)
         print_banner()
         T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
         input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
