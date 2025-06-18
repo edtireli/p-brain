@@ -153,7 +153,7 @@ import threading
 
 
 def close_plot_after_delay_plt(delay, fig=None):
-    if not turbo_mode:
+    if turbo_mode:
         def close_plot():
             if fig:
                 plt.close(fig)
@@ -169,7 +169,7 @@ def close_plot_after_delay(delay, fig):
     :param delay: Time in seconds to wait before closing the plot.
     :param fig: The figure object to close.
     """
-    if not turbo_mode:
+    if turbo_mode:
         def close():
             plt.close(fig)
 
@@ -577,7 +577,7 @@ def close_plot_after_delay_special(delay, default_save_callback):
     :param delay: Time in seconds to wait before closing the plot.
     :param default_save_callback: Function to call for saving the default data.
     """
-    if not turbo_mode:
+    if turbo_mode:
         def close():
             default_save_callback()
             plt.close(plt.gcf())  # Close the current figure
