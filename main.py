@@ -1,6 +1,11 @@
-import argparse 
+import argparse
+import os
 from utils import *
 from modules import *
+import utils.plotting as plotting
+import modules.opt01_T1_fit as opt01_T1_fit
+import modules.AI_input_functions as AI_input_functions
+import modules.AI_tissue_functions as AI_tissue_functions
 
 
 def parse_args():
@@ -12,6 +17,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Disable turbo mode when running a single CLI option so figures are shown
+    if args.option is not None and os.environ.get("PBRAIN_TURBO") != "1":
+        plotting.turbo_mode = False
+        opt01_T1_fit.turbo_mode = False
+        AI_input_functions.turbo_mode = False
+        AI_tissue_functions.turbo_mode = False
 
     if args.id:
         log_number = args.id
