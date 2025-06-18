@@ -8,23 +8,25 @@ import gzip
 import glob
 import json
 
+from termcolor import colored
 
 def print_banner():
     """Display the p-brain banner."""
     os.system('clear')
-    print('         Welcome to p-brain - a neuroimaging & analysis tool')
-    print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
-    print('')
-    print('        / /                                                  / /')
-    print('       / /    eeeee      eeeee  eeeee  eeeee e  eeeee       / /')
-    print('      / /     8   8      8   8  8   8  8   8 8  8   8      / /')
-    print('eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee')
-    print('    / /       88         88   8 88   8 88  8 88 88  8    / /')
-    print('   / /        88         88eee8 88   8 88  8 88 88  8   / /')
-    print('')
-    print('                  Developed by Edis Devin Tireli')
-    print('                     University of Copenhagen')
-    print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
+    line = "=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-="
+    print(colored("         Welcome to p-brain - a neuroimaging & analysis tool", "green"))
+    print(colored(line, "white"))
+    print("")
+    print(colored("        / /                                                  / /", "cyan"))
+    print(colored("       / /    eeeee      eeeee  eeeee  eeeee e  eeeee       / /", "cyan"))
+    print(colored("      / /     8   8      8   8  8   8  8   8 8  8   8      / /", "cyan"))
+    print(colored("eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee", "cyan"))
+    print(colored("    / /       88         88   8 88   8 88  8 88 88  8    / /", "cyan"))
+    print(colored("   / /        88         88eee8 88   8 88  8 88 88  8   / /", "cyan"))
+    print("")
+    print(colored("                  Developed by Edis Devin Tireli", "yellow"))
+    print(colored("                     University of Copenhagen", "yellow"))
+    print(colored(line, "white"))
 
 
 availability_toggled = False
@@ -142,7 +144,6 @@ def select_log_number():
 
 
 #A simple implementation of a CLI interface
-from termcolor import colored
 import time
 import os
 
@@ -150,7 +151,7 @@ import os
 def welcome_screen():
     print_banner()
     #print('----------------------------------------------------------------------')
-    print('=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-= ')
+    print(colored('=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-=', 'white'))
     print('| '+colored('0', 'cyan')+' | View MRI images')
     print('| '+colored('1', 'cyan')+' | Compute M0 and T1 map from MRI data')
     print('| '+colored('2', 'cyan')+' | Generate Concentration Time Curves (CTC) based on ROI')
@@ -162,9 +163,8 @@ def welcome_screen():
     print('| '+colored('7', 'cyan')+' | Add analysis notes')
     print('| '+colored('8', 'cyan')+' | Addons')
     print('| '+colored('9', 'red')+' | ' +colored('Exit program', 'red'))
-    print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
+    print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     
-
 def welcome_screen_choice():
     choice = input('['+colored('!', 'cyan')+'] Enter option ('+colored('1', 'cyan')+'-'+colored('9', 'cyan')+'): ')
     
