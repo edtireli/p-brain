@@ -331,6 +331,9 @@ class ROISelector_tissue:
         self.roi_slices = defaultdict(list)
         self.zoom_level = 0
         self.fig, self.ax = plt.subplots()
+        # Connect event handlers for interaction
+        self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.redraw()
         plt.show()
 
