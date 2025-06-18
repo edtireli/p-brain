@@ -14,7 +14,7 @@ def print_banner():
     """Display the p-brain banner."""
     os.system('clear')
     line = "=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-="
-    print(colored("         Welcome to p-brain - a neuroimaging & analysis tool", "green"))
+    print(colored("         Welcome to p-brain - a neuroimaging & analysis tool", "white"))
     print(colored(line, "white"))
     print("")
     print(colored("        / /                                                  / /", "cyan"))
@@ -24,8 +24,8 @@ def print_banner():
     print(colored("    / /       88         88   8 88   8 88  8 88 88  8    / /", "cyan"))
     print(colored("   / /        88         88eee8 88   8 88  8 88 88  8   / /", "cyan"))
     print("")
-    print(colored("                  Developed by Edis Devin Tireli", "yellow"))
-    print(colored("                     University of Copenhagen", "yellow"))
+    print(colored("                  Developed by Edis Devin Tireli", "white"))
+    print(colored("                     University of Copenhagen", "white"))
     print(colored(line, "white"))
 
 
