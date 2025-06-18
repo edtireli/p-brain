@@ -11,6 +11,8 @@ from utils.mapping import *
 import glob
 import shutil
 
+turbo_mode = True  # When True, suppress interactive plotting
+
 
 def patlak_analysis_plotting(c_tissue, c_input, time):
     frame_no = len(time)
@@ -204,7 +206,9 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
     elif choice == 3: 
         plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Mixed_Matter.png'), dpi=200)    
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.show()
     plt.tight_layout()
     plt.close()
 
@@ -260,7 +264,9 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_normalisation.png'), dpi=200)
     
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.show()
     plt.close()
 
     shift_manual = input('[!] Manually shift baseline point? (y/n): ')
@@ -277,7 +283,9 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         ax.grid(which='minor', alpha=0.25)
         ax.minorticks_on()
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-        plt.show()
+        if not turbo_mode:
+            close_plot_after_delay_plt(3)
+            plt.show()
         plt.close()
         baseline_point = int(input('[!] Pick baseline point: '))
         avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
@@ -310,7 +318,9 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}.png'), dpi=200)
     
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.show()
     plt.close()
 
     np.save(os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy'), avg_C_t)
@@ -335,7 +345,8 @@ class ROISelector_tissue:
         self.fig.canvas.mpl_connect('button_press_event', self.onclick)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.redraw()
-        plt.show()
+        if not turbo_mode:
+            plt.show()
 
     def onclick(self, event):
         if event.inaxes != self.ax: return

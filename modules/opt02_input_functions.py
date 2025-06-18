@@ -5,6 +5,8 @@ from termcolor import colored
 from utils.fonts import *
 from utils.mapping import *
 from utils.plotting import *
+
+turbo_mode = True  # When True, suppress interactive plotting
 from matplotlib.path import Path
 import glob
 
@@ -24,7 +26,8 @@ class ROISelector:
         self.fig.canvas.mpl_connect('button_press_event', self.onclick)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
         self.redraw()
-        plt.show()
+        if not turbo_mode:
+            plt.show()
 
     def onclick(self, event):
         if event.inaxes != self.ax: return

@@ -6,6 +6,8 @@ from .kinetic_models import two_compartment_fit
 from scipy.optimize import curve_fit
 from termcolor import colored
 
+turbo_mode = True  # When True, suppress interactive plotting
+
 def permeability_user_interface(analysis_directory):
     subtype_mapping_artery = {
         "lica": "Left Interior Carotid",
@@ -124,9 +126,11 @@ def patlak_analysis(c_tissue, c_input, time, subtype_tissue, image_directory):
           f'$K_i = {round(Ki*6000, 5)} \pm {round(SD_Ki*6000, 5)}$ ml/100g/min, '
           f'$\\lambda = {round(lambda_*100, 5)}$ ml/100g')
     plt.grid(True)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     plt.savefig(os.path.join(image_directory, 'Fit', f'patlak_{subtype_tissue}'),dpi=200)
-    plt.show()
+    if not turbo_mode:
+        close_plot_after_delay_plt(3)
+        plt.show()
     return Ki, lambda_, SD_Ki
 
 
