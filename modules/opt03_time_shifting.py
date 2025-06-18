@@ -8,6 +8,8 @@ import glob
 import json
 import time
 
+turbo_mode = True  # When True, suppress interactive plotting
+
 
 def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_index, arterial_slice_index, vein_top2_peaks, time_points_s, analysis_directory, image_directory, subtype='test', scaling=1, time_shift=1):
     subtype=subtype[1]
@@ -38,8 +40,10 @@ def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_inde
 
     plt.savefig(os.path.join(image_directory, 'Time Shifted Concentration Curves', subtype, f'TSCC_slice_{slice_index}_{arterial_slice_index}.png'), dpi=200)
     np.save(os.path.join(analysis_directory, 'TSCC Data', subtype, f'TSCC_slice_{slice_index}_{arterial_slice_index}.npy'), shifted_vein_curve)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()    
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        close_plot_after_delay_plt(3)
+        plt.show()
 
 
 def get_available_arteries(analysis_directory):
@@ -209,8 +213,10 @@ def plot_transformed_curves_max(shifted_vein_curve, slice_index, artery_index, v
 
     plt.savefig(os.path.join(image_directory, 'Time Shifted Concentration Curves', 'Max', f'TSCC_slice_{slice_index}_{artery_index}.png'), dpi=200)
     np.save(os.path.join(analysis_directory, 'TSCC Data', 'Max', f'TSCC_slice_{slice_index}_{artery_index}.npy'), shifted_vein_curve)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
-    plt.show()
+    if not turbo_mode:
+        plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
+        close_plot_after_delay_plt(3)
+        plt.show()
 
 
 

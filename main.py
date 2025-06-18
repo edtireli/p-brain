@@ -6,6 +6,11 @@ import utils.plotting as plotting
 import modules.opt01_T1_fit as opt01_T1_fit
 import modules.AI_input_functions as AI_input_functions
 import modules.AI_tissue_functions as AI_tissue_functions
+import modules.opt03_time_shifting as opt03_time_shifting
+import modules.opt02_input_functions as opt02_input_functions
+import modules.opt04_tissue_function as opt04_tissue_function
+import modules.opt05_BBB_parameters as opt05_BBB_parameters
+import modules.opt00_images as opt00_images
 
 
 def parse_args():
@@ -26,6 +31,11 @@ def main():
         opt01_T1_fit.turbo_mode = False
         AI_input_functions.turbo_mode = False
         AI_tissue_functions.turbo_mode = False
+        opt03_time_shifting.turbo_mode = False
+        opt02_input_functions.turbo_mode = False
+        opt04_tissue_function.turbo_mode = False
+        opt05_BBB_parameters.turbo_mode = False
+        opt00_images.turbo_mode = False
 
     if args.id:
         log_number = args.id

@@ -7,6 +7,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
 
+turbo_mode = True  # When True, suppress interactive plotting
+
 class MRIViewer:
     def __init__(self, nifti_directory, filenames):
         self.nifti_directory = nifti_directory
@@ -25,6 +27,9 @@ class MRIViewer:
 
 
     def display(self):
+        if turbo_mode:
+            print("[!] Turbo mode enabled; skipping image viewer.")
+            return
         t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = self.filenames
         patterns_and_names = [
@@ -76,7 +81,11 @@ class MRIViewer:
                         # Connect to events and show the figure
                         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
                         self.redraw()
-                        plt.show()
+                        if not turbo_mode:
+                            plt.show()
+                        else:
+                            plt.close(self.fig)
+                            break
 
                         # Close the GUI and break the inner loop when 'Escape' is pressed
                         if plt.get_fignums():
