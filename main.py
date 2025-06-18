@@ -18,8 +18,10 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Disable turbo mode when running a single CLI option so figures are shown
-    if args.option is not None and os.environ.get("PBRAIN_TURBO") != "1":
+    # Show figures when running interactively unless explicitly disabled via the
+    # ``PBRAIN_TURBO`` environment variable. The enumerator sets this variable to
+    # keep plotting off during batch processing.
+    if os.environ.get("PBRAIN_TURBO") != "1":
         plotting.turbo_mode = False
         opt01_T1_fit.turbo_mode = False
         AI_input_functions.turbo_mode = False

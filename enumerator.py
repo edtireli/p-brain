@@ -66,5 +66,8 @@ for id, is_control in datasets:
         env["PBRAIN_CONTROLS"] = "true"
     else:
         env.pop("PBRAIN_CONTROLS", None)
+    # Disable plotting and interactive windows when running in batch mode
+    # by enabling turbo mode in ``main.py``.
+    env["PBRAIN_TURBO"] = "1"
     print(f"Running: {command} (control={is_control})")
     subprocess.run(command, shell=True, env=env)
