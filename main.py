@@ -33,12 +33,6 @@ def main():
     refresh_nifti_directory(nifti_directory)
     check_axial(nifti_directory, filenames)
 
-    # Compute FA from DWI if enabled
-    _, _, _, _, _, _, COMPUTE_FA = parameters
-    if COMPUTE_FA:
-        compute_fa(nifti_directory, analysis_directory)
-
-    
     while True:
         if args.option:
             choice = args.option

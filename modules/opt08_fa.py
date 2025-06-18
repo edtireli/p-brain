@@ -74,11 +74,26 @@ def compute_fa(nifti_directory, analysis_directory):
 
     wm_mask_path = find_wm_mask(nifti_directory)
     if wm_mask_path:
-        wm_mask = nib.load(wm_mask_path).get_fdata() > 0
+        wm_img = nib.load(wm_mask_path)
+        # Resample the WM mask to match the FA image if needed
+        if wm_img.shape != fa.shape:
+            try:
+                from nibabel.processing import resample_from_to
+
+                wm_img = resample_from_to(wm_img, (img.shape, img.affine), order=0)
+                print("[!] Resampled WM mask to match DWI dimensions")
+            except Exception as e:
+                print(f"[!] Failed to resample WM mask: {e}")
+        wm_mask = wm_img.get_fdata() > 0
+        if wm_mask.shape != fa.shape:
+            print("[!] WM mask shape mismatch; skipping WM-specific FA computation")
+            return
+
         mean_fa_wm = np.nanmean(fa[wm_mask])
         with open(os.path.join(analysis_directory, "fa_mean_wm.txt"), "w") as f:
             f.write(f"{mean_fa_wm}\n")
         print(f"[!] Mean WM FA: {mean_fa_wm:.4f}")
+
         fa_wm = fa * wm_mask
         fa_wm_img = nib.Nifti1Image(fa_wm.astype(np.float32), img.affine, img.header)
         wm_out_path = os.path.join(analysis_directory, "FA_WM_map.nii.gz")
