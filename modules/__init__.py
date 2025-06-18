@@ -19,6 +19,7 @@ from .opt01_T1_fit import * # option 1
 from .opt02_input_functions import * # option 2
 from utils.mapping import *
 from utils.plotting import *
+from .kinetic_models import *
 from .opt03_time_shifting import * # option 3
 from .opt04_tissue_function import * # option 4
 from .opt05_BBB_parameters import * # option 5

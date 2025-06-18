@@ -232,6 +232,12 @@ Pre-trained models are available at
 [Zenodo](https://doi.org/10.5281/zenodo.15655347). Download and extract them
 into the `AI/` directory so the default paths resolve.
 
+### Kinetic model selection
+The permeability analysis defaults to Patlak modelling. Set the variable
+`KINETIC_MODEL` in `utils/settings.py` or export the environment variable
+`P_BRAIN_MODEL` to `two_compartment` to use the extended Tofts
+two-compartment fit instead.
+
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
