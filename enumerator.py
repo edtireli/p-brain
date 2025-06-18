@@ -56,7 +56,8 @@ else:
     sys.exit(1)
 
 # Template for the command to run
-command_template = "python3 main.py --id {} --option 6"
+# Use the dedicated automatic mode instead of the manual option.
+command_template = "python3 main.py --id {} --mode auto"
 
 # Iterate through datasets and execute the command
 for id, is_control in datasets:
