@@ -8,6 +8,24 @@ import gzip
 import glob
 
 
+def print_banner():
+    """Display the p-brain banner."""
+    os.system('clear')
+    print('         Welcome to p-brain - a neuroimaging & analysis tool')
+    print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
+    print('')
+    print('        / /                                                  / /')
+    print('       / /    eeeee      eeeee  eeeee  eeeee e  eeeee       / /')
+    print('      / /     8   8      8   8  8   8  8   8 8  8   8      / /')
+    print('eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee')
+    print('    / /       88         88   8 88   8 88  8 88 88  8    / /')
+    print('   / /        88         88eee8 88   8 88  8 88 88  8   / /')
+    print('')
+    print('                  Developed by Edis Devin Tireli')
+    print('                     University of Copenhagen')
+    print('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=')
+
+
 availability_toggled = False
 def select_log_number():
     global selected_log_number
@@ -88,22 +106,13 @@ def select_log_number():
 
 
 #A simple implementation of a CLI interface
-from pyfiglet import Figlet
 from termcolor import colored
 import time
 import os
 
 
 def welcome_screen():
-    os.system('clear')
-    custom_fig = Figlet(font='computer')
-    print(colored('         Welcome to p-brain - a neuroimaging & analysis tool', 'white'))
-    print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'cyan'))
-    print('')
-    print(custom_fig.renderText('-// p-brain //-'))
-    print('                  Developed by Edis Devin Tireli')
-    print('                     University of Copenhagen')
-    print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'cyan'))
+    print_banner()
     #print('----------------------------------------------------------------------')
     print('=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-= ')
     print('| '+colored('0', 'cyan')+' | View MRI images')

@@ -164,7 +164,19 @@ eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee
                   Developed by Edis Devin Tireli
                      University of Copenhagen
 =-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
-=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-= 
+=-=-= Select analysis mode =-=-=
+| 1 | Manual mode
+| 2 | Automatic mode
+| 3 | Pseudo-Automatic mode
+| 9 | Exit program
+=-=-=---------------------=-=-=
+[!] Enter mode (1-3 or 9):
+```
+
+After selecting **Manual mode**, the classic CLI appears:
+
+```bash
+=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-=
 | 0 | View MRI images
 | 1 | Compute M0 and T1 map from MRI data
 | 2 | Generate Concentration Time Curves (CTC) based on ROI
@@ -178,7 +190,7 @@ eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee
 [!] Enter option (1-9):
 ```
 
-The idea is to use the options in chronological order, as each step requires the files of each subsequent step. See below for a detailed description of the options and features. The software displays usage instructions as well.  
+The idea is to use the options in chronological order, as each step requires the files of each subsequent step. See below for a detailed description of the options and features. The software displays usage instructions as well.
 
 ## 5. Core Features
 
