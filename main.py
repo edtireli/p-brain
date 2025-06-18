@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 from utils import *
 from modules import *
 import utils.plotting as plotting
@@ -14,7 +15,7 @@ import modules.opt00_images as opt00_images
 
 
 def mode_screen():
-    os.system('clear')
+    print_banner()
     print('=-=-= Select analysis mode =-=-=')
     print('| 1 | Manual mode')
     print('| 2 | Automatic mode')
@@ -170,10 +171,12 @@ def main():
         manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
                         image_directory, filenames, parameters)
     elif mode == 'auto':
+        print_banner()
         T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
         input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
     elif mode == 'pseudo':
+        print_banner()
         T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
         input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
