@@ -60,6 +60,9 @@ and will set this environment variable automatically. When a control run is
 processed, a small `control.json` file is written to the dataset directory.  The
 script accepts a list of log numbers or the `--all` flag. Combining
 `--controls` with `--all` processes every available control dataset.
+When the GUI encounters a `controls` folder it can be opened to reveal the
+contained datasets. A `controls.json` file is automatically created in this
+folder to indicate that its subfolders are control runs.
 
 Placing an `apply_jumpfix.json` file next to a dataset enables automatic
 correction of sudden signal jumps during the analysis.
