@@ -18,10 +18,11 @@ import subprocess
 import os
 import multiprocessing
 import shutil
-from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
+from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES, KINETIC_MODEL
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
+from .kinetic_models import two_compartment_fit
 from skimage.transform import resize
 import json
 from scipy.ndimage import binary_dilation
@@ -1659,28 +1660,26 @@ def compute_and_plot_ctcs_median(
         else:
             C_t_boundary = np.array([])
 
-        # Perform Patlak analysis for each tissue type
-        def perform_patlak(C_t):
-            if C_t.size > 0:
-                Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
+        # Perform kinetic model fit for each tissue type
+        def perform_model_fit(C_t):
+            if C_t.size == 0:
+                return (np.nan, np.nan, np.nan, np.array([]), np.array([]), np.array([], dtype=bool))
+            if KINETIC_MODEL.lower() == 'two_compartment':
+                Ki, lam, SD_Ki = two_compartment_fit(C_a_slice, C_t, time_points)
+                return Ki, lam, SD_Ki, np.array([]), np.array([]), np.array([], dtype=bool)
             else:
-                Ki = np.nan
-                lam = np.nan
-                SD_Ki = np.nan
-                x_patlak = np.array([])
-                y_patlak = np.array([])
-                included = np.array([], dtype=bool)
-            return Ki, lam, SD_Ki, x_patlak, y_patlak, included
+                Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
+                return Ki, lam, SD_Ki, x_patlak, y_patlak, included
 
-        Ki_wm, lambda_wm, SD_Ki_wm, x_patlak_wm, y_patlak_wm, included_wm = perform_patlak(C_t_wm)
-        Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, x_patlak_cortical_gm, y_patlak_cortical_gm, included_cortical_gm = perform_patlak(C_t_cortical_gm)
-        Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm = perform_patlak(C_t_subcortical_gm)
-        Ki_gm_brainstem, lambda_gm_brainstem, SD_Ki_gm_brainstem, x_patlak_gm_brainstem, y_patlak_gm_brainstem, included_gm_brainstem = perform_patlak(C_t_gm_brainstem)
-        Ki_gm_cerebellum, lambda_gm_cerebellum, SD_Ki_gm_cerebellum, x_patlak_gm_cerebellum, y_patlak_gm_cerebellum, included_gm_cerebellum = perform_patlak(C_t_gm_cerebellum)
-        Ki_wm_cerebellum, lambda_wm_cerebellum, SD_Ki_wm_cerebellum, x_patlak_wm_cerebellum, y_patlak_wm_cerebellum, included_wm_cerebellum = perform_patlak(C_t_wm_cerebellum)
-        Ki_wm_cc, lambda_wm_cc, SD_Ki_wm_cc, x_patlak_wm_cc, y_patlak_wm_cc, included_wm_cc = perform_patlak(C_t_wm_cc)
+        Ki_wm, lambda_wm, SD_Ki_wm, x_patlak_wm, y_patlak_wm, included_wm = perform_model_fit(C_t_wm)
+        Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, x_patlak_cortical_gm, y_patlak_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
+        Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm = perform_model_fit(C_t_subcortical_gm)
+        Ki_gm_brainstem, lambda_gm_brainstem, SD_Ki_gm_brainstem, x_patlak_gm_brainstem, y_patlak_gm_brainstem, included_gm_brainstem = perform_model_fit(C_t_gm_brainstem)
+        Ki_gm_cerebellum, lambda_gm_cerebellum, SD_Ki_gm_cerebellum, x_patlak_gm_cerebellum, y_patlak_gm_cerebellum, included_gm_cerebellum = perform_model_fit(C_t_gm_cerebellum)
+        Ki_wm_cerebellum, lambda_wm_cerebellum, SD_Ki_wm_cerebellum, x_patlak_wm_cerebellum, y_patlak_wm_cerebellum, included_wm_cerebellum = perform_model_fit(C_t_wm_cerebellum)
+        Ki_wm_cc, lambda_wm_cc, SD_Ki_wm_cc, x_patlak_wm_cc, y_patlak_wm_cc, included_wm_cc = perform_model_fit(C_t_wm_cc)
         if boundary and C_t_boundary.size > 0:
-            Ki_boundary, lambda_boundary, SD_Ki_boundary, x_patlak_boundary, y_patlak_boundary, included_boundary = perform_patlak(C_t_boundary)
+            Ki_boundary, lambda_boundary, SD_Ki_boundary, x_patlak_boundary, y_patlak_boundary, included_boundary = perform_model_fit(C_t_boundary)
         else:
             Ki_boundary = np.nan
             lambda_boundary = np.nan
@@ -2029,9 +2028,12 @@ def compute_and_plot_ctcs_median(
     # -----------------------------------------------------------------------------
     def patlak_total(C_t):
         if not C_t.size:
-            return np.nan, np.nan, np.nan      # Ki, λ, SD_Ki
+            return np.nan, np.nan, np.nan
+        if KINETIC_MODEL.lower() == 'two_compartment':
+            Ki, lam, SD = two_compartment_fit(C_a_total, C_t, time_points_total)
+            return Ki, lam, SD
         if correct_signal_jumps:
-            _, bad, _ = mask_problematic(C_t)  # same length as C_t
+            _, bad, _ = mask_problematic(C_t)
         else:
             bad = None
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
