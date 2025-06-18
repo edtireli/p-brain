@@ -13,11 +13,107 @@ import modules.opt05_BBB_parameters as opt05_BBB_parameters
 import modules.opt00_images as opt00_images
 
 
+def mode_screen():
+    os.system('clear')
+    print('=-=-= Select analysis mode =-=-=')
+    print('| 1 | Manual mode')
+    print('| 2 | Automatic mode')
+    print('| 3 | Pseudo-Automatic mode')
+    print('| 9 | Exit program')
+    print('=-=-=---------------------=-=-=')
+
+
+def mode_choice():
+    choice = input('[!] Enter mode (1-3 or 9): ')
+    if not choice.isdigit():
+        print('[!] Only integer input!')
+        time.sleep(2)
+        return mode_choice()
+    return int(choice)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description = "Run the neuroimagining analysis tool")
     parser.add_argument('--id', type=str, help = 'Patient ID, corresponding to folder names in data/', required = False)
     parser.add_argument('--option', type=int, help = 'Analysis option (welcome screen)', required = False)
+    # Optional mode argument to skip the interactive mode selection
+    parser.add_argument('--mode', type=str, choices=['manual', 'auto', 'pseudo'],
+                        help='Start directly in a specific analysis mode', required=False)
     return parser.parse_args()
+
+
+def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
+                    image_directory, filenames, parameters):
+    """Run the classic CLI interface."""
+    while True:
+        if option is not None:
+            choice = option
+        else:
+            welcome_screen()
+            choice = welcome_screen_choice()
+
+        if choice == 0:
+            viewer = MRIViewer(nifti_directory, filenames)
+            viewer.display()
+
+        elif choice == 1:
+            T1_fit(data_directory, analysis_directory, nifti_directory,
+                   image_directory, filenames, parameters)
+            if option is not None:
+                break
+
+        elif choice == 2:
+            input_function(analysis_directory, nifti_directory, image_directory,
+                           filenames, parameters)
+            if option is not None:
+                break
+
+        elif choice == 3:
+            time_shifting(analysis_directory, nifti_directory, image_directory)
+            if option is not None:
+                break
+
+        elif choice == 4:
+            tissue_function(analysis_directory, nifti_directory, image_directory,
+                            filenames)
+            if option is not None:
+                break
+
+        elif choice == 5:
+            BBB_parameters(analysis_directory, image_directory)
+            if option is not None:
+                break
+
+        elif choice == 7:
+            add_notes(analysis_directory)
+            if option is not None:
+                break
+
+        elif choice == 8:
+            selected_addon = list_addons()
+            load_addon(selected_addon, analysis_directory, nifti_directory,
+                       image_directory, filenames, parameters)
+            time.sleep(3)
+            if option is not None:
+                break
+
+        elif choice == 9:
+            break
+
+        elif choice == 6:
+            T1_fit(data_directory, analysis_directory, nifti_directory,
+                   image_directory, filenames, parameters)
+            input_function_AI(analysis_directory, nifti_directory, image_directory,
+                               filenames, parameters)
+            tissue_function_AI(analysis_directory, nifti_directory, image_directory,
+                                filenames, parameters)
+            break
+
+        elif choice == 66:
+            print('[!] Executing order 66...')
+            tissue_function_AI(analysis_directory, nifti_directory, image_directory,
+                                filenames, parameters)
+            break
 
 
 def main():
@@ -57,70 +153,31 @@ def main():
     refresh_nifti_directory(nifti_directory)
     check_axial(nifti_directory, filenames)
 
-    while True:
-        if args.option:
-            choice = args.option
+    mode = args.mode
+    if mode is None and args.option is None:
+        mode_screen()
+        mode_choice_val = mode_choice()
+        if mode_choice_val == 1:
+            mode = 'manual'
+        elif mode_choice_val == 2:
+            mode = 'auto'
+        elif mode_choice_val == 3:
+            mode = 'pseudo'
         else:
-            welcome_screen()
-            choice = welcome_screen_choice()
+            return
 
-        #Choices
-        if choice == 0: # Show MRI images: DCE, Saggital T1/T2, Axial T1/T2
-            viewer = MRIViewer(nifti_directory, filenames)
-            viewer.display()
-
-        elif choice == 1: # T1/M0 fit
-            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            if args.option:
-                break
-
-        elif choice == 2: # Input function from ROI 
-            input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            if args.option:
-                break
-
-        elif choice == 3: # Time shifting of input functions AND find maximum AIF
-            time_shifting(analysis_directory, nifti_directory, image_directory)
-            if args.option:
-                break
-
-        elif choice == 4: # Tissue concentration functions
-            tissue_function(analysis_directory, nifti_directory, image_directory, filenames)
-            if args.option:
-                break
-
-        elif choice == 5: # Compute BBB parameters
-            BBB_parameters(analysis_directory, image_directory)
-            if args.option:
-                break
-
-        elif choice == 7: # Analysis notes
-            add_notes(analysis_directory) 
-            if args.option:
-                break
-
-        elif choice == 8: # Addons
-            selected_addon = list_addons()
-            load_addon(selected_addon, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            time.sleep(3)
-            if args.option:
-                break
-            
-        elif choice == 9:
-            break
-
-        elif choice == 6:
-            #print('[!] Executing order 66...')
-            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            break
-
-        elif choice == 66:
-            print('[!] Executing order 66...')
-            #T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            #input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            break
+    if mode == 'manual' or args.option is not None:
+        manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
+                        image_directory, filenames, parameters)
+    elif mode == 'auto':
+        T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+    elif mode == 'pseudo':
+        T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
+                        image_directory, filenames, parameters)
 if __name__ == '__main__':
     main()
