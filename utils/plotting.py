@@ -343,7 +343,10 @@ def rescale_peak_to_four(array):
 
 def button_callback(event, C_t, type, subtype, analysis_directory, slice_index, radius=10):
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_slice_{slice_index+1}.npy'), C_t)
-    print(f"Data saved using the {event.inaxes.get_title()} method.")
+    method_name = 'default'
+    if event is not None and getattr(event, 'inaxes', None) is not None:
+        method_name = event.inaxes.get_title()
+    print(f"Data saved using the {method_name} method.")
     # Shift and rescale CTC before saving
     baseline_point = find_shifted_baseline(C_t, skip_points=radius) - 1
     C_t_shifted = custom_shifter(C_t, baseline_point)
@@ -351,7 +354,7 @@ def button_callback(event, C_t, type, subtype, analysis_directory, slice_index, 
     
     # Save the shifted CTC data
     np.save(os.path.join(analysis_directory, 'CTC Data', type, subtype, f'CTC_shifted_slice_{slice_index+1}.npy'), C_t_shifted)
-    print(f"Shifted and rescaled CTC data saved using the {event.inaxes.get_title()} method.")
+    print(f"Shifted and rescaled CTC data saved using the {method_name} method.")
     if not turbo_mode:
         plt.close()
 
