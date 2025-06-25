@@ -120,3 +120,31 @@ def setup_directories(log_number):
         create_directory(dir_path)
 
     return data_directory, analysis_directory, nifti_directory, image_directory
+
+
+def save_run_settings(analysis_directory, parameters):
+    """Save the settings used for an analysis run.
+
+    Parameters are provided as the tuple returned by ``global_parameters``.
+    The summary is written to ``run_settings.json`` in ``analysis_directory``.
+    """
+    names = [
+        "IsVFA",
+        "IsIR",
+        "apple_metal",
+        "boundary",
+        "RERUN_SEGMENTATION",
+        "SEGMENTATION_METHOD",
+        "COMPUTE_FA",
+    ]
+    settings = dict(zip(names, parameters))
+    settings.update({
+        "MULTIPROCESSING": MULTIPROCESSING,
+        "NUMBER_OF_CORES": NUMBER_OF_CORES,
+        "KINETIC_MODEL": KINETIC_MODEL,
+        "AI_MODEL_PATHS": AI_MODEL_PATHS,
+        "CONTROLS": CONTROLS,
+    })
+    settings_path = os.path.join(analysis_directory, "run_settings.json")
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=4)
