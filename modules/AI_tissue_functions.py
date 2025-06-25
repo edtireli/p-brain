@@ -1468,6 +1468,17 @@ def compute_and_plot_ctcs_median(
     Ki_wm_cc_list = []
     Ki_boundary_list = []
 
+    # Lists to collect T1 and M0 values for each tissue across slices
+    T1_wm_vals,           M0_wm_vals           = [], []
+    T1_cortical_gm_vals,  M0_cortical_gm_vals  = [], []
+    T1_subcortical_gm_vals, M0_subcortical_gm_vals = [], []
+    T1_gm_brainstem_vals, M0_gm_brainstem_vals = [], []
+    T1_gm_cerebellum_vals, M0_gm_cerebellum_vals = [], []
+    T1_wm_cerebellum_vals, M0_wm_cerebellum_vals = [], []
+    T1_wm_cc_vals,        M0_wm_cc_vals        = [], []
+    if boundary:
+        T1_boundary_vals, M0_boundary_vals = [], []
+
     # Initialize lists to collect all valid CTCs across slices
     wm_ctcs_total = []
     cortical_gm_ctcs_total = []
@@ -1537,6 +1548,25 @@ def compute_and_plot_ctcs_median(
         gm_cerebellum_indices = np.argwhere(gm_cerebellum_slice_dce)
         wm_cerebellum_indices = np.argwhere(wm_cerebellum_slice_dce)
         wm_cc_indices = np.argwhere(wm_cc_slice_dce)
+
+        # Collect T1 and M0 values for each tissue type
+        T1_wm_vals.extend(T1_matrix[:, :, i][wm_slice_dce].ravel())
+        M0_wm_vals.extend(M0_matrix[:, :, i][wm_slice_dce].ravel())
+        T1_cortical_gm_vals.extend(T1_matrix[:, :, i][cortical_gm_slice_dce].ravel())
+        M0_cortical_gm_vals.extend(M0_matrix[:, :, i][cortical_gm_slice_dce].ravel())
+        T1_subcortical_gm_vals.extend(T1_matrix[:, :, i][subcortical_gm_slice_dce].ravel())
+        M0_subcortical_gm_vals.extend(M0_matrix[:, :, i][subcortical_gm_slice_dce].ravel())
+        T1_gm_brainstem_vals.extend(T1_matrix[:, :, i][gm_brainstem_slice_dce].ravel())
+        M0_gm_brainstem_vals.extend(M0_matrix[:, :, i][gm_brainstem_slice_dce].ravel())
+        T1_gm_cerebellum_vals.extend(T1_matrix[:, :, i][gm_cerebellum_slice_dce].ravel())
+        M0_gm_cerebellum_vals.extend(M0_matrix[:, :, i][gm_cerebellum_slice_dce].ravel())
+        T1_wm_cerebellum_vals.extend(T1_matrix[:, :, i][wm_cerebellum_slice_dce].ravel())
+        M0_wm_cerebellum_vals.extend(M0_matrix[:, :, i][wm_cerebellum_slice_dce].ravel())
+        T1_wm_cc_vals.extend(T1_matrix[:, :, i][wm_cc_slice_dce].ravel())
+        M0_wm_cc_vals.extend(M0_matrix[:, :, i][wm_cc_slice_dce].ravel())
+        if boundary_mask is not None:
+            T1_boundary_vals.extend(T1_matrix[:, :, i][boundary_mask].ravel())
+            M0_boundary_vals.extend(M0_matrix[:, :, i][boundary_mask].ravel())
 
         # Initialize lists to store valid CTCs
         wm_ctcs = []
@@ -2068,6 +2098,61 @@ def compute_and_plot_ctcs_median(
         tissue_results["boundary"] = dict(C_t=C_t_boundary_total, Ki=Ki_boundary_total,
                                         lam=lambda_boundary_total, SD_Ki=SD_Ki_boundary_total,
                                         vox=len(boundary_ctcs_total))
+
+    # ----------------------------------------------------------------------
+    # Compute global median T1 and M0 values for each tissue
+    # ----------------------------------------------------------------------
+    def median_or_nan(vals):
+        return float(np.median(vals)) if vals else float('nan')
+
+    t1_m0_results = {
+        "white_matter_median_total": {
+            "T1": median_or_nan(T1_wm_vals),
+            "M0": median_or_nan(M0_wm_vals),
+            "voxel_count": len(T1_wm_vals)
+        },
+        "cortical_gm_median_total": {
+            "T1": median_or_nan(T1_cortical_gm_vals),
+            "M0": median_or_nan(M0_cortical_gm_vals),
+            "voxel_count": len(T1_cortical_gm_vals)
+        },
+        "subcortical_gm_median_total": {
+            "T1": median_or_nan(T1_subcortical_gm_vals),
+            "M0": median_or_nan(M0_subcortical_gm_vals),
+            "voxel_count": len(T1_subcortical_gm_vals)
+        },
+        "gm_brainstem_median_total": {
+            "T1": median_or_nan(T1_gm_brainstem_vals),
+            "M0": median_or_nan(M0_gm_brainstem_vals),
+            "voxel_count": len(T1_gm_brainstem_vals)
+        },
+        "gm_cerebellum_median_total": {
+            "T1": median_or_nan(T1_gm_cerebellum_vals),
+            "M0": median_or_nan(M0_gm_cerebellum_vals),
+            "voxel_count": len(T1_gm_cerebellum_vals)
+        },
+        "wm_cerebellum_median_total": {
+            "T1": median_or_nan(T1_wm_cerebellum_vals),
+            "M0": median_or_nan(M0_wm_cerebellum_vals),
+            "voxel_count": len(T1_wm_cerebellum_vals)
+        },
+        "wm_cc_median_total": {
+            "T1": median_or_nan(T1_wm_cc_vals),
+            "M0": median_or_nan(M0_wm_cc_vals),
+            "voxel_count": len(T1_wm_cc_vals)
+        },
+    }
+
+    if boundary and T1_boundary_vals:
+        t1_m0_results["boundary_median_total"] = {
+            "T1": median_or_nan(T1_boundary_vals),
+            "M0": median_or_nan(M0_boundary_vals),
+            "voxel_count": len(T1_boundary_vals)
+        }
+
+    json_file_path_t1m0 = os.path.join(analysis_directory, "T1_M0_values_median_total.json")
+    with open(json_file_path_t1m0, "w") as jf:
+        json.dump(t1_m0_results, jf, indent=4)
 
     # Write JSON
     json_file_path_total = os.path.join(analysis_directory, "AI_values_median_total.json")
