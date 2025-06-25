@@ -180,5 +180,7 @@ def main():
         tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
         manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
                         image_directory, filenames, parameters, pseudo=True)
+
+    save_run_settings(analysis_directory, parameters)
 if __name__ == '__main__':
     main()
