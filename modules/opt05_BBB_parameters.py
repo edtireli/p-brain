@@ -217,7 +217,6 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
 
         C_t = C_t[0:len(C_a)]
         time_points_s = time_points_s[0:len(C_a)]
-        
         model = settings.KINETIC_MODEL.lower()
         use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
         use_patlak = model in ('patlak', 'both')
