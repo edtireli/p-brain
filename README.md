@@ -252,7 +252,9 @@ The permeability analysis defaults to executing both Patlak and
 Tikhonov (two-compartment) fits.  Adjust the variable `KINETIC_MODEL` in
 `utils/settings.py` or export the environment variable `P_BRAIN_MODEL`
 with one of `patlak`, `tikhonov` or `both` to control which models are
-run.
+run. When both models are executed, output files are suffixed with
+`_patlak` and `_tikhonov` respectively.
+
 
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 

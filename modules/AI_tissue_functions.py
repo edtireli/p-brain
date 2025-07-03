@@ -18,7 +18,7 @@ import subprocess
 import os
 import multiprocessing
 import shutil
-from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES, KINETIC_MODEL
+import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
@@ -320,9 +320,9 @@ def compute_Ki_from_atlas(
         patlak_analysis_plotting,
     )
 
-    if MULTIPROCESSING:
+    if settings.MULTIPROCESSING:
         with multiprocessing.Pool(
-            NUMBER_OF_CORES,
+            settings.NUMBER_OF_CORES,
             initializer=_init_compute_Ki,
             initargs=(
                 atlas_data,
@@ -1694,7 +1694,7 @@ def compute_and_plot_ctcs_median(
         def perform_model_fit(C_t):
             if C_t.size == 0:
                 return (np.nan, np.nan, np.nan, np.array([]), np.array([]), np.array([], dtype=bool))
-            if KINETIC_MODEL.lower() == 'two_compartment':
+            if settings.KINETIC_MODEL.lower() == 'two_compartment':
                 Ki, lam, SD_Ki = two_compartment_fit(C_a_slice, C_t, time_points)
                 return Ki, lam, SD_Ki, np.array([]), np.array([]), np.array([], dtype=bool)
             else:
@@ -2059,7 +2059,7 @@ def compute_and_plot_ctcs_median(
     def patlak_total(C_t):
         if not C_t.size:
             return np.nan, np.nan, np.nan
-        if KINETIC_MODEL.lower() == 'two_compartment':
+        if settings.KINETIC_MODEL.lower() == 'two_compartment':
             Ki, lam, SD = two_compartment_fit(C_a_total, C_t, time_points_total)
             return Ki, lam, SD
         if correct_signal_jumps:
@@ -2262,8 +2262,51 @@ def plot_CBF_overlay(dce_slice, CBF_slice, slice_idx, save_path, vmin, vmax):
     plt.close()
 
 
-def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
+def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=False):
+    """Rename analysis outputs with a model-specific suffix."""
+    import shutil
+
+    files = [
+        'Ki_wm.nii.gz',
+        'Ki_cortical_gm.nii.gz',
+        'Ki_subcortical_gm.nii.gz',
+        'Ki_per_voxel.nii.gz',
+        'CBF_per_voxel.nii.gz',
+        'AI_values_median.json',
+        'Ki_vs_slice_median.png',
+        'AI_values_median_total.json',
+        'T1_M0_values_median_total.json',
+        'Ki_map_atlas.nii.gz',
+        'SD_Ki_map_atlas.nii.gz',
+        'vp_map_atlas.nii.gz',
+        'Ki_values_atlas.json',
+    ]
+    if boundary:
+        files.append('Ki_boundary.nii.gz')
+
+    for fname in files:
+        src = os.path.join(analysis_directory, fname)
+        if os.path.exists(src):
+            base, ext = os.path.splitext(fname)
+            if ext == '.gz':
+                base2, ext2 = os.path.splitext(base)
+                dst = os.path.join(analysis_directory, f'{base2}{suffix}{ext2}.gz')
+            else:
+                dst = os.path.join(analysis_directory, f'{base}{suffix}{ext}')
+            os.rename(src, dst)
+
+    ai_dir = os.path.join(image_directory, 'AI')
+    if os.path.exists(ai_dir):
+        dst_dir = os.path.join(image_directory, f'AI{suffix}')
+        if os.path.exists(dst_dir):
+            shutil.rmtree(dst_dir)
+        os.rename(ai_dir, dst_dir)
+
+
+def _tissue_function_AI(model, analysis_directory, nifti_directory, image_directory, filenames, parameters):
+    """Run tissue function analysis for a single kinetic model."""
+    settings.KINETIC_MODEL = model
+    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename,\
         flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
 
     IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
@@ -2385,3 +2428,14 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
         custom_shifter=custom_shifter,
         patlak_analysis_plotting=patlak_analysis_plotting
     )
+
+    _rename_model_outputs(analysis_directory, image_directory, f"_{model}", boundary)
+
+
+def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
+    """Run tissue function analysis using the configured kinetic model."""
+    model_setting = settings.KINETIC_MODEL.lower()
+    models = ['patlak', 'tikhonov'] if model_setting == 'both' else [model_setting]
+    for m in models:
+        print(f'[!] Running {m} model')
+        _tissue_function_AI(m, analysis_directory, nifti_directory, image_directory, filenames, parameters)

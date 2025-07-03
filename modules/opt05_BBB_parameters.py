@@ -1,7 +1,7 @@
 from utils.plotting import *
 from utils.mapping import *
 from utils.loading import *
-from utils.settings import KINETIC_MODEL
+import utils.settings as settings
 from .kinetic_models import two_compartment_fit
 from scipy.optimize import curve_fit
 from termcolor import colored
@@ -173,7 +173,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     C_t = C_t[0:len(C_a)]
     time_points_s = time_points_s[0:len(C_a)]
     
-    model = KINETIC_MODEL.lower()
+    model = settings.KINETIC_MODEL.lower()
     use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
     use_patlak = model in ('patlak', 'both')
 
@@ -217,8 +217,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
 
         C_t = C_t[0:len(C_a)]
         time_points_s = time_points_s[0:len(C_a)]
-        
-        model = KINETIC_MODEL.lower()
+        model = settings.KINETIC_MODEL.lower()
         use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
         use_patlak = model in ('patlak', 'both')
 
