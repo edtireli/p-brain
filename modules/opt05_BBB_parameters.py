@@ -173,26 +173,41 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     C_t = C_t[0:len(C_a)]
     time_points_s = time_points_s[0:len(C_a)]
     
-    if KINETIC_MODEL.lower() == 'two_compartment':
+    model = KINETIC_MODEL.lower()
+    use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
+    use_patlak = model in ('patlak', 'both')
+
+    if use_tikhonov:
         Ki, lamda, SD_Ki = two_compartment_fit(C_a, C_t, time_points_s)
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
         P, P_std = Ki, SD_Ki
-    else:
-        Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s, subtype_tissue, image_directory)
-        baseline_point = find_shifted_baseline(C_t)+1
-        P, P_std = compute_average_permeability(C_a, C_t, time_points_s, baseline_point=baseline_point)
-        print('[!] Advanced computation of permeability: (', P, '+-', P_std, ') ml/100g/min')
-        print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
-        
-    values = [f"Ki: {Ki*6000} (+- {SD_Ki*6000})",f"lambda: {lamda*100}", f"Tissue type: {subtype_tissue} (Slice {slice_tissue})", f"Artery type: {subtype_artery} (Venous Slice {venous_slice}, Arterial Slice {arterial_slice})", f"Ki_et: {P} +- ({P_std})"]
-        
-    save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue, subtype_artery, venous_slice, arterial_slice, analysis_directory)
+        save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
+                    subtype_artery, venous_slice, arterial_slice,
+                    analysis_directory, suffix='_tikhonov')
 
-    if subtype_artery == 'Max':    
-        json1 = os.path.join(analysis_directory, 'values.json')
-        json2 = os.path.join(analysis_directory, 'max_info.json')
-        replace_max_with_artery_type_and_delete(json1, json2)
+    if use_patlak:
+        Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s,
+                                          subtype_tissue, image_directory)
+        baseline_point = find_shifted_baseline(C_t)+1
+        P, P_std = compute_average_permeability(C_a, C_t, time_points_s,
+                                               baseline_point=baseline_point)
+        print('[!] Advanced computation of permeability: (', P, '+-', P_std,
+              ') ml/100g/min')
+        print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
+        save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
+                    subtype_artery, venous_slice, arterial_slice,
+                    analysis_directory, suffix='_patlak')
+
+    if subtype_artery == 'Max':
+        if use_tikhonov:
+            json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
+            json2 = os.path.join(analysis_directory, 'max_info.json')
+            replace_max_with_artery_type_and_delete(json1, json2)
+        if use_patlak:
+            json1 = os.path.join(analysis_directory, 'values_patlak.json')
+            json2 = os.path.join(analysis_directory, 'max_info.json')
+            replace_max_with_artery_type_and_delete(json1, json2)
     restart_prompt = input('[!] Repeat analysis? (y/n): ')
     if restart_prompt.lower() == 'y':    
         subtype_tissue, subtype_artery, slice_tissue, (venous_slice, arterial_slice) = permeability_user_interface(analysis_directory)
@@ -203,25 +218,38 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         C_t = C_t[0:len(C_a)]
         time_points_s = time_points_s[0:len(C_a)]
         
-        if KINETIC_MODEL.lower() == 'two_compartment':
+        model = KINETIC_MODEL.lower()
+        use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
+        use_patlak = model in ('patlak', 'both')
+
+        if use_tikhonov:
             Ki, lamda, SD_Ki = two_compartment_fit(C_a, C_t, time_points_s)
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
             P, P_std = Ki, SD_Ki
-        else:
+            save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
+                        subtype_artery, venous_slice, arterial_slice,
+                        analysis_directory, suffix='_tikhonov')
+
+        if use_patlak:
             Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s, subtype_tissue, image_directory)
             baseline_point = find_shifted_baseline(C_t)+1
             P, P_std = compute_average_permeability(C_a, C_t, time_points_s, baseline_point=baseline_point)
             print('[!] Advanced computation of permeability: (', P, '+-', P_std, ') ml/100g/min')
             print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
-            
-        values = [f"Ki: {Ki*6000} (+- {SD_Ki*6000})",f"lambda: {lamda*100}", f"Tissue type: {subtype_tissue} (Slice {slice_tissue})", f"Artery type: {subtype_artery} (Venous Slice {venous_slice}, Arterial Slice {arterial_slice})", f"Ki_et: {P} +- ({P_std})"]
-        save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue, subtype_artery, venous_slice, arterial_slice, analysis_directory)
-        
-        if subtype_artery == 'Max':    
-            json1 = os.path.join(analysis_directory, 'values.json')
-            json2 = os.path.join(analysis_directory, 'max_info.json')
-            replace_max_with_artery_type_and_delete(json1, json2)
+            save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
+                        subtype_artery, venous_slice, arterial_slice,
+                        analysis_directory, suffix='_patlak')
+
+        if subtype_artery == 'Max':
+            if use_tikhonov:
+                json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
+                json2 = os.path.join(analysis_directory, 'max_info.json')
+                replace_max_with_artery_type_and_delete(json1, json2)
+            if use_patlak:
+                json1 = os.path.join(analysis_directory, 'values_patlak.json')
+                json2 = os.path.join(analysis_directory, 'max_info.json')
+                replace_max_with_artery_type_and_delete(json1, json2)
         leaver()  
     else:
         leaver()  
