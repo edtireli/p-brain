@@ -261,15 +261,15 @@ def extract_and_accumulate_rois(rotated_data, slice_classifier, roi_model, choic
 def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_rois, slice_labels, image_directory):
     global turbo_mode
     num_slices = len(relevant_slices)
-    rows = num_slices
-    cols = 2
+    rows = 2
+    cols = num_slices
 
-    fig, axes = plt.subplots(rows, cols, figsize=(15, 7 * num_slices))
+    fig, axes = plt.subplots(rows, cols, figsize=(7 * num_slices, 15))
 
     for i in range(num_slices):
         if num_slices > 1:
-            ax1 = axes[i, 0]
-            ax2 = axes[i, 1]
+            ax1 = axes[0, i]
+            ax2 = axes[1, i]
         else:
             ax1 = axes[0]
             ax2 = axes[1]
