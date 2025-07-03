@@ -2436,6 +2436,10 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     """Run tissue function analysis using the configured kinetic model."""
     model_setting = settings.KINETIC_MODEL.lower()
     models = ['patlak', 'tikhonov'] if model_setting == 'both' else [model_setting]
+    ai_base = os.path.join(image_directory, 'AI')
     for m in models:
         print(f'[!] Running {m} model')
+        if os.path.exists(ai_base):
+            shutil.rmtree(ai_base)
+        os.makedirs(ai_base, exist_ok=True)
         _tissue_function_AI(m, analysis_directory, nifti_directory, image_directory, filenames, parameters)
