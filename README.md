@@ -255,6 +255,7 @@ with one of `patlak`, `tikhonov` or `both` to control which models are
 run. When both models are executed, output files are suffixed with
 `_patlak` and `_tikhonov` respectively.
 
+
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
