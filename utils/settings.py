@@ -15,7 +15,11 @@ MULTIPROCESSING = True
 # Default number of CPU cores used when multiprocessing is enabled
 NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 
-KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "patlak")
+# Select kinetic modelling strategy. Valid options are ``patlak``,
+# ``tikhonov`` (two-compartment fit) or ``both`` to execute the two
+# approaches sequentially.  When the environment variable
+# ``P_BRAIN_MODEL`` is not provided the default is ``both``.
+KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")
 
 # Paths to the neural network models used for artery and vein ROI extraction.
 # These can be overridden by environment variables to use custom models.

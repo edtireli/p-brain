@@ -76,8 +76,11 @@ def find_matching_file(directory, pattern):
             return os.path.join(directory, filename)
     return None
 
-def save_values(Ki, SD_Ki, lambda_, P, P_std, subtype_tissue, slice_tissue, subtype_artery, venous_slice, arterial_slice, analysis_directory):
-    values_file_path = os.path.join(analysis_directory, 'values.json')
+def save_values(Ki, SD_Ki, lambda_, P, P_std, subtype_tissue, slice_tissue,
+                subtype_artery, venous_slice, arterial_slice,
+                analysis_directory, suffix=""):
+    """Save permeability results to ``values{suffix}.json``."""
+    values_file_path = os.path.join(analysis_directory, f'values{suffix}.json')
     
     if os.path.exists(values_file_path):
         with open(values_file_path, 'r') as f:
