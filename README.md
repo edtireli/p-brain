@@ -249,7 +249,9 @@ into the `AI/` directory so the default paths resolve.
 
 ### Kinetic model selection
 The permeability analysis defaults to executing both Patlak and
-Tikhonov (two-compartment) fits.  Adjust the variable `KINETIC_MODEL` in
+Tikhonov (two-compartment) fits.  The Tikhonov option solves the extended
+Tofts model with Tikhonov regularisation and estimates plasma volume, Ki and CBF
+via model-free deconvolution. Adjust the variable `KINETIC_MODEL` in
 `utils/settings.py` or export the environment variable `P_BRAIN_MODEL`
 with one of `patlak`, `tikhonov` or `both` to control which models are
 run. When both models are executed, output files are suffixed with
