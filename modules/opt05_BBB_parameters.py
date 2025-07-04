@@ -2,7 +2,8 @@ from utils.plotting import *
 from utils.mapping import *
 from utils.loading import *
 import utils.settings as settings
-from .kinetic_models import two_compartment_fit
+from .kinetic_models import two_compartment_fit, two_compartment_tikhonov_fit
+import numpy as np
 from scipy.optimize import curve_fit
 from termcolor import colored
 
@@ -178,10 +179,11 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     use_patlak = model in ('patlak', 'both')
 
     if use_tikhonov:
-        Ki, lamda, SD_Ki, _ = two_compartment_fit(C_a, C_t, time_points_s)
+        Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(C_a, C_t, time_points_s)
+        SD_Ki = np.nan
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
-              f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
-        P, P_std = Ki, SD_Ki
+              f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
+        P, P_std = Ki, 0.0
         save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
                     subtype_artery, venous_slice, arterial_slice,
                     analysis_directory, suffix='_tikhonov')
@@ -222,10 +224,11 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         use_patlak = model in ('patlak', 'both')
 
         if use_tikhonov:
-            Ki, lamda, SD_Ki, _ = two_compartment_fit(C_a, C_t, time_points_s)
+            Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(C_a, C_t, time_points_s)
+            SD_Ki = np.nan
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
-                  f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
-            P, P_std = Ki, SD_Ki
+                  f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
+            P, P_std = Ki, 0.0
             save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
                         subtype_artery, venous_slice, arterial_slice,
                         analysis_directory, suffix='_tikhonov')
