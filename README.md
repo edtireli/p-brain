@@ -256,6 +256,9 @@ run. When both models are executed, output files are suffixed with
 `_patlak` and `_tikhonov` respectively.
 Image outputs are stored in `AI_patlak/` and `AI_tikhonov/` subfolders
 under the main `Images` directory.
+During execution the files are first written to an `AI/` directory and
+renamed to the model-specific location by the script once processing
+completes.
 
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
