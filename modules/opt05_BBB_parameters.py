@@ -178,7 +178,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     use_patlak = model in ('patlak', 'both')
 
     if use_tikhonov:
-        Ki, lamda, SD_Ki = two_compartment_fit(C_a, C_t, time_points_s)
+        Ki, lamda, SD_Ki, _ = two_compartment_fit(C_a, C_t, time_points_s)
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
         P, P_std = Ki, SD_Ki
@@ -222,7 +222,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         use_patlak = model in ('patlak', 'both')
 
         if use_tikhonov:
-            Ki, lamda, SD_Ki = two_compartment_fit(C_a, C_t, time_points_s)
+            Ki, lamda, SD_Ki, _ = two_compartment_fit(C_a, C_t, time_points_s)
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, SD_Ki: {SD_Ki:.5f}')
             P, P_std = Ki, SD_Ki

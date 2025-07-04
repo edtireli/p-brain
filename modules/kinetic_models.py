@@ -14,7 +14,8 @@ def extended_tofts_model(t, Ktrans, ve, vp, Cp):
 
 
 def two_compartment_fit(c_input, c_tissue, time_array):
-    """Fit the extended Tofts two-compartment model and return Ki and lambda."""
+    """Fit the extended Tofts two-compartment model and return Ki, lambda and
+    the fitted tissue curve."""
     if c_input.shape[0] != c_tissue.shape[0]:
         raise ValueError("The number of time points in c_input and c_tissue must be the same.")
 
@@ -32,4 +33,7 @@ def two_compartment_fit(c_input, c_tissue, time_array):
     Ki = Ktrans_fitted * 6000
     Ki_std = std_dev_Ktrans * 6000
     lambda_val = ve_fitted * 100
-    return Ki, lambda_val, Ki_std
+
+    fitted_curve = extended_tofts_model(time_array, Ktrans_fitted, ve_fitted, vp_fitted, c_input)
+
+    return Ki, lambda_val, Ki_std, fitted_curve
