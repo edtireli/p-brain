@@ -1196,7 +1196,8 @@ def plot_ctcs_and_patlak(
     wm_cc_mask_t2=None, wm_cc_mask_dce=None,
     bad_wm=None, bad_cortical_gm=None, bad_subcortical_gm=None,
     bad_gm_brainstem=None, bad_gm_cerebellum=None, bad_wm_cerebellum=None,
-    bad_wm_cc=None, bad_boundary=None
+    bad_wm_cc=None, bad_boundary=None,
+    model_fits=None
 ):
     """
     Re-written version that draws **one** grey band for each continuous
@@ -1352,46 +1353,66 @@ def plot_ctcs_and_patlak(
     ax_ctc.legend(loc='upper right')
     ax_ctc.grid(True)
 
+
     # ---------------- Patlak panel (bottom) ------------------
     ax_pat.set_facecolor('#f7f7f7')
 
-    included_y_values = []
+    if settings.KINETIC_MODEL.lower() == 'two_compartment' and model_fits is not None:
+        def add_fit(ctc, fit, colour, label):
+            if ctc is None or fit is None:
+                return
+            ax_pat.plot(ctc, color=colour, label=f"{label} data")
+            ax_pat.plot(fit, '--', color=colour, label=f"{label} fit")
 
-    def add_patlak(xp, yp, inc_mask, Ki, lam, colour, label):
-        if xp.size == 0 or np.isnan(Ki):
-            return
-        # used points
-        ax_pat.scatter(xp[inc_mask], yp[inc_mask],
-                       color=colour, marker='o', s=25, label=label)
-        included_y_values.extend(yp[inc_mask].tolist())
-        # excluded points – hollow circles now, NOT crosses
-        excl = ~inc_mask & np.isfinite(xp) & np.isfinite(yp)
-        ax_pat.scatter(xp[excl], yp[excl],
-                       facecolors='none', edgecolors=colour, s=40)
-        # fit line
-        ax_pat.plot(xp, lam/100 + (Ki/6000)*xp,
-                    color=colour, linestyle='--')
+        add_fit(avg_wm_ctc,             model_fits.get('wm'),            'blue',    'Cortical WM')
+        add_fit(avg_cortical_gm_ctc,    model_fits.get('cortical_gm'),   'red',     'Cortical GM')
+        add_fit(avg_subcortical_gm_ctc, model_fits.get('subcortical_gm'), 'darkred','Subcortical GM')
+        add_fit(gm_brainstem_ctc,       model_fits.get('gm_brainstem'),  'orange',  'Brainstem')
+        add_fit(gm_cerebellum_ctc,      model_fits.get('gm_cerebellum'), 'gold',    'Cerebellar GM')
+        add_fit(wm_cerebellum_ctc,      model_fits.get('wm_cerebellum'), 'cyan',    'Cerebellar WM')
+        add_fit(wm_cc_ctc,              model_fits.get('wm_cc'),         'magenta', 'WM CC')
+        add_fit(boundary_ctc,           model_fits.get('boundary'),      'green',   'Boundary')
 
-    add_patlak(x_patlak_wm,             y_patlak_wm,             included_wm,             Ki_wm,             lambda_wm,             'blue',    'Cortical WM')
-    add_patlak(x_patlak_cortical_gm,    y_patlak_cortical_gm,    included_cortical_gm,    Ki_cortical_gm,    lambda_cortical_gm,    'red',     'Cortical GM')
-    add_patlak(x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm, 'darkred', 'Subcortical GM')
-    add_patlak(x_patlak_gm_brainstem,   y_patlak_gm_brainstem,   included_gm_brainstem,   Ki_gm_brainstem,   lambda_gm_brainstem,   'orange',  'Brainstem')
-    add_patlak(x_patlak_gm_cerebellum,  y_patlak_gm_cerebellum,  included_gm_cerebellum,  Ki_gm_cerebellum,  lambda_gm_cerebellum,  'gold',    'Cerebellar GM')
-    add_patlak(x_patlak_wm_cerebellum,  y_patlak_wm_cerebellum,  included_wm_cerebellum,  Ki_wm_cerebellum,  lambda_wm_cerebellum,  'cyan',    'Cerebellar WM')
-    add_patlak(x_patlak_wm_cc,          y_patlak_wm_cc,          included_wm_cc,          Ki_wm_cc,          lambda_wm_cc,          'magenta', 'WM CC')
-    add_patlak(x_patlak_boundary,       y_patlak_boundary,       included_boundary,       Ki_boundary,       lambda_boundary,       'green',   'Boundary')
+        ax_pat.set_title('Two-compartment fit')
+        ax_pat.set_xlabel('Time (frames)')
+        ax_pat.set_ylabel('Concentration (mM)')
+        ax_pat.grid(True)
+        ax_pat.legend(loc='upper right')
+    else:
+        included_y_values = []
 
-    if included_y_values:
-        ymin, ymax = min(included_y_values), max(included_y_values)
-        ax_pat.set_ylim(ymin, ymax)
+        def add_patlak(xp, yp, inc_mask, Ki, lam, colour, label):
+            if xp.size == 0 or np.isnan(Ki):
+                return
+            ax_pat.scatter(xp[inc_mask], yp[inc_mask],
+                           color=colour, marker='o', s=25, label=label)
+            included_y_values.extend(yp[inc_mask].tolist())
+            excl = ~inc_mask & np.isfinite(xp) & np.isfinite(yp)
+            ax_pat.scatter(xp[excl], yp[excl],
+                           facecolors='none', edgecolors=colour, s=40)
+            ax_pat.plot(xp, lam/100 + (Ki/6000)*xp,
+                        color=colour, linestyle='--')
 
-    ax_pat.set_title('Patlak fit')
-    ax_pat.set_xlim(0, 800)
-    ax_pat.set_xlabel("∫C_a dt / C_a")
-    ax_pat.set_ylabel("C_t / C_a")
-    ax_pat.grid(True)
-    ax_pat.legend(loc='lower left')
+        add_patlak(x_patlak_wm,             y_patlak_wm,             included_wm,
+                  Ki_wm,             lambda_wm,             'blue',    'Cortical WM')
+        add_patlak(x_patlak_cortical_gm,    y_patlak_cortical_gm,    included_cortical_gm,    Ki_cortical_gm,    lambda_cortical_gm,    'red',     'Cortical GM')
+        add_patlak(x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm, 'darkred', 'Subcortical GM')
+        add_patlak(x_patlak_gm_brainstem,   y_patlak_gm_brainstem,   included_gm_brainstem,   Ki_gm_brainstem,   lambda_gm_brainstem,   'orange',  'Brainstem')
+        add_patlak(x_patlak_gm_cerebellum,  y_patlak_gm_cerebellum,  included_gm_cerebellum,  Ki_gm_cerebellum,  lambda_gm_cerebellum,  'gold',    'Cerebellar GM')
+        add_patlak(x_patlak_wm_cerebellum,  y_patlak_wm_cerebellum,  included_wm_cerebellum,  Ki_wm_cerebellum,  lambda_wm_cerebellum,  'cyan',    'Cerebellar WM')
+        add_patlak(x_patlak_wm_cc,          y_patlak_wm_cc,          included_wm_cc,          Ki_wm_cc,          lambda_wm_cc,          'magenta', 'WM CC')
+        add_patlak(x_patlak_boundary,       y_patlak_boundary,       included_boundary,       Ki_boundary,       lambda_boundary,       'green',   'Boundary')
 
+        if included_y_values:
+            ymin, ymax = min(included_y_values), max(included_y_values)
+            ax_pat.set_ylim(ymin, ymax)
+
+        ax_pat.set_title('Patlak fit')
+        ax_pat.set_xlim(0, 800)
+        ax_pat.set_xlabel('∫C_a dt / C_a')
+        ax_pat.set_ylabel('C_t / C_a')
+        ax_pat.grid(True)
+        ax_pat.legend(loc='lower left')
     
 
     plt.suptitle(f"Slice {slice_idx}", y=0.98)
@@ -1695,29 +1716,28 @@ def compute_and_plot_ctcs_median(
         # Perform kinetic model fit for each tissue type
         def perform_model_fit(C_t):
             if C_t.size == 0:
-                return (np.nan, np.nan, np.nan, np.array([]), np.array([]), np.array([], dtype=bool))
+                return (np.nan, np.nan, np.nan, None, np.array([], dtype=bool))
             if settings.KINETIC_MODEL.lower() == 'two_compartment':
-                Ki, lam, SD_Ki = two_compartment_fit(C_a_slice, C_t, time_points)
-                return Ki, lam, SD_Ki, np.array([]), np.array([]), np.array([], dtype=bool)
+                Ki, lam, SD_Ki, fit_curve = two_compartment_fit(C_a_slice, C_t, time_points)
+                return Ki, lam, SD_Ki, fit_curve, np.array([], dtype=bool)
             else:
                 Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
-                return Ki, lam, SD_Ki, x_patlak, y_patlak, included
+                return Ki, lam, SD_Ki, (x_patlak, y_patlak), included
 
-        Ki_wm, lambda_wm, SD_Ki_wm, x_patlak_wm, y_patlak_wm, included_wm = perform_model_fit(C_t_wm)
-        Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, x_patlak_cortical_gm, y_patlak_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
-        Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, x_patlak_subcortical_gm, y_patlak_subcortical_gm, included_subcortical_gm = perform_model_fit(C_t_subcortical_gm)
-        Ki_gm_brainstem, lambda_gm_brainstem, SD_Ki_gm_brainstem, x_patlak_gm_brainstem, y_patlak_gm_brainstem, included_gm_brainstem = perform_model_fit(C_t_gm_brainstem)
-        Ki_gm_cerebellum, lambda_gm_cerebellum, SD_Ki_gm_cerebellum, x_patlak_gm_cerebellum, y_patlak_gm_cerebellum, included_gm_cerebellum = perform_model_fit(C_t_gm_cerebellum)
-        Ki_wm_cerebellum, lambda_wm_cerebellum, SD_Ki_wm_cerebellum, x_patlak_wm_cerebellum, y_patlak_wm_cerebellum, included_wm_cerebellum = perform_model_fit(C_t_wm_cerebellum)
-        Ki_wm_cc, lambda_wm_cc, SD_Ki_wm_cc, x_patlak_wm_cc, y_patlak_wm_cc, included_wm_cc = perform_model_fit(C_t_wm_cc)
+        Ki_wm, lambda_wm, SD_Ki_wm, curve_wm, included_wm = perform_model_fit(C_t_wm)
+        Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, curve_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
+        Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, curve_subcortical_gm, included_subcortical_gm = perform_model_fit(C_t_subcortical_gm)
+        Ki_gm_brainstem, lambda_gm_brainstem, SD_Ki_gm_brainstem, curve_gm_brainstem, included_gm_brainstem = perform_model_fit(C_t_gm_brainstem)
+        Ki_gm_cerebellum, lambda_gm_cerebellum, SD_Ki_gm_cerebellum, curve_gm_cerebellum, included_gm_cerebellum = perform_model_fit(C_t_gm_cerebellum)
+        Ki_wm_cerebellum, lambda_wm_cerebellum, SD_Ki_wm_cerebellum, curve_wm_cerebellum, included_wm_cerebellum = perform_model_fit(C_t_wm_cerebellum)
+        Ki_wm_cc, lambda_wm_cc, SD_Ki_wm_cc, curve_wm_cc, included_wm_cc = perform_model_fit(C_t_wm_cc)
         if boundary and C_t_boundary.size > 0:
-            Ki_boundary, lambda_boundary, SD_Ki_boundary, x_patlak_boundary, y_patlak_boundary, included_boundary = perform_model_fit(C_t_boundary)
+            Ki_boundary, lambda_boundary, SD_Ki_boundary, curve_boundary, included_boundary = perform_model_fit(C_t_boundary)
         else:
             Ki_boundary = np.nan
             lambda_boundary = np.nan
             SD_Ki_boundary = np.nan
-            x_patlak_boundary = np.array([])
-            y_patlak_boundary = np.array([])
+            curve_boundary = None
             included_boundary = np.array([], dtype=bool)
 
         # Collect Ki values for plotting
@@ -1746,52 +1766,64 @@ def compute_and_plot_ctcs_median(
         # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
         # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
         # the model run completes.
+        fit_curves = {
+            'wm': curve_wm,
+            'cortical_gm': curve_cortical_gm,
+            'subcortical_gm': curve_subcortical_gm,
+            'gm_brainstem': curve_gm_brainstem,
+            'gm_cerebellum': curve_gm_cerebellum,
+            'wm_cerebellum': curve_wm_cerebellum,
+            'wm_cc': curve_wm_cc,
+            'boundary': curve_boundary
+        }
+
         plot_ctcs_and_patlak(
             t2_img[:, :, i], data_4d[:, :, i, 20],
             wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
             wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,
             avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
-            x_patlak_wm, y_patlak_wm, Ki_wm, lambda_wm,
-            x_patlak_cortical_gm, y_patlak_cortical_gm, Ki_cortical_gm, lambda_cortical_gm,
-            x_patlak_subcortical_gm, y_patlak_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm,
+            np.array([]), np.array([]), Ki_wm, lambda_wm,
+            np.array([]), np.array([]), Ki_cortical_gm, lambda_cortical_gm,
+            np.array([]), np.array([]), Ki_subcortical_gm, lambda_subcortical_gm,
             slice_idx=i+1,
             save_path=os.path.join(image_directory, 'AI', 'Tissue functions', f"AI_Tissue_slice_{i+1}_segmented_median.png"),
             boundary_mask=boundary_mask,
             boundary_ctc=avg_boundary_ctc,
-            x_patlak_boundary=x_patlak_boundary, y_patlak_boundary=y_patlak_boundary,
+            x_patlak_boundary=np.array([]), y_patlak_boundary=np.array([]),
             Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary,
             included_wm=included_wm,
             included_cortical_gm=included_cortical_gm,
             included_subcortical_gm=included_subcortical_gm,
             included_boundary=included_boundary,
             gm_brainstem_ctc=avg_gm_brainstem_ctc,
-            x_patlak_gm_brainstem=x_patlak_gm_brainstem,
-            y_patlak_gm_brainstem=y_patlak_gm_brainstem,
+            x_patlak_gm_brainstem=np.array([]),
+            y_patlak_gm_brainstem=np.array([]),
             Ki_gm_brainstem=Ki_gm_brainstem,
             lambda_gm_brainstem=lambda_gm_brainstem,
             included_gm_brainstem=included_gm_brainstem,
             gm_cerebellum_ctc=avg_gm_cerebellum_ctc,
-            x_patlak_gm_cerebellum=x_patlak_gm_cerebellum,
-            y_patlak_gm_cerebellum=y_patlak_gm_cerebellum,
+            x_patlak_gm_cerebellum=np.array([]),
+            y_patlak_gm_cerebellum=np.array([]),
             Ki_gm_cerebellum=Ki_gm_cerebellum,
             lambda_gm_cerebellum=lambda_gm_cerebellum,
             included_gm_cerebellum=included_gm_cerebellum,
             wm_cerebellum_ctc=avg_wm_cerebellum_ctc,
-            x_patlak_wm_cerebellum=x_patlak_wm_cerebellum,
-            y_patlak_wm_cerebellum=y_patlak_wm_cerebellum,
+            x_patlak_wm_cerebellum=np.array([]),
+            y_patlak_wm_cerebellum=np.array([]),
             Ki_wm_cerebellum=Ki_wm_cerebellum,
             lambda_wm_cerebellum=lambda_wm_cerebellum,
             included_wm_cerebellum=included_wm_cerebellum,
             wm_cc_ctc=avg_wm_cc_ctc,
-            x_patlak_wm_cc=x_patlak_wm_cc,
-            y_patlak_wm_cc=y_patlak_wm_cc,
+            x_patlak_wm_cc=np.array([]),
+            y_patlak_wm_cc=np.array([]),
             Ki_wm_cc=Ki_wm_cc,
             lambda_wm_cc=lambda_wm_cc,
             included_wm_cc=included_wm_cc,
-            gm_brainstem_mask_t2=gm_brainstem_slice_t2,           
-            gm_brainstem_mask_dce=gm_brainstem_slice_dce,          
-            gm_cerebellum_mask_t2=gm_cerebellum_slice_t2,          
-            gm_cerebellum_mask_dce=gm_cerebellum_slice_dce,        
+            model_fits=fit_curves,
+            gm_brainstem_mask_t2=gm_brainstem_slice_t2,
+            gm_brainstem_mask_dce=gm_brainstem_slice_dce,
+            gm_cerebellum_mask_t2=gm_cerebellum_slice_t2,
+            gm_cerebellum_mask_dce=gm_cerebellum_slice_dce,
             wm_cerebellum_mask_t2=wm_cerebellum_slice_t2,          
             wm_cerebellum_mask_dce=wm_cerebellum_slice_dce,        
             wm_cc_mask_t2=wm_cc_slice_t2,                          
@@ -2065,7 +2097,7 @@ def compute_and_plot_ctcs_median(
         if not C_t.size:
             return np.nan, np.nan, np.nan
         if settings.KINETIC_MODEL.lower() == 'two_compartment':
-            Ki, lam, SD = two_compartment_fit(C_a_total, C_t, time_points_total)
+            Ki, lam, SD, _ = two_compartment_fit(C_a_total, C_t, time_points_total)
             return Ki, lam, SD
         if correct_signal_jumps:
             _, bad, _ = mask_problematic(C_t)

@@ -259,6 +259,8 @@ under the main `Images` directory.
 During execution the files are first written to an `AI/` directory and
 renamed to the model-specific location by the script once processing
 completes.
+When running the Tikhonov model the tissue function slice images display the
+two-compartment fit instead of the Patlak plot.
 
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
