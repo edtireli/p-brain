@@ -1418,6 +1418,8 @@ def plot_ctcs_and_patlak(
 
     plt.tight_layout()
     if save_path:
+        # Ensure the destination directory exists before saving
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
@@ -1740,7 +1742,10 @@ def compute_and_plot_ctcs_median(
         if boundary:
             Ki_boundary_image[:, :, i][boundary_mask] = Ki_boundary
 
-        # Plot the results for the current slice
+        # Plot the results for the current slice. Images are always written
+        # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
+        # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
+        # the model run completes.
         plot_ctcs_and_patlak(
             t2_img[:, :, i], data_4d[:, :, i, 20],
             wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
