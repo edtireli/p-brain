@@ -182,8 +182,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             lambd = settings.TIKHONOV_LAMBDA
         Ktrans, ve, vp = extended_tofts_tikhonov(C_a, C_t, time_points_s,
                                                  lambd=lambd)
-        Ki = Ktrans * 6000
-        lamda = ve * 100
+        Ki = Ktrans
+        lamda = ve
         SD_Ki = np.nan
         fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
         delta_t = np.diff(time_points_s)[0]
@@ -194,8 +194,10 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             cbf_lambda = settings.TIKHONOV_LAMBDA
         residue = tikhonov_regularization(A, C_t, cbf_lambda)
         CBF = residue[0] * 6000
-        print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
-              f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
+        Ki_ml = Ki * 6000
+        lamda_ml = lamda * 100
+        print(f'[!] Two-compartment Ki: {Ki_ml:.5f} ml/100g/min, '
+              f'lambda: {lamda_ml:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
         save_values(
             Ki, SD_Ki, lamda, Ki, 0.0,
             subtype_tissue, slice_tissue,
@@ -250,8 +252,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                 lambd = settings.TIKHONOV_LAMBDA
             Ktrans, ve, vp = extended_tofts_tikhonov(
                 C_a, C_t, time_points_s, lambd=lambd)
-            Ki = Ktrans * 6000
-            lamda = ve * 100
+            Ki = Ktrans
+            lamda = ve
             SD_Ki = np.nan
             fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
             delta_t = np.diff(time_points_s)[0]
@@ -262,8 +264,10 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                 cbf_lambda = settings.TIKHONOV_LAMBDA
             residue = tikhonov_regularization(A, C_t, cbf_lambda)
             CBF = residue[0] * 6000
-            print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
-                  f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
+            Ki_ml = Ki * 6000
+            lamda_ml = lamda * 100
+            print(f'[!] Two-compartment Ki: {Ki_ml:.5f} ml/100g/min, '
+                  f'lambda: {lamda_ml:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
             save_values(
                 Ki, SD_Ki, lamda, Ki, 0.0,
                 subtype_tissue, slice_tissue,
