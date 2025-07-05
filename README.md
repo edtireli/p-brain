@@ -6,7 +6,7 @@ Author: Edis Devin Tireli, M.Sc, Ph.D. student
 Affiliation: [Copenhagen University](https://www.ku.dk/english/)
 
 ## Motivation
-Understanding blood-brain barrier permeability is essential for assessing neurological disease and treatment response. _p_-Brain integrates segmentation, neural network-based ROI detection, and advanced kinetic modeling to compute the blood-brain barrier permeability (Ki) and cerebral blood flow (CBF). The toolkit can operate fully automatically, minimizing user error while allowing manual ROI delineation when desired. Patlak analysis, Tikhonov model-free deconvolution and Fick's two-compartment model underpin the Ki estimation workflow.
+Understanding blood-brain barrier permeability is essential for assessing neurological disease and treatment response. _p_-Brain integrates segmentation, neural network-based ROI detection, and advanced kinetic modeling to compute the blood-brain barrier permeability (Ki) and cerebral blood flow (CBF). The toolkit can operate fully automatically, minimizing user error while allowing manual ROI delineation when desired. Patlak analysis and a regularised two-compartment model underpin the Ki estimation workflow.
 
 
 # Table of Contents
@@ -249,20 +249,20 @@ into the `AI/` directory so the default paths resolve.
 
 ### Kinetic model selection
 The permeability analysis defaults to executing both Patlak and
-Tikhonov (two-compartment) fits.  The Tikhonov option solves the extended
-Tofts model with Tikhonov regularisation and estimates plasma volume, Ki and CBF
+two-compartment fits.  The two-compartment option solves the extended
+Tofts model with regularisation and estimates plasma volume, Ki and CBF
 via model-free deconvolution. Adjust the variable `KINETIC_MODEL` in
 `utils/settings.py` or export the environment variable `P_BRAIN_MODEL`
-with one of `patlak`, `tikhonov` or `both` to control which models are
+with one of `patlak`, `two_compartment` or `both` to control which models are
 run. When both models are executed, output files are suffixed with
-`_patlak` and `_tikhonov` respectively.
-Image outputs are stored in `AI_patlak/` and `AI_tikhonov/` subfolders
+`_patlak` and `_two_compartment` respectively.
+Image outputs are stored in `AI_patlak/` and `AI_two_compartment/` subfolders
 under the main `Images` directory.
 During execution the files are first written to an `AI/` directory and
 renamed to the model-specific location by the script once processing
 completes.
-When running the Tikhonov model the tissue function slice images display the
-two-compartment fit instead of the Patlak plot.
+When running the two-compartment model the tissue function slice images display
+the two-compartment fit instead of the Patlak plot.
 
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
