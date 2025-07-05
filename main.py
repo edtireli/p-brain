@@ -44,6 +44,8 @@ def parse_args():
     parser.add_argument('--lambda', dest='tikhonov_lambda', type=float,
                         help='Tikhonov regularisation weight for the two-compartment model',
                         required=False)
+    parser.add_argument('--enable-lcurve', action='store_true',
+                        help='Automatically pick Tikhonov \u03bb via L-curve')
     return parser.parse_args()
 
 
@@ -124,6 +126,8 @@ def main():
 
     if args.tikhonov_lambda is not None:
         settings.TIKHONOV_LAMBDA = args.tikhonov_lambda
+    if args.enable_lcurve:
+        settings.AUTO_LAMBDA = True
 
     # Respect ``PBRAIN_TURBO`` to disable plotting when running in batch mode.
     # Individual modes may override this later (manual/pseudo always show plots).
