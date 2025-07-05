@@ -13,6 +13,7 @@ from termcolor import colored
 from utils.mapping import *
 import glob
 import shutil
+import utils.settings as settings
 
 turbo_mode = True  # When True, suppress interactive plotting
 
