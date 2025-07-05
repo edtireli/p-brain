@@ -665,7 +665,7 @@ def segmentation(
 
 def plot_total_ct_and_patlak(time_points, C_t_total, C_a,
                              Ki, lam, SD_Ki, tissue_name,
-                             save_path=None):
+                             fit_curve=None, save_path=None):
     """
     Re-written to drop the black cross markers on the Patlak panel.
     """
@@ -720,28 +720,40 @@ def plot_total_ct_and_patlak(time_points, C_t_total, C_a,
     h2,l2 = ax1_a.get_legend_handles_labels()
     ax1.legend(h1+h2, l1+l2, loc='upper left')
 
-    # ---- Patlak panel
+    # ---- Patlak or two-compartment panel
     ax2 = fig.add_subplot(gs[1])
-    keep = ~bad_mask_pat
-    ax2.scatter(x_pat[keep], y_pat[keep],
-                color='blue', s=25, marker='o',
-                label='Used in fit')
 
-    # now explicitly plot *all* the dropped points hollow:
-    ax2.scatter(x_pat[bad_mask_pat], y_pat[bad_mask_pat],
-                facecolors='none', edgecolors='blue', s=40,
-                label='Ignored')
+    if settings.KINETIC_MODEL.lower() == 'patlak':
+        keep = ~bad_mask_pat
+        ax2.scatter(x_pat[keep], y_pat[keep],
+                    color='blue', s=25, marker='o',
+                    label='Used in fit')
 
+        # now explicitly plot *all* the dropped points hollow:
+        ax2.scatter(x_pat[bad_mask_pat], y_pat[bad_mask_pat],
+                    facecolors='none', edgecolors='blue', s=40,
+                    label='Ignored')
 
-    if not np.isnan(Ki):
-        ax2.plot(x_pat, lam/100 + (Ki/6000)*x_pat,
-                 color='green', ls='--', label='Patlak fit')
+        if not np.isnan(Ki):
+            ax2.plot(x_pat, lam/100 + (Ki/6000)*x_pat,
+                     color='green', ls='--', label='Patlak fit')
 
-    ax2.set_xlabel('∫C_a dt / C_a')
-    ax2.set_ylabel('C_t / C_a')
-    ax2.set_title(f"{tissue_name} | Ki={Ki:.4f}, λ={lam:.4f}")
-    ax2.grid(True)
-    ax2.legend(loc='best')
+        ax2.set_xlabel('∫C_a dt / C_a')
+        ax2.set_ylabel('C_t / C_a')
+        ax2.set_title(f"{tissue_name} | Ki={Ki:.4f}, λ={lam:.4f}")
+        ax2.grid(True)
+        ax2.legend(loc='best')
+    elif settings.KINETIC_MODEL.lower() == 'two_compartment':
+        ax2.plot(time_points, C_t_total, 'o', label='Data')
+        if fit_curve is not None:
+            ax2.plot(time_points, fit_curve, '-', label='Tikhonov fit')
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('C_t')
+        ax2.set_title('Two-Compartment (Tikhonov) Fit')
+        ax2.legend()
+    else:
+        ax2.text(0.5, 0.5, 'No fit', ha='center', va='center')
+
 
     plt.tight_layout()
     if save_path:
@@ -2146,47 +2158,48 @@ def compute_and_plot_ctcs_median(
     # -----------------------------------------------------------------------------
     def patlak_total(C_t):
         if not C_t.size:
-            return np.nan, np.nan, np.nan
+            return np.nan, np.nan, np.nan, None
         if settings.KINETIC_MODEL.lower() == 'two_compartment':
-            Ki, lam, SD_Ki, _ = two_compartment_tikhonov(
+            Ki, lam, SD_Ki, fit_curve = two_compartment_tikhonov(
                 C_a_total, C_t, time_array=time_points_total
             )
-            return Ki, lam, SD_Ki
+            return Ki, lam, SD_Ki, fit_curve
         if correct_signal_jumps:
             _, bad, _ = mask_problematic(C_t)
         else:
             bad = None
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
-        return Ki, lam, SD
+        return Ki, lam, SD, None
 
     # ----------------------------------------------------------------------------- 
     # 3) Patlak for every tissue
     # -----------------------------------------------------------------------------
-    Ki_wm_total,           lambda_wm_total,           SD_Ki_wm_total            = patlak_total(C_t_wm_total)
-    Ki_cortical_gm_total,  lambda_cortical_gm_total,  SD_Ki_cortical_gm_total   = patlak_total(C_t_cortical_gm_total)
-    Ki_subcortical_gm_total,lambda_subcortical_gm_total,SD_Ki_subcortical_gm_total = patlak_total(C_t_subcortical_gm_total)
-    Ki_boundary_total,     lambda_boundary_total,     SD_Ki_boundary_total      = patlak_total(C_t_boundary_total)
-    Ki_gm_brainstem_total, lambda_gm_brainstem_total, SD_Ki_gm_brainstem_total  = patlak_total(C_t_gm_brainstem_total)
-    Ki_gm_cerebellum_total,lambda_gm_cerebellum_total,SD_Ki_gm_cerebellum_total = patlak_total(C_t_gm_cerebellum_total)
-    Ki_wm_cerebellum_total,lambda_wm_cerebellum_total,SD_Ki_wm_cerebellum_total = patlak_total(C_t_wm_cerebellum_total)
-    Ki_wm_cc_total,        lambda_wm_cc_total,        SD_Ki_wm_cc_total         = patlak_total(C_t_wm_cc_total)
+    Ki_wm_total,           lambda_wm_total,           SD_Ki_wm_total,           fit_wm_total = patlak_total(C_t_wm_total)
+    Ki_cortical_gm_total,  lambda_cortical_gm_total,  SD_Ki_cortical_gm_total,  fit_cortical_gm_total = patlak_total(C_t_cortical_gm_total)
+    Ki_subcortical_gm_total,lambda_subcortical_gm_total,SD_Ki_subcortical_gm_total, fit_subcortical_gm_total = patlak_total(C_t_subcortical_gm_total)
+    Ki_boundary_total,     lambda_boundary_total,     SD_Ki_boundary_total,     fit_boundary_total = patlak_total(C_t_boundary_total)
+    Ki_gm_brainstem_total, lambda_gm_brainstem_total, SD_Ki_gm_brainstem_total, fit_gm_brainstem_total = patlak_total(C_t_gm_brainstem_total)
+    Ki_gm_cerebellum_total,lambda_gm_cerebellum_total,SD_Ki_gm_cerebellum_total, fit_gm_cerebellum_total = patlak_total(C_t_gm_cerebellum_total)
+    Ki_wm_cerebellum_total,lambda_wm_cerebellum_total,SD_Ki_wm_cerebellum_total, fit_wm_cerebellum_total = patlak_total(C_t_wm_cerebellum_total)
+    Ki_wm_cc_total,        lambda_wm_cc_total,        SD_Ki_wm_cc_total,        fit_wm_cc_total = patlak_total(C_t_wm_cc_total)
 
     # ----------------------------------------------------------------------------- 
     # 4) Collect everything for JSON and plotting
     # -----------------------------------------------------------------------------
     tissue_results = {
-        "white_matter":      dict(C_t=C_t_wm_total,           Ki=Ki_wm_total,           lam=lambda_wm_total,           SD_Ki=SD_Ki_wm_total,          vox=len(wm_ctcs_total)),
-        "cortical_gm":       dict(C_t=C_t_cortical_gm_total,  Ki=Ki_cortical_gm_total,  lam=lambda_cortical_gm_total,  SD_Ki=SD_Ki_cortical_gm_total, vox=len(cortical_gm_ctcs_total)),
-        "subcortical_gm":    dict(C_t=C_t_subcortical_gm_total,Ki=Ki_subcortical_gm_total,lam=lambda_subcortical_gm_total,SD_Ki=SD_Ki_subcortical_gm_total,vox=len(subcortical_gm_ctcs_total)),
-        "gm_brainstem":      dict(C_t=C_t_gm_brainstem_total, Ki=Ki_gm_brainstem_total, lam=lambda_gm_brainstem_total, SD_Ki=SD_Ki_gm_brainstem_total,vox=len(gm_brainstem_ctcs_total)),
-        "gm_cerebellum":     dict(C_t=C_t_gm_cerebellum_total,Ki=Ki_gm_cerebellum_total,lam=lambda_gm_cerebellum_total,SD_Ki=SD_Ki_gm_cerebellum_total,vox=len(gm_cerebellum_ctcs_total)),
-        "wm_cerebellum":     dict(C_t=C_t_wm_cerebellum_total,Ki=Ki_wm_cerebellum_total,lam=lambda_wm_cerebellum_total,SD_Ki=SD_Ki_wm_cerebellum_total,vox=len(wm_cerebellum_ctcs_total)),
-        "wm_cc":             dict(C_t=C_t_wm_cc_total,        Ki=Ki_wm_cc_total,        lam=lambda_wm_cc_total,        SD_Ki=SD_Ki_wm_cc_total,       vox=len(wm_cc_ctcs_total)),
+        "white_matter":      dict(C_t=C_t_wm_total,           Ki=Ki_wm_total,           lam=lambda_wm_total,           SD_Ki=SD_Ki_wm_total,          fit_curve=fit_wm_total,          vox=len(wm_ctcs_total)),
+        "cortical_gm":       dict(C_t=C_t_cortical_gm_total,  Ki=Ki_cortical_gm_total,  lam=lambda_cortical_gm_total,  SD_Ki=SD_Ki_cortical_gm_total,  fit_curve=fit_cortical_gm_total,  vox=len(cortical_gm_ctcs_total)),
+        "subcortical_gm":    dict(C_t=C_t_subcortical_gm_total,Ki=Ki_subcortical_gm_total,lam=lambda_subcortical_gm_total,SD_Ki=SD_Ki_subcortical_gm_total,fit_curve=fit_subcortical_gm_total,vox=len(subcortical_gm_ctcs_total)),
+        "gm_brainstem":      dict(C_t=C_t_gm_brainstem_total, Ki=Ki_gm_brainstem_total, lam=lambda_gm_brainstem_total, SD_Ki=SD_Ki_gm_brainstem_total, fit_curve=fit_gm_brainstem_total, vox=len(gm_brainstem_ctcs_total)),
+        "gm_cerebellum":     dict(C_t=C_t_gm_cerebellum_total,Ki=Ki_gm_cerebellum_total,lam=lambda_gm_cerebellum_total,SD_Ki=SD_Ki_gm_cerebellum_total,fit_curve=fit_gm_cerebellum_total,vox=len(gm_cerebellum_ctcs_total)),
+        "wm_cerebellum":     dict(C_t=C_t_wm_cerebellum_total,Ki=Ki_wm_cerebellum_total,lam=lambda_wm_cerebellum_total,SD_Ki=SD_Ki_wm_cerebellum_total,fit_curve=fit_wm_cerebellum_total,vox=len(wm_cerebellum_ctcs_total)),
+        "wm_cc":             dict(C_t=C_t_wm_cc_total,        Ki=Ki_wm_cc_total,        lam=lambda_wm_cc_total,        SD_Ki=SD_Ki_wm_cc_total,       fit_curve=fit_wm_cc_total,       vox=len(wm_cc_ctcs_total)),
     }
 
     if boundary and C_t_boundary_total.size:
         tissue_results["boundary"] = dict(C_t=C_t_boundary_total, Ki=Ki_boundary_total,
                                         lam=lambda_boundary_total, SD_Ki=SD_Ki_boundary_total,
+                                        fit_curve=fit_boundary_total,
                                         vox=len(boundary_ctcs_total))
 
     # ----------------------------------------------------------------------
@@ -2269,6 +2282,7 @@ def compute_and_plot_ctcs_median(
             Ki         = vals["Ki"],
             lam        = vals["lam"],
             SD_Ki      = vals["SD_Ki"],
+            fit_curve  = vals.get("fit_curve"),
             tissue_name= tissue_name.replace('_', ' ').title(),
             save_path  = save_path
         )
