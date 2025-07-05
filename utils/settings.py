@@ -21,6 +21,9 @@ NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 # ``P_BRAIN_MODEL`` is not provided the default is ``both``.
 KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")
 
+# Regularisation strength for the two-compartment model
+TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 5.0))
+
 # Paths to the neural network models used for artery and vein ROI extraction.
 # These can be overridden by environment variables to use custom models.
 AI_MODEL_PATHS = {
@@ -148,6 +151,7 @@ def save_run_settings(analysis_directory, parameters):
         "KINETIC_MODEL": KINETIC_MODEL,
         "AI_MODEL_PATHS": AI_MODEL_PATHS,
         "CONTROLS": CONTROLS,
+        "TIKHONOV_LAMBDA": TIKHONOV_LAMBDA,
     })
     settings_path = os.path.join(analysis_directory, "run_settings.json")
     with open(settings_path, "w") as f:

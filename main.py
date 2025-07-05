@@ -2,6 +2,7 @@ import argparse
 import os
 import time
 from utils import *
+import utils.settings as settings
 from modules import *
 import utils.plotting as plotting
 import modules.opt01_T1_fit as opt01_T1_fit
@@ -40,6 +41,9 @@ def parse_args():
     # Optional mode argument to skip the interactive mode selection
     parser.add_argument('--mode', type=str, choices=['manual', 'auto', 'pseudo'],
                         help='Start directly in a specific analysis mode', required=False)
+    parser.add_argument('--lambda', dest='tikhonov_lambda', type=float,
+                        help='Tikhonov regularisation weight for the two-compartment model',
+                        required=False)
     return parser.parse_args()
 
 
@@ -117,6 +121,9 @@ def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
 
 def main():
     args = parse_args()
+
+    if args.tikhonov_lambda is not None:
+        settings.TIKHONOV_LAMBDA = args.tikhonov_lambda
 
     # Respect ``PBRAIN_TURBO`` to disable plotting when running in batch mode.
     # Individual modes may override this later (manual/pseudo always show plots).

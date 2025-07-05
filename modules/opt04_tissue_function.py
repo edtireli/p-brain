@@ -3,7 +3,10 @@ from utils.loading import *
 import nibabel as nib
 import matplotlib.gridspec as gridspec
 from scipy.signal import argrelextrema
-from scipy.optimize import curve_fit
+from .kinetic_models import (
+    extended_tofts_tikhonov,
+    extended_tofts_model,
+)
 from matplotlib.path import Path
 from collections import defaultdict
 from termcolor import colored
@@ -122,23 +125,15 @@ def find_baseline_point_advanced(y_data, fs=15, cutoff=4.0, order=3, radius=10):
 
 
 
-def compute_average_permeability(c_in, c_out, time_array, baseline_point):
+def compute_average_permeability(c_in, c_out, time_array, baseline_point,
+                                 lambd=settings.TIKHONOV_LAMBDA):
     if c_in.shape[0] != c_out.shape[0]:
         raise ValueError("The number of time points in c_in and c_out must be the same.")
-    
-    initial_guess = [0.5/6000, 0.2, 0.05]
-    
-    popt, pcov = curve_fit(lambda t, Ktrans, ve, vp: extended_tofts_model(t, Ktrans, ve, vp, c_in),
-                        time_array, c_out, p0=initial_guess)
-    
-    Ktrans_fitted, ve_fitted, vp_fitted = popt
-    
-    std_dev_Ktrans = np.sqrt(np.diag(pcov))[0]
-    
-    # Convert to mM/min
-    Ktrans_fitted_mM_min = Ktrans_fitted * 6000
-    std_dev_Ktrans_mM_min = std_dev_Ktrans * 6000
-    
+
+    Ktrans, _, _ = extended_tofts_tikhonov(c_in, c_out, time_array, lambd=lambd)
+    Ktrans_fitted_mM_min = Ktrans * 6000
+    std_dev_Ktrans_mM_min = np.nan
+
     return Ktrans_fitted_mM_min, std_dev_Ktrans_mM_min
 
 

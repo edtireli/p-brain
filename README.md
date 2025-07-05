@@ -264,6 +264,11 @@ completes.
 When running the two-compartment model the tissue function slice images display
 the two-compartment fit instead of the Patlak plot.
 
+### Regularisation strength
+The Tikhonov parameter controlling the two-compartment fit is configured via
+`--lambda` on the command line or the `P_BRAIN_LAMBDA` environment variable.
+The default value is 5.0 and can also be changed in `utils/settings.py`.
+
 ## 7. Contributions
 For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
 
