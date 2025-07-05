@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
 
@@ -22,7 +23,14 @@ NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")
 
 # Regularisation strength for the two-compartment model
-TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 5.0))
+TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 0.5))
+
+# When enabled, pick the regularisation weight automatically using an L-curve
+# search across ``AUTO_LAMBDA_CANDIDATES``.
+AUTO_LAMBDA = False
+AUTO_LAMBDA_CANDIDATES = np.logspace(-2, 2, 30)
+# Holds the most recently chosen value when ``AUTO_LAMBDA`` is True
+AUTO_LAMBDA_VALUE = None
 
 # Paths to the neural network models used for artery and vein ROI extraction.
 # These can be overridden by environment variables to use custom models.
@@ -153,6 +161,8 @@ def save_run_settings(analysis_directory, parameters):
         "CONTROLS": CONTROLS,
         "TIKHONOV_LAMBDA": TIKHONOV_LAMBDA,
     })
+    if AUTO_LAMBDA:
+        settings["AUTO_LAMBDA_VALUE"] = AUTO_LAMBDA_VALUE
     settings_path = os.path.join(analysis_directory, "run_settings.json")
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=4)
