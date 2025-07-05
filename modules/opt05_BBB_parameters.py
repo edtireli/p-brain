@@ -2,9 +2,13 @@ from utils.plotting import *
 from utils.mapping import *
 from utils.loading import *
 import utils.settings as settings
-from .kinetic_models import two_compartment_tikhonov_fit
+from .kinetic_models import (
+    extended_tofts_tikhonov,
+    construct_convolution_matrix,
+    tikhonov_regularization,
+    extended_tofts_model,
+)
 import numpy as np
-from scipy.optimize import curve_fit
 from termcolor import colored
 
 turbo_mode = True  # When True, suppress interactive plotting
@@ -144,23 +148,15 @@ def extended_tofts_model(t, Ktrans, ve, vp, Cp):
     min_len = min(len(integrand), len(Cp))
     return Ktrans * integrand[:min_len] + vp * Cp[:min_len]
 
-def compute_average_permeability(c_in, c_out, time_array, baseline_point):
+def compute_average_permeability(c_in, c_out, time_array, baseline_point,
+                                 lambd=settings.TIKHONOV_LAMBDA):
     if c_in.shape[0] != c_out.shape[0]:
         raise ValueError("The number of time points in c_in and c_out must be the same.")
-    
-    initial_guess = [0.5/6000, 0.2, 0.05]
-    
-    popt, pcov = curve_fit(lambda t, Ktrans, ve, vp: extended_tofts_model(t, Ktrans, ve, vp, c_in),
-                        time_array, c_out, p0=initial_guess)
-    
-    Ktrans_fitted, ve_fitted, vp_fitted = popt
-    
-    std_dev_Ktrans = np.sqrt(np.diag(pcov))[0]
-    
-    # Convert to mM/min
-    Ktrans_fitted_mM_min = Ktrans_fitted * 6000
-    std_dev_Ktrans_mM_min = std_dev_Ktrans * 6000
-    
+
+    Ktrans, _, _ = extended_tofts_tikhonov(c_in, c_out, time_array, lambd=lambd)
+    Ktrans_fitted_mM_min = Ktrans * 6000
+    std_dev_Ktrans_mM_min = np.nan
+
     return Ktrans_fitted_mM_min, std_dev_Ktrans_mM_min
 
 
@@ -179,10 +175,16 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     use_patlak = model in ('patlak', 'both')
 
     if use_two_compartment:
-        Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(
-            C_a, C_t, time_points_s
-        )
+        Ktrans, ve, vp = extended_tofts_tikhonov(C_a, C_t, time_points_s,
+                                                 lambd=settings.TIKHONOV_LAMBDA)
+        Ki = Ktrans * 6000
+        lamda = ve * 100
         SD_Ki = np.nan
+        fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
+        delta_t = np.diff(time_points_s)[0]
+        A = construct_convolution_matrix(C_a, delta_t)
+        residue = tikhonov_regularization(A, C_t, settings.TIKHONOV_LAMBDA)
+        CBF = residue[0] * 6000
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
         save_values(
@@ -228,10 +230,16 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         use_patlak = model in ('patlak', 'both')
 
         if use_two_compartment:
-            Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(
-                C_a, C_t, time_points_s
-            )
+            Ktrans, ve, vp = extended_tofts_tikhonov(
+                C_a, C_t, time_points_s, lambd=settings.TIKHONOV_LAMBDA)
+            Ki = Ktrans * 6000
+            lamda = ve * 100
             SD_Ki = np.nan
+            fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
+            delta_t = np.diff(time_points_s)[0]
+            A = construct_convolution_matrix(C_a, delta_t)
+            residue = tikhonov_regularization(A, C_t, settings.TIKHONOV_LAMBDA)
+            CBF = residue[0] * 6000
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
             save_values(

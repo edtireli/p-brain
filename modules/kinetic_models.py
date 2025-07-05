@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.optimize import curve_fit, least_squares
+from scipy.optimize import least_squares
+import utils.settings as settings
 
 
 def extended_tofts_model(t, Ktrans, ve, vp, Cp):
@@ -12,31 +13,6 @@ def extended_tofts_model(t, Ktrans, ve, vp, Cp):
     min_len = min(len(integrand), len(Cp))
     return Ktrans * integrand[:min_len] + vp * Cp[:min_len]
 
-
-def two_compartment_fit(c_input, c_tissue, time_array):
-    """Fit the extended Tofts two-compartment model and return Ki, lambda and
-    the fitted tissue curve."""
-    if c_input.shape[0] != c_tissue.shape[0]:
-        raise ValueError("The number of time points in c_input and c_tissue must be the same.")
-
-    initial_guess = [0.5/6000, 0.2, 0.05]
-    popt, pcov = curve_fit(
-        lambda t, Ktrans, ve, vp: extended_tofts_model(t, Ktrans, ve, vp, c_input),
-        time_array,
-        c_tissue,
-        p0=initial_guess,
-    )
-
-    Ktrans_fitted, ve_fitted, vp_fitted = popt
-    std_dev_Ktrans = np.sqrt(np.diag(pcov))[0]
-
-    Ki = Ktrans_fitted * 6000
-    Ki_std = std_dev_Ktrans * 6000
-    lambda_val = ve_fitted * 100
-
-    fitted_curve = extended_tofts_model(time_array, Ktrans_fitted, ve_fitted, vp_fitted, c_input)
-
-    return Ki, lambda_val, Ki_std, fitted_curve
 
 
 def construct_convolution_matrix(C_a, delta_t):
@@ -58,7 +34,23 @@ def tikhonov_regularization(A, C_t, lambd):
     return np.linalg.solve(regularized, A.T @ C_t)
 
 
-def two_compartment_tikhonov_fit(c_input, c_tissue, time_array, lambd=0.1):
+def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
+                            x0=(0.001, 0.2, 0.05)):
+    def residual(theta):
+        Ktrans, ve, vp = theta
+        Ct_pred = extended_tofts_model(t, Ktrans, ve, vp, Cp)
+        misfit = Ct_pred - Ct
+        w = np.linalg.norm(misfit) / max(np.linalg.norm(theta), 1e-8)
+        penalty = np.sqrt(lambd) * w * np.array(theta)
+        return np.concatenate([misfit, penalty])
+
+    sol = least_squares(residual, x0, bounds=(0, np.inf))
+    Ktrans, ve, vp = sol.x
+    return Ktrans, ve, vp
+
+
+def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
+                                 lambd=settings.TIKHONOV_LAMBDA):
     """Fit the extended Tofts model using Tikhonov regularisation.
 
     Parameters

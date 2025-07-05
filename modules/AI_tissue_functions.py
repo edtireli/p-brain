@@ -22,7 +22,12 @@ import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
-from .kinetic_models import two_compartment_tikhonov_fit
+from .kinetic_models import (
+    extended_tofts_tikhonov,
+    construct_convolution_matrix,
+    tikhonov_regularization,
+    extended_tofts_model,
+)
 from skimage.transform import resize
 import json
 from scipy.ndimage import binary_dilation
@@ -41,12 +46,18 @@ def patlak_total(C_t, C_a, t):
     Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a, t, bad_mask=bad)
     return Ki, lam, SD
 
-def two_compartment_tikhonov(aif, tissue_curve, *, time_array, lambd=0.1):
+def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
+                             lambd=settings.TIKHONOV_LAMBDA):
     """Two-compartment fit using Tikhonov regularisation."""
-    Ki, lam, _, _, fit_curve = two_compartment_tikhonov_fit(
-        aif, tissue_curve, time_array, lambd=lambd
-    )
+    Ktrans, ve, vp = extended_tofts_tikhonov(aif, tissue_curve, time_array, lambd=lambd)
+    Ki = Ktrans * 6000
+    lam = ve * 100
     SD_Ki = np.nan
+    fit_curve = extended_tofts_model(time_array, Ktrans, ve, vp, aif)
+    delta_t = np.diff(time_array)[0]
+    A = construct_convolution_matrix(aif, delta_t)
+    tikh = tikhonov_regularization(A, tissue_curve, lambd)
+    CBF = tikh[0] * 6000
     return Ki, lam, SD_Ki, fit_curve
 
 def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
@@ -1945,7 +1956,7 @@ def compute_and_plot_ctcs_median(
                 if compute_per_voxel_CBF:
                     delta_t = np.diff(time_points_voxel)[0]
                     A = construct_convolution_matrix(C_a_voxel, delta_t)
-                    lambd = 0.1  # Adjust as needed
+                    lambd = settings.TIKHONOV_LAMBDA
 
                     # Solve for the residue function
                     try:

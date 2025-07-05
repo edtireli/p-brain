@@ -17,6 +17,7 @@ spec_km = importlib.util.spec_from_file_location('modules.kinetic_models', os.pa
 km = importlib.util.module_from_spec(spec_km)
 sys.modules['modules.kinetic_models'] = km
 spec_km.loader.exec_module(km)
+extended_tofts_tikhonov = km.extended_tofts_tikhonov
 
 spec_ai = importlib.util.spec_from_file_location('modules.AI_tissue_functions', os.path.join(ROOT, 'modules', 'AI_tissue_functions.py'), submodule_search_locations=[os.path.join(ROOT, 'modules')])
 ai = importlib.util.module_from_spec(spec_ai)
@@ -27,6 +28,7 @@ two_compartment = ai.two_compartment_tikhonov
 
 
 def synthetic_data():
+    np.random.seed(0)
     t = np.linspace(0, 60, 40)
     aif = np.exp(-t / 10)
     # Generate tissue curve using simple extended Tofts model
@@ -44,10 +46,23 @@ def synthetic_data():
 
 def test_models_differ():
     t, ca, ct = synthetic_data()
-    ki_p, lam_p, _ = patlak_total(ct, ca, t)
-    ki_t, _, _, _ = two_compartment(ca, ct, time_array=t)
+    ki_p, _, _ = patlak_total(ct, ca, t)
+    ktrans, _, _ = extended_tofts_tikhonov(ca, ct, t, lambd=5.0)
+    ki_t = ktrans * 6000
     assert np.isfinite(ki_t)
     assert not np.isclose(ki_p, ki_t)
+
+
+def test_lambda_effects():
+    t, ca, ct = synthetic_data()
+    ki_p, _, _ = patlak_total(ct, ca, t)
+    k0, _, _ = extended_tofts_tikhonov(ca, ct, t, lambd=0.0)
+    assert np.isclose(k0 * 6000, ki_p, rtol=0.2)
+
+    ct_zero = np.zeros_like(t)
+    k_unreg, _, _ = extended_tofts_tikhonov(ca, ct_zero, t, lambd=0.0)
+    k_reg, _, _ = extended_tofts_tikhonov(ca, ct_zero, t, lambd=100.0)
+    assert k_reg < k_unreg
 
 
 def test_two_compartment_handles_constant_aif():
