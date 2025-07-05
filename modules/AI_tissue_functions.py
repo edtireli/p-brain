@@ -22,7 +22,7 @@ import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
-from .kinetic_models import two_compartment_fit
+from .kinetic_models import two_compartment_tikhonov_fit
 from skimage.transform import resize
 import json
 from scipy.ndimage import binary_dilation
@@ -40,6 +40,14 @@ def patlak_total(C_t, C_a, t):
         bad = None
     Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a, t, bad_mask=bad)
     return Ki, lam, SD
+
+def two_compartment_tikhonov(aif, tissue_curve, *, time_array, lambd=0.1):
+    """Two-compartment fit using Tikhonov regularisation."""
+    Ki, lam, _, _, fit_curve = two_compartment_tikhonov_fit(
+        aif, tissue_curve, time_array, lambd=lambd
+    )
+    SD_Ki = np.nan
+    return Ki, lam, SD_Ki, fit_curve
 
 def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
     """
@@ -1718,7 +1726,9 @@ def compute_and_plot_ctcs_median(
             if C_t.size == 0:
                 return (np.nan, np.nan, np.nan, None, np.array([], dtype=bool))
             if settings.KINETIC_MODEL.lower() == 'two_compartment':
-                Ki, lam, SD_Ki, fit_curve = two_compartment_fit(C_a_slice, C_t, time_points)
+                Ki, lam, SD_Ki, fit_curve = two_compartment_tikhonov(
+                    C_a_slice, C_t, time_array=time_points
+                )
                 return Ki, lam, SD_Ki, fit_curve, np.array([], dtype=bool)
             else:
                 Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
@@ -1764,7 +1774,7 @@ def compute_and_plot_ctcs_median(
 
         # Plot the results for the current slice. Images are always written
         # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
-        # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
+        # move the entire directory to ``AI_patlak`` or ``AI_two_compartment`` after
         # the model run completes.
         fit_curves = {
             'wm': curve_wm,
@@ -2097,8 +2107,10 @@ def compute_and_plot_ctcs_median(
         if not C_t.size:
             return np.nan, np.nan, np.nan
         if settings.KINETIC_MODEL.lower() == 'two_compartment':
-            Ki, lam, SD, _ = two_compartment_fit(C_a_total, C_t, time_points_total)
-            return Ki, lam, SD
+            Ki, lam, SD_Ki, _ = two_compartment_tikhonov(
+                C_a_total, C_t, time_array=time_points_total
+            )
+            return Ki, lam, SD_Ki
         if correct_signal_jumps:
             _, bad, _ = mask_problematic(C_t)
         else:
@@ -2302,6 +2314,7 @@ def plot_CBF_overlay(dce_slice, CBF_slice, slice_idx, save_path, vmin, vmax):
 def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=False):
     """Rename analysis outputs with a model-specific suffix."""
     import shutil
+    import glob
 
     files = [
         'Ki_wm.nii.gz',
@@ -2338,6 +2351,16 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
         if os.path.exists(dst_dir):
             shutil.rmtree(dst_dir)
         os.rename(ai_dir, dst_dir)
+
+    if suffix == '_two_compartment':
+        old_files = glob.glob(os.path.join(analysis_directory, '*_tikhonov*'))
+        for path in old_files:
+            new_name = os.path.basename(path).replace('_tikhonov', suffix)
+            os.rename(path, os.path.join(analysis_directory, new_name))
+        old_dir = os.path.join(image_directory, 'AI_tikhonov')
+        new_dir = os.path.join(image_directory, 'AI_two_compartment')
+        if os.path.exists(old_dir) and not os.path.exists(new_dir):
+            os.rename(old_dir, new_dir)
 
 
 def _tissue_function_AI(model, analysis_directory, nifti_directory, image_directory, filenames, parameters):
@@ -2472,7 +2495,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     """Run tissue function analysis using the configured kinetic model."""
     model_setting = settings.KINETIC_MODEL.lower()
-    models = ['patlak', 'tikhonov'] if model_setting == 'both' else [model_setting]
+    models = ['patlak', 'two_compartment'] if model_setting == 'both' else [model_setting]
     ai_base = os.path.join(image_directory, 'AI')
     for m in models:
         print(f'[!] Running {m} model')

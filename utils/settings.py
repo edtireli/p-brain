@@ -16,7 +16,7 @@ MULTIPROCESSING = True
 NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 
 # Select kinetic modelling strategy. Valid options are ``patlak``,
-# ``tikhonov`` (two-compartment fit) or ``both`` to execute the two
+# ``two_compartment`` (regularised two-compartment fit) or ``both`` to execute the two
 # approaches sequentially.  When the environment variable
 # ``P_BRAIN_MODEL`` is not provided the default is ``both``.
 KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")

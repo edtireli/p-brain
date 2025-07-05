@@ -2,7 +2,7 @@ from utils.plotting import *
 from utils.mapping import *
 from utils.loading import *
 import utils.settings as settings
-from .kinetic_models import two_compartment_fit, two_compartment_tikhonov_fit
+from .kinetic_models import two_compartment_tikhonov_fit
 import numpy as np
 from scipy.optimize import curve_fit
 from termcolor import colored
@@ -175,18 +175,22 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     time_points_s = time_points_s[0:len(C_a)]
     
     model = settings.KINETIC_MODEL.lower()
-    use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
+    use_two_compartment = model in ('two_compartment', 'both')
     use_patlak = model in ('patlak', 'both')
 
-    if use_tikhonov:
-        Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(C_a, C_t, time_points_s)
+    if use_two_compartment:
+        Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(
+            C_a, C_t, time_points_s
+        )
         SD_Ki = np.nan
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
-        P, P_std = Ki, 0.0
-        save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
-                    subtype_artery, venous_slice, arterial_slice,
-                    analysis_directory, suffix='_tikhonov')
+        save_values(
+            Ki, SD_Ki, lamda, Ki, 0.0,
+            subtype_tissue, slice_tissue,
+            subtype_artery, venous_slice, arterial_slice,
+            analysis_directory, suffix='_two_compartment'
+        )
 
     if use_patlak:
         Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s,
@@ -202,8 +206,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                     analysis_directory, suffix='_patlak')
 
     if subtype_artery == 'Max':
-        if use_tikhonov:
-            json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
+        if use_two_compartment:
+            json1 = os.path.join(analysis_directory, 'values_two_compartment.json')
             json2 = os.path.join(analysis_directory, 'max_info.json')
             replace_max_with_artery_type_and_delete(json1, json2)
         if use_patlak:
@@ -220,18 +224,22 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         C_t = C_t[0:len(C_a)]
         time_points_s = time_points_s[0:len(C_a)]
         model = settings.KINETIC_MODEL.lower()
-        use_tikhonov = model in ('two_compartment', 'tikhonov', 'both')
+        use_two_compartment = model in ('two_compartment', 'both')
         use_patlak = model in ('patlak', 'both')
 
-        if use_tikhonov:
-            Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(C_a, C_t, time_points_s)
+        if use_two_compartment:
+            Ki, lamda, vp, CBF, _ = two_compartment_tikhonov_fit(
+                C_a, C_t, time_points_s
+            )
             SD_Ki = np.nan
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
-            P, P_std = Ki, 0.0
-            save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
-                        subtype_artery, venous_slice, arterial_slice,
-                        analysis_directory, suffix='_tikhonov')
+            save_values(
+                Ki, SD_Ki, lamda, Ki, 0.0,
+                subtype_tissue, slice_tissue,
+                subtype_artery, venous_slice, arterial_slice,
+                analysis_directory, suffix='_two_compartment'
+            )
 
         if use_patlak:
             Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s, subtype_tissue, image_directory)
@@ -244,8 +252,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                         analysis_directory, suffix='_patlak')
 
         if subtype_artery == 'Max':
-            if use_tikhonov:
-                json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
+            if use_two_compartment:
+                json1 = os.path.join(analysis_directory, 'values_two_compartment.json')
                 json2 = os.path.join(analysis_directory, 'max_info.json')
                 replace_max_with_artery_type_and_delete(json1, json2)
             if use_patlak:
