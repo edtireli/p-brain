@@ -34,6 +34,55 @@ def tikhonov_regularization(A, C_t, lambd):
     return np.linalg.solve(regularized, A.T @ C_t)
 
 
+def pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas):
+    """Return the lambda corresponding to the L-curve corner."""
+    delta_t = np.diff(time_array).mean()
+    A = construct_convolution_matrix(aif, delta_t)
+    R, S = [], []
+    for lam in lambdas:
+        theta = tikhonov_regularization(A, tissue_curve, lam)
+        R.append(np.linalg.norm(A.dot(theta) - tissue_curve))
+        S.append(np.linalg.norm(theta))
+    logR, logS = np.log(R), np.log(S)
+    kappa = []
+    for i in range(1, len(lambdas) - 1):
+        x1, y1 = logR[i - 1], logS[i - 1]
+        x2, y2 = logR[i], logS[i]
+        x3, y3 = logR[i + 1], logS[i + 1]
+        num = abs((x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1))
+        den = (np.hypot(x2 - x1, y2 - y1) *
+               np.hypot(x3 - x2, y3 - y2) *
+               np.hypot(x3 - x1, y3 - y1))
+        kappa.append(num / den if den > 0 else 0)
+    idx = np.argmax(kappa) + 1
+    return lambdas[idx]
+
+
+def plot_l_curve(aif, tissue_curve, time_array, lambdas, *, best=None):
+    """Plot the L-curve and return the selected lambda."""
+    import matplotlib.pyplot as plt
+
+    delta_t = np.diff(time_array).mean()
+    A = construct_convolution_matrix(aif, delta_t)
+    R, S = [], []
+    for lam in lambdas:
+        theta = tikhonov_regularization(A, tissue_curve, lam)
+        R.append(np.linalg.norm(A.dot(theta) - tissue_curve))
+        S.append(np.linalg.norm(theta))
+
+    if best is None:
+        best = pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas)
+    idx = int(np.where(lambdas == best)[0][0])
+
+    plt.figure()
+    plt.loglog(R, S, marker='o')
+    plt.scatter(R[idx], S[idx], color='red')
+    plt.xlabel(r'$\|A\theta - C_t\|$')
+    plt.ylabel(r'$\|\theta\|$')
+    plt.title('L-curve')
+    return best
+
+
 def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
                             x0=(0.001, 0.2, 0.05)):
     def residual(theta):

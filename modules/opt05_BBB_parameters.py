@@ -7,6 +7,7 @@ from .kinetic_models import (
     construct_convolution_matrix,
     tikhonov_regularization,
     extended_tofts_model,
+    pick_lambda_via_l_curve,
 )
 import numpy as np
 from termcolor import colored
@@ -175,15 +176,23 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     use_patlak = model in ('patlak', 'both')
 
     if use_two_compartment:
+        if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+            lambd = settings.AUTO_LAMBDA_VALUE
+        else:
+            lambd = settings.TIKHONOV_LAMBDA
         Ktrans, ve, vp = extended_tofts_tikhonov(C_a, C_t, time_points_s,
-                                                 lambd=settings.TIKHONOV_LAMBDA)
+                                                 lambd=lambd)
         Ki = Ktrans * 6000
         lamda = ve * 100
         SD_Ki = np.nan
         fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
         delta_t = np.diff(time_points_s)[0]
         A = construct_convolution_matrix(C_a, delta_t)
-        residue = tikhonov_regularization(A, C_t, settings.TIKHONOV_LAMBDA)
+        if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+            cbf_lambda = settings.AUTO_LAMBDA_VALUE
+        else:
+            cbf_lambda = settings.TIKHONOV_LAMBDA
+        residue = tikhonov_regularization(A, C_t, cbf_lambda)
         CBF = residue[0] * 6000
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
@@ -198,8 +207,13 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s,
                                           subtype_tissue, image_directory)
         baseline_point = find_shifted_baseline(C_t)+1
-        P, P_std = compute_average_permeability(C_a, C_t, time_points_s,
-                                               baseline_point=baseline_point)
+        if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+            lam_fit = settings.AUTO_LAMBDA_VALUE
+        else:
+            lam_fit = settings.TIKHONOV_LAMBDA
+        P, P_std = compute_average_permeability(
+            C_a, C_t, time_points_s,
+            baseline_point=baseline_point, lambd=lam_fit)
         print('[!] Advanced computation of permeability: (', P, '+-', P_std,
               ') ml/100g/min')
         print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
@@ -230,15 +244,23 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         use_patlak = model in ('patlak', 'both')
 
         if use_two_compartment:
+            if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+                lambd = settings.AUTO_LAMBDA_VALUE
+            else:
+                lambd = settings.TIKHONOV_LAMBDA
             Ktrans, ve, vp = extended_tofts_tikhonov(
-                C_a, C_t, time_points_s, lambd=settings.TIKHONOV_LAMBDA)
+                C_a, C_t, time_points_s, lambd=lambd)
             Ki = Ktrans * 6000
             lamda = ve * 100
             SD_Ki = np.nan
             fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
             delta_t = np.diff(time_points_s)[0]
             A = construct_convolution_matrix(C_a, delta_t)
-            residue = tikhonov_regularization(A, C_t, settings.TIKHONOV_LAMBDA)
+            if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+                cbf_lambda = settings.AUTO_LAMBDA_VALUE
+            else:
+                cbf_lambda = settings.TIKHONOV_LAMBDA
+            residue = tikhonov_regularization(A, C_t, cbf_lambda)
             CBF = residue[0] * 6000
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
@@ -252,7 +274,13 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         if use_patlak:
             Ki, lamda, SD_Ki = patlak_analysis(C_t, C_a, time_points_s, subtype_tissue, image_directory)
             baseline_point = find_shifted_baseline(C_t)+1
-            P, P_std = compute_average_permeability(C_a, C_t, time_points_s, baseline_point=baseline_point)
+            if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+                lam_fit = settings.AUTO_LAMBDA_VALUE
+            else:
+                lam_fit = settings.TIKHONOV_LAMBDA
+            P, P_std = compute_average_permeability(
+                C_a, C_t, time_points_s,
+                baseline_point=baseline_point, lambd=lam_fit)
             print('[!] Advanced computation of permeability: (', P, '+-', P_std, ') ml/100g/min')
             print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
             save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,

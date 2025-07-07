@@ -27,6 +27,7 @@ from .kinetic_models import (
     construct_convolution_matrix,
     tikhonov_regularization,
     extended_tofts_model,
+    pick_lambda_via_l_curve,
 )
 from skimage.transform import resize
 import json
@@ -49,6 +50,8 @@ def patlak_total(C_t, C_a, t):
 def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
                              lambd=settings.TIKHONOV_LAMBDA):
     """Two-compartment fit using Tikhonov regularisation."""
+    if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+        lambd = settings.AUTO_LAMBDA_VALUE
     Ktrans, ve, vp = extended_tofts_tikhonov(aif, tissue_curve, time_array, lambd=lambd)
     Ki = Ktrans * 6000
     lam = ve * 100
@@ -1956,7 +1959,10 @@ def compute_and_plot_ctcs_median(
                 if compute_per_voxel_CBF:
                     delta_t = np.diff(time_points_voxel)[0]
                     A = construct_convolution_matrix(C_a_voxel, delta_t)
-                    lambd = settings.TIKHONOV_LAMBDA
+                    if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+                        lambd = settings.AUTO_LAMBDA_VALUE
+                    else:
+                        lambd = settings.TIKHONOV_LAMBDA
 
                     # Solve for the residue function
                     try:
@@ -2110,6 +2116,34 @@ def compute_and_plot_ctcs_median(
     C_t_gm_cerebellum_total  = avg_gm_cerebellum_ctc_total[:min_length]
     C_t_wm_cerebellum_total  = avg_wm_cerebellum_ctc_total[:min_length]
     C_t_wm_cc_total          = avg_wm_cc_ctc_total[:min_length]
+
+    if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is None:
+        global_ctcs = [
+            C_t_wm_total,
+            C_t_cortical_gm_total,
+            C_t_subcortical_gm_total,
+            C_t_gm_brainstem_total,
+            C_t_gm_cerebellum_total,
+            C_t_wm_cerebellum_total,
+            C_t_wm_cc_total,
+        ]
+        if boundary and C_t_boundary_total.size:
+            global_ctcs.append(C_t_boundary_total)
+        stacked = np.vstack([ct for ct in global_ctcs if ct.size])
+        median_ct = np.median(stacked, axis=0)
+        lambd = pick_lambda_via_l_curve(
+            C_a_total, median_ct, time_points_total,
+            settings.AUTO_LAMBDA_CANDIDATES
+        )
+        settings.AUTO_LAMBDA_VALUE = lambd
+        plot_l_curve(
+            C_a_total, median_ct, time_points_total,
+            settings.AUTO_LAMBDA_CANDIDATES, best=lambd
+        )
+        save_dir = os.path.join(image_directory, 'AI', 'Tissue functions')
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(os.path.join(save_dir, 'lcurve_global.png'), dpi=300)
+        plt.close()
 
     # ----------------------------------------------------------------------------- 
     # 2) Helper: run mask_problematic on the *trimmed* curve, then Patlak
