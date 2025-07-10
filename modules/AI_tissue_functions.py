@@ -2145,11 +2145,15 @@ def compute_and_plot_ctcs_median(
             global_ctcs.append(C_t_boundary_total)
         stacked = np.vstack([ct for ct in global_ctcs if ct.size])
         median_ct = np.median(stacked, axis=0)
-        lambd = pick_lambda_via_l_curve(C_a_total, median_ct, time_points_total,
-                                        settings.AUTO_LAMBDA_CANDIDATES)
+        lambd = pick_lambda_via_l_curve(
+            C_a_total, median_ct, time_points_total,
+            settings.AUTO_LAMBDA_CANDIDATES
+        )
         settings.AUTO_LAMBDA_VALUE = lambd
-        plot_l_curve(C_a_total, median_ct, time_points_total,
-                     settings.AUTO_LAMBDA_CANDIDATES)
+        plot_l_curve(
+            C_a_total, median_ct, time_points_total,
+            settings.AUTO_LAMBDA_CANDIDATES, best=lambd
+        )
         save_dir = os.path.join(image_directory, 'AI', 'Tissue functions')
         os.makedirs(save_dir, exist_ok=True)
         plt.savefig(os.path.join(save_dir, 'lcurve_global.png'), dpi=300)

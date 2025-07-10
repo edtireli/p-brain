@@ -58,7 +58,7 @@ def pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas):
     return lambdas[idx]
 
 
-def plot_l_curve(aif, tissue_curve, time_array, lambdas):
+def plot_l_curve(aif, tissue_curve, time_array, lambdas, *, best=None):
     """Plot the L-curve and return the selected lambda."""
     import matplotlib.pyplot as plt
 
@@ -70,9 +70,11 @@ def plot_l_curve(aif, tissue_curve, time_array, lambdas):
         R.append(np.linalg.norm(A.dot(theta) - tissue_curve))
         S.append(np.linalg.norm(theta))
 
-    best = pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas)
+    if best is None:
+        best = pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas)
     idx = int(np.where(lambdas == best)[0][0])
 
+    plt.figure()
     plt.loglog(R, S, marker='o')
     plt.scatter(R[idx], S[idx], color='red')
     plt.xlabel(r'$\|A\theta - C_t\|$')

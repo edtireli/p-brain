@@ -182,8 +182,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             lambd = settings.TIKHONOV_LAMBDA
         Ktrans, ve, vp = extended_tofts_tikhonov(C_a, C_t, time_points_s,
                                                  lambd=lambd)
-        Ki = Ktrans
-        lamda = ve
+        Ki = Ktrans * 6000
+        lamda = ve * 100
         SD_Ki = np.nan
         fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
         delta_t = np.diff(time_points_s)[0]
@@ -252,8 +252,8 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                 lambd = settings.TIKHONOV_LAMBDA
             Ktrans, ve, vp = extended_tofts_tikhonov(
                 C_a, C_t, time_points_s, lambd=lambd)
-            Ki = Ktrans
-            lamda = ve
+            Ki = Ktrans * 6000
+            lamda = ve * 100
             SD_Ki = np.nan
             fit_curve = extended_tofts_model(time_points_s, Ktrans, ve, vp, C_a)
             delta_t = np.diff(time_points_s)[0]
