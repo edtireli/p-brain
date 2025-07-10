@@ -53,8 +53,8 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
         lambd = settings.AUTO_LAMBDA_VALUE
     Ktrans, ve, vp = extended_tofts_tikhonov(aif, tissue_curve, time_array, lambd=lambd)
-    Ki = Ktrans * 6000
-    lam = ve * 100
+    Ki = Ktrans
+    lam = ve
     SD_Ki = np.nan
     fit_curve = extended_tofts_model(time_array, Ktrans, ve, vp, aif)
     delta_t = np.diff(time_array)[0]
@@ -1440,19 +1440,33 @@ def plot_ctcs_and_patlak(
     plt.suptitle(f"Slice {slice_idx}", y=0.98)
     fit_text = ""
     if not np.isnan(Ki_wm):
-        fit_text += f"Cortical WM:    Ki = {Ki_wm:.5f} ml/100g/min, λ = {lambda_wm:.5f} ml/100g\n"
+        Ki_wm_ml = Ki_wm * 6000
+        lam_wm_ml = lambda_wm * 100
+        fit_text += f"Cortical WM:    Ki = {Ki_wm_ml:.5f} ml/100g/min, λ = {lam_wm_ml:.5f} ml/100g\n"
     if not np.isnan(Ki_cortical_gm):
-        fit_text += f"Cortical GM:    Ki = {Ki_cortical_gm:.5f} ml/100g/min, λ = {lambda_cortical_gm:.5f} ml/100g\n"
+        Ki_cortical_ml = Ki_cortical_gm * 6000
+        lam_cortical_ml = lambda_cortical_gm * 100
+        fit_text += f"Cortical GM:    Ki = {Ki_cortical_ml:.5f} ml/100g/min, λ = {lam_cortical_ml:.5f} ml/100g\n"
     if not np.isnan(Ki_subcortical_gm):
-        fit_text += f"Subcortical GM: Ki = {Ki_subcortical_gm:.5f} ml/100g/min, λ = {lambda_subcortical_gm:.5f} ml/100g\n"
+        Ki_subcortical_ml = Ki_subcortical_gm * 6000
+        lam_subcortical_ml = lambda_subcortical_gm * 100
+        fit_text += f"Subcortical GM: Ki = {Ki_subcortical_ml:.5f} ml/100g/min, λ = {lam_subcortical_ml:.5f} ml/100g\n"
     if gm_brainstem_ctc is not None and not np.isnan(Ki_gm_brainstem):
-        fit_text += f"Brainstem:      Ki = {Ki_gm_brainstem:.5f} ml/100g/min, λ = {lambda_gm_brainstem:.5f} ml/100g\n"
+        Ki_brainstem_ml = Ki_gm_brainstem * 6000
+        lam_brainstem_ml = lambda_gm_brainstem * 100
+        fit_text += f"Brainstem:      Ki = {Ki_brainstem_ml:.5f} ml/100g/min, λ = {lam_brainstem_ml:.5f} ml/100g\n"
     if gm_cerebellum_ctc is not None and not np.isnan(Ki_gm_cerebellum):
-        fit_text += f"Cerebellar GM:  Ki = {Ki_gm_cerebellum:.5f} ml/100g/min, λ = {lambda_gm_cerebellum:.5f} ml/100g\n"
+        Ki_cerebellum_ml = Ki_gm_cerebellum * 6000
+        lam_cerebellum_ml = lambda_gm_cerebellum * 100
+        fit_text += f"Cerebellar GM:  Ki = {Ki_cerebellum_ml:.5f} ml/100g/min, λ = {lam_cerebellum_ml:.5f} ml/100g\n"
     if wm_cerebellum_ctc is not None and not np.isnan(Ki_wm_cerebellum):
-        fit_text += f"Cerebellar WM:  Ki = {Ki_wm_cerebellum:.5f} ml/100g/min, λ = {lambda_wm_cerebellum:.5f} ml/100g\n"
+        Ki_wm_cerebellum_ml = Ki_wm_cerebellum * 6000
+        lam_wm_cerebellum_ml = lambda_wm_cerebellum * 100
+        fit_text += f"Cerebellar WM:  Ki = {Ki_wm_cerebellum_ml:.5f} ml/100g/min, λ = {lam_wm_cerebellum_ml:.5f} ml/100g\n"
     if boundary_ctc is not None and not np.isnan(Ki_boundary):
-        fit_text += f"Boundary:       Ki = {Ki_boundary:.5f} ml/100g/min, λ = {lambda_boundary:.5f} ml/100g"
+        Ki_boundary_ml = Ki_boundary * 6000
+        lam_boundary_ml = lambda_boundary * 100
+        fit_text += f"Boundary:       Ki = {Ki_boundary_ml:.5f} ml/100g/min, λ = {lam_boundary_ml:.5f} ml/100g"
 
     ax_pat.text(0.5, -0.23, fit_text.strip(),
                 transform=ax_pat.transAxes, fontsize=10,
