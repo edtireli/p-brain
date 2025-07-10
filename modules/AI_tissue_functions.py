@@ -1452,33 +1452,19 @@ def plot_ctcs_and_patlak(
     plt.suptitle(f"Slice {slice_idx}", y=0.98)
     fit_text = ""
     if not np.isnan(Ki_wm):
-        Ki_wm_ml = Ki_wm * 6000
-        lam_wm_ml = lambda_wm * 100
-        fit_text += f"Cortical WM:    Ki = {Ki_wm_ml:.5f} ml/100g/min, λ = {lam_wm_ml:.5f} ml/100g\n"
+        fit_text += f"Cortical WM:    Ki = {Ki_wm:.5f} ml/100g/min, λ = {lambda_wm:.5f} ml/100g\n"
     if not np.isnan(Ki_cortical_gm):
-        Ki_cortical_ml = Ki_cortical_gm * 6000
-        lam_cortical_ml = lambda_cortical_gm * 100
-        fit_text += f"Cortical GM:    Ki = {Ki_cortical_ml:.5f} ml/100g/min, λ = {lam_cortical_ml:.5f} ml/100g\n"
+        fit_text += f"Cortical GM:    Ki = {Ki_cortical_gm:.5f} ml/100g/min, λ = {lambda_cortical_gm:.5f} ml/100g\n"
     if not np.isnan(Ki_subcortical_gm):
-        Ki_subcortical_ml = Ki_subcortical_gm * 6000
-        lam_subcortical_ml = lambda_subcortical_gm * 100
-        fit_text += f"Subcortical GM: Ki = {Ki_subcortical_ml:.5f} ml/100g/min, λ = {lam_subcortical_ml:.5f} ml/100g\n"
+        fit_text += f"Subcortical GM: Ki = {Ki_subcortical_gm:.5f} ml/100g/min, λ = {lambda_subcortical_gm:.5f} ml/100g\n"
     if gm_brainstem_ctc is not None and not np.isnan(Ki_gm_brainstem):
-        Ki_brainstem_ml = Ki_gm_brainstem * 6000
-        lam_brainstem_ml = lambda_gm_brainstem * 100
-        fit_text += f"Brainstem:      Ki = {Ki_brainstem_ml:.5f} ml/100g/min, λ = {lam_brainstem_ml:.5f} ml/100g\n"
+        fit_text += f"Brainstem:      Ki = {Ki_gm_brainstem:.5f} ml/100g/min, λ = {lambda_gm_brainstem:.5f} ml/100g\n"
     if gm_cerebellum_ctc is not None and not np.isnan(Ki_gm_cerebellum):
-        Ki_cerebellum_ml = Ki_gm_cerebellum * 6000
-        lam_cerebellum_ml = lambda_gm_cerebellum * 100
-        fit_text += f"Cerebellar GM:  Ki = {Ki_cerebellum_ml:.5f} ml/100g/min, λ = {lam_cerebellum_ml:.5f} ml/100g\n"
+        fit_text += f"Cerebellar GM:  Ki = {Ki_gm_cerebellum:.5f} ml/100g/min, λ = {lambda_gm_cerebellum:.5f} ml/100g\n"
     if wm_cerebellum_ctc is not None and not np.isnan(Ki_wm_cerebellum):
-        Ki_wm_cerebellum_ml = Ki_wm_cerebellum * 6000
-        lam_wm_cerebellum_ml = lambda_wm_cerebellum * 100
-        fit_text += f"Cerebellar WM:  Ki = {Ki_wm_cerebellum_ml:.5f} ml/100g/min, λ = {lam_wm_cerebellum_ml:.5f} ml/100g\n"
+        fit_text += f"Cerebellar WM:  Ki = {Ki_wm_cerebellum:.5f} ml/100g/min, λ = {lambda_wm_cerebellum:.5f} ml/100g\n"
     if boundary_ctc is not None and not np.isnan(Ki_boundary):
-        Ki_boundary_ml = Ki_boundary * 6000
-        lam_boundary_ml = lambda_boundary * 100
-        fit_text += f"Boundary:       Ki = {Ki_boundary_ml:.5f} ml/100g/min, λ = {lam_boundary_ml:.5f} ml/100g"
+        fit_text += f"Boundary:       Ki = {Ki_boundary:.5f} ml/100g/min, λ = {lambda_boundary:.5f} ml/100g"
 
     ax_pat.text(0.5, -0.23, fit_text.strip(),
                 transform=ax_pat.transAxes, fontsize=10,
@@ -1765,14 +1751,19 @@ def compute_and_plot_ctcs_median(
         def perform_model_fit(C_t):
             if C_t.size == 0:
                 return (np.nan, np.nan, np.nan, None, np.array([], dtype=bool))
+
             if settings.KINETIC_MODEL.lower() == 'two_compartment':
-                Ki, lam, SD_Ki, fit_curve = two_compartment_tikhonov(
+                Ki_raw, lam_raw, SD_Ki, fit_curve = two_compartment_tikhonov(
                     C_a_slice, C_t, time_array=time_points
                 )
+                Ki = Ki_raw * 6000
+                lam = lam_raw * 100
                 return Ki, lam, SD_Ki, fit_curve, np.array([], dtype=bool)
-            else:
-                Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(C_t, C_a_slice, time_points)
-                return Ki, lam, SD_Ki, (x_patlak, y_patlak), included
+
+            Ki, lam, SD_Ki, x_patlak, y_patlak, included = patlak_analysis_plotting(
+                C_t, C_a_slice, time_points
+            )
+            return Ki, lam, SD_Ki, (x_patlak, y_patlak), included
 
         Ki_wm, lambda_wm, SD_Ki_wm, curve_wm, included_wm = perform_model_fit(C_t_wm)
         Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, curve_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
