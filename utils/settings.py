@@ -49,17 +49,34 @@ AI_MODEL_PATHS = {
     ),
 }
 
+
+def _default_data_root():
+    """Return the default root directory for datasets.
+
+    Prefers the ``P_BRAIN_DATA_DIR`` environment variable and falls back to a
+    ``Data`` folder next to the executable.
+    """
+
+    env_root = os.environ.get("P_BRAIN_DATA_DIR")
+    if env_root:
+        return os.path.abspath(env_root)
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "Data")
+
 def create_directory(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def setup_directories(log_number):
-    base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-    data_directory = os.path.join(base_path, 'Data', log_number)
+def setup_directories(log_number, data_root=None):
+    if data_root is None:
+        data_root = _default_data_root()
+    else:
+        data_root = os.path.abspath(data_root)
+
+    data_directory = os.path.join(data_root, log_number)
 
     # Look for control data if enabled
     if CONTROLS:
-        control_directory = os.path.join(base_path, 'Data', 'controls', log_number)
+        control_directory = os.path.join(data_root, 'controls', log_number)
         if os.path.isdir(control_directory):
             data_directory = control_directory
             flag_path = os.path.join(control_directory, CONTROL_FLAG_FILENAME)
