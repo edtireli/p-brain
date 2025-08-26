@@ -1,22 +1,28 @@
-import sys
+import argparse
 import subprocess
 import os
+import sys
 
-# Path to the directory containing the datasets
-data_directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
-# Get arguments from the command line
-args = sys.argv[1:]
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run p-brain on multiple datasets")
+    parser.add_argument('--data-dir', dest='data_dir', type=str,
+                        default=os.environ.get(
+                            'P_BRAIN_DATA_DIR',
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+                        ),
+                        help='Directory containing dataset folders')
+    parser.add_argument('--controls', action='store_true', help='Process control datasets')
+    parser.add_argument('--all', action='store_true', help='Process all datasets in the data directory')
+    parser.add_argument('ids', nargs='*', help='Specific dataset IDs to process')
+    return parser.parse_args()
 
-# Normalise arguments for easy checks
-args_lower = [arg.lower() for arg in args]
 
-# Flags
-use_controls = "--controls" in args_lower
-use_all = "--all" in args_lower
-
-# Collect numeric dataset IDs in the order provided
-ids = [arg for arg in args if not arg.startswith("--")]
+args = parse_args()
+data_directory = os.path.abspath(args.data_dir)
+use_controls = args.controls
+use_all = args.all
+ids = args.ids
 
 # Determine which datasets to process and whether they are controls
 datasets = []  # list of tuples (id, is_control)
@@ -63,6 +69,7 @@ command_template = "python3 main.py --id {} --mode auto"
 for id, is_control in datasets:
     command = command_template.format(id)
     env = os.environ.copy()
+    env["P_BRAIN_DATA_DIR"] = data_directory
     if is_control:
         env["PBRAIN_CONTROLS"] = "true"
     else:

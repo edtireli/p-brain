@@ -27,7 +27,7 @@ _p_-Brain is a Python toolkit for quantitative analysis of MRI data with a focus
 All core functionality resides in the `modules/` package while helper routines are located under `utils/`. Optional neural networks for artery and vein identification are stored in the `AI/` directory. A small GUI is used to select a dataset, after which a terminal menu guides the user through each processing step. For cohort processing the script `enumerator.py` can launch `main.py` for multiple subjects in sequence, enabling unattended analysis.
 
 ## 2. Directory & Data Structure
-The software expects a specific directory structure for optimal functioning. The MRI data to be analysed upon should be placed within the Data folder as follows:
+The software expects a specific directory structure for optimal functioning. By default the MRI data should be placed within the `Data` folder, though an alternative location can be supplied via the `--data-dir` command line option or by setting the `P_BRAIN_DATA_DIR` environment variable. The layout inside the chosen directory must follow this structure:
 
 ```
 data
@@ -44,7 +44,7 @@ data
 └── data_2
 ...
 ```
-Place your .PAR/.REC MRI data in the `data` directory under any folder name of your choosing. p-Brain will create the required subdirectories (e.g. `Analysis`, `Images`, `NIfTI`) automatically. NIfTI files generated from PAR/REC input or provided directly are stored under `NIfTI`, while derived figures are written to the `Images` directory.
+Place your .PAR/.REC MRI data in the `data` directory (or the directory passed via `--data-dir`) under any folder name of your choosing. p-Brain will create the required subdirectories (e.g. `Analysis`, `Images`, `NIfTI`) automatically. NIfTI files generated from PAR/REC input or provided directly are stored under `NIfTI`, while derived figures are written to the `Images` directory.
 
 ### Repository overview
 - **modules/** – menu implementations such as T1 fitting and permeability models.
@@ -74,6 +74,10 @@ python enumerator.py --all
 python enumerator.py --controls 01 02
 python enumerator.py --controls --all
 ```
+
+Both `main.py` and `enumerator.py` accept the `--data-dir` flag to point to an
+alternative dataset directory. Setting the `P_BRAIN_DATA_DIR` environment
+variable achieves the same effect.
 
 NIfTI files can also be used directly by simply creating a folder of the same name and placing the .nii files therein. This will avoid the automatic conversion from .PAR/.REC to .nii/.json. 
 

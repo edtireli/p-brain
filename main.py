@@ -35,9 +35,9 @@ def mode_choice():
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description = "Run the neuroimagining analysis tool")
-    parser.add_argument('--id', type=str, help = 'Patient ID, corresponding to folder names in data/', required = False)
-    parser.add_argument('--option', type=int, help = 'Analysis option (welcome screen)', required = False)
+    parser = argparse.ArgumentParser(description="Run the neuroimagining analysis tool")
+    parser.add_argument('--id', type=str, help='Patient ID, corresponding to folder names in data/', required=False)
+    parser.add_argument('--option', type=int, help='Analysis option (welcome screen)', required=False)
     # Optional mode argument to skip the interactive mode selection
     parser.add_argument('--mode', type=str, choices=['manual', 'auto', 'pseudo'],
                         help='Start directly in a specific analysis mode', required=False)
@@ -46,6 +46,9 @@ def parse_args():
                         required=False)
     parser.add_argument('--enable-lcurve', action='store_true',
                         help='Automatically pick Tikhonov \u03bb via L-curve')
+    parser.add_argument('--data-dir', dest='data_dir', type=str,
+                        default=os.environ.get('P_BRAIN_DATA_DIR'),
+                        help='Directory containing subject folders (default: ./Data)')
     return parser.parse_args()
 
 
@@ -141,12 +144,13 @@ def main():
     turbo_env = os.environ.get("PBRAIN_TURBO") == "1"
     set_turbo_mode(turbo_env)
 
+    data_root = args.data_dir
     if args.id:
         log_number = args.id
     else:
-        log_number = select_log_number()
-    
-    data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(log_number)
+        log_number = select_log_number(data_root)
+
+    data_directory, analysis_directory, nifti_directory, image_directory = setup_directories(log_number, data_root)
     if CONTROLS:
         filenames = control_filenames(nifti_directory)
     else:
