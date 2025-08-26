@@ -31,10 +31,22 @@ def print_banner():
 
 availability_toggled = False
 
-def select_log_number():
-    """GUI for selecting a dataset."""
+
+def select_log_number(data_root=None):
+    """GUI for selecting a dataset.
+
+    ``data_root`` specifies the directory containing subject folders. When not
+    provided, the ``P_BRAIN_DATA_DIR`` environment variable is honoured before
+    falling back to a local ``Data`` directory.
+    """
 
     global selected_log_number
+
+    if data_root is None:
+        data_root = os.environ.get("P_BRAIN_DATA_DIR")
+        if data_root is None:
+            data_root = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'Data')
+    data_root = os.path.abspath(data_root)
 
     root = tk.Tk()
     root.title('Select Log Number')
@@ -43,7 +55,6 @@ def select_log_number():
     frame = tk.Frame(root)
     frame.pack(side=tk.TOP, fill=tk.BOTH, expand=tk.YES)
 
-    data_root = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'Data')
     current_path = data_root
     log_numbers = []
 
