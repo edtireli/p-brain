@@ -60,7 +60,11 @@ def permeability_user_interface(analysis_directory):
         
         if type_choice == 'artery':
             if chosen_subtype == "Max":
-                max_file = os.listdir(os.path.join(analysis_directory, 'TSCC Data', 'Max'))[0]
+                max_dir = os.path.join(analysis_directory, 'TSCC Data', 'Max')
+                npy_files = [f for f in os.listdir(max_dir) if f.endswith('.npy') and not f.startswith('.')]
+                if not npy_files:
+                    raise FileNotFoundError(f"No .npy files found in {max_dir}.")
+                max_file = npy_files[0]
                 chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
                 chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
             else:

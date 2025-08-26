@@ -162,7 +162,11 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
             avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
             
             # Get Patlak data
-            max_file = os.listdir(os.path.join(analysis_directory, 'TSCC Data', 'Max'))[0]
+            max_dir = os.path.join(analysis_directory, 'TSCC Data', 'Max')
+            npy_files = [f for f in os.listdir(max_dir) if f.endswith('.npy') and not f.startswith('.')]
+            if not npy_files:
+                raise FileNotFoundError(f"No .npy files found in {max_dir}.")
+            max_file = npy_files[0]
             chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
             chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
             C_a = np.load(os.path.join(analysis_directory, 'TSCC Data', 'Max', f'TSCC_slice_{chosen_venous_slice}_{chosen_arterial_slice}.npy'))

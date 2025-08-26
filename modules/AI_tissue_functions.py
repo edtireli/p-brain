@@ -36,6 +36,14 @@ from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 import re
 
+def _get_first_npy(folder):
+    npy_files = [f for f in os.listdir(folder) if f.endswith('.npy') and not f.startswith('.')]
+    if not npy_files:
+        raise FileNotFoundError(f"No .npy files found in {folder}.")
+    if len(npy_files) > 1:
+        print(f"[!] Warning: multiple .npy files found in {folder}; using {npy_files[0]}.")
+    return npy_files[0]
+
 def patlak_total(C_t, C_a, t):
     """Optional drop correction then Patlak fit."""
     if C_t.size == 0:
@@ -1507,12 +1515,7 @@ def compute_and_plot_ctcs_median(
 
     # Load C_a once
     max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-    npy_files = [f for f in os.listdir(max_folder) if f.endswith('.npy')]
-
-    if len(npy_files) != 1:
-        raise ValueError(f"Expected exactly one .npy file in {max_folder}, but found {len(npy_files)}.")
-
-    ca_file = npy_files[0]
+    ca_file = _get_first_npy(max_folder)
     C_a_full = np.load(os.path.join(max_folder, ca_file))
 
     all_patlak_data = []
@@ -2556,8 +2559,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     )
 
     max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-    npy_files = [f for f in os.listdir(max_folder) if f.endswith('.npy')]
-    ca_file = npy_files[0]
+    ca_file = _get_first_npy(max_folder)
     C_a_full = np.load(os.path.join(max_folder, ca_file))
 
     output_dir = analysis_directory
