@@ -2437,7 +2437,7 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
     if os.path.exists(ai_dir):
         dst_dir = os.path.join(image_directory, f'AI{suffix}')
         if os.path.exists(dst_dir):
-            shutil.rmtree(dst_dir)
+            shutil.rmtree(dst_dir, ignore_errors=True)
         os.rename(ai_dir, dst_dir)
 
     if suffix == '_two_compartment':
@@ -2597,7 +2597,7 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
     for m in models:
         print(f'[!] Running {m} model')
         if os.path.exists(ai_base):
-            shutil.rmtree(ai_base)
+            shutil.rmtree(ai_base, ignore_errors=True)
         os.makedirs(ai_base, exist_ok=True)
 
         # Copy screenshot into the freshly created AI directory if available
