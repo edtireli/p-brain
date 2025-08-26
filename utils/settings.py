@@ -8,7 +8,7 @@ matplotlib.use("TkAgg")
 # Global toggle for analysing control data. The flag can also be
 # overridden by setting the environment variable ``PBRAIN_CONTROLS`` to
 # ``1``/``true``.
-CONTROLS = 1#os.environ.get("PBRAIN_CONTROLS", "False").lower() in ("1", "true", "yes")
+CONTROLS = 0#os.environ.get("PBRAIN_CONTROLS", "False").lower() in ("1", "true", "yes")
 CONTROL_FLAG_FILENAME = "control.json"
 
 # Toggle multiprocessing for compute-heavy routines
