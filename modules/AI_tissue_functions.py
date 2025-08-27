@@ -521,34 +521,36 @@ def segmentation(
                 "FastSurfer not found, ensure correct installation and configuration of path."
             )
 
-        # Run FastSurfer if the segmentation file doesn't exist or rerun is forced
-        if rerun or not os.path.exists(seg_mgz_path):
-            if os.path.exists(seg_mgz_path):
+        seg_stats_path = os.path.join(output_dir, sid, "stats", "asegdkt.stats")
+
+        # Run FastSurfer if the segmentation or stats files don't exist or rerun is forced
+        if rerun or not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
+            if os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path):
                 print("Rerunning FastSurfer segmentation...")
             else:
-                print("Segmentation file not found, running FastSurfer...")
+                print("Segmentation output not found, running FastSurfer...")
             if apple_metal:
                 command = (
                     f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
-                    f"{fastsurfer_path} --seg_only --device mps "
+                    f"{fastsurfer_path} --device mps "
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
                 )
             else:
                 command = (
-                    f"{fastsurfer_path} --seg_only "
+                    f"{fastsurfer_path} "
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
                 )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            if result.returncode != 0 or not os.path.exists(seg_mgz_path):
+            if result.returncode != 0 or not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
                 print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
                 if apple_metal:
                     command = (
                         f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
-                        f"{fastsurfer_path} --seg_only --device mps "
+                        f"{fastsurfer_path} --device mps "
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "
@@ -557,7 +559,7 @@ def segmentation(
                     )
                 else:
                     command = (
-                        f"{fastsurfer_path} --seg_only "
+                        f"{fastsurfer_path} "
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "
@@ -565,7 +567,7 @@ def segmentation(
                         f"--no_cereb"
                     )
                 subprocess.run(command, shell=True)
-                if not os.path.exists(seg_mgz_path):
+                if not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
                     raise RuntimeError("FastSurfer segmentation failed even with vox_size 1")
         else:
             print("Segmentation file already exists, skipping FastSurfer segmentation.")
