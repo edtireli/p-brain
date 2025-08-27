@@ -32,6 +32,14 @@ AUTO_LAMBDA_CANDIDATES = np.logspace(-2, 2, 30)
 # Holds the most recently chosen value when ``AUTO_LAMBDA`` is True
 AUTO_LAMBDA_VALUE = None
 
+# Number of slices to omit from the inferior (bottom) and superior (top)
+# ends when computing global Ki for white matter, cortical grey matter
+# and boundary tissues.  These can be overridden via the environment
+# variables ``P_BRAIN_GLOBAL_KI_SKIP_BOTTOM`` and
+# ``P_BRAIN_GLOBAL_KI_SKIP_TOP``.
+GLOBAL_KI_SKIP_BOTTOM = int(os.environ.get("P_BRAIN_GLOBAL_KI_SKIP_BOTTOM", 2))
+GLOBAL_KI_SKIP_TOP = int(os.environ.get("P_BRAIN_GLOBAL_KI_SKIP_TOP", 2))
+
 # Paths to the neural network models used for artery and vein ROI extraction.
 # These can be overridden by environment variables to use custom models.
 AI_MODEL_PATHS = {
@@ -177,6 +185,8 @@ def save_run_settings(analysis_directory, parameters):
         "AI_MODEL_PATHS": AI_MODEL_PATHS,
         "CONTROLS": CONTROLS,
         "TIKHONOV_LAMBDA": TIKHONOV_LAMBDA,
+        "GLOBAL_KI_SKIP_BOTTOM": GLOBAL_KI_SKIP_BOTTOM,
+        "GLOBAL_KI_SKIP_TOP": GLOBAL_KI_SKIP_TOP,
     })
     if AUTO_LAMBDA:
         settings["AUTO_LAMBDA_VALUE"] = AUTO_LAMBDA_VALUE

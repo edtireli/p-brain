@@ -273,8 +273,15 @@ The Tikhonov parameter controlling the two-compartment fit is configured via
 `--lambda` on the command line or the `P_BRAIN_LAMBDA` environment variable.
 The default value is 5.0 and can also be changed in `utils/settings.py`.
 
+### Global Ki slice exclusion
+The computation of global Ki for white matter, cortical grey matter and the
+boundary region ignores the first and last two slices of the volume by default.
+Adjust the number of excluded slices with the environment variables
+`P_BRAIN_GLOBAL_KI_SKIP_BOTTOM` and `P_BRAIN_GLOBAL_KI_SKIP_TOP` or modify the
+corresponding values in `utils/settings.py`.
+
 ## 7. Contributions
-For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue. 
+For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue.
 
 ## 8. License
 This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
