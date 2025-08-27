@@ -1531,6 +1531,8 @@ def compute_and_plot_ctcs_median(
     from scipy.ndimage import binary_dilation
 
     n_slices = t2_img.shape[2]
+    skip_bottom = settings.GLOBAL_KI_SKIP_BOTTOM
+    skip_top = settings.GLOBAL_KI_SKIP_TOP
 
     # Load C_a once
     max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
@@ -1687,16 +1689,25 @@ def compute_and_plot_ctcs_median(
         if boundary and len(boundary_indices) > 0:
             boundary_ctcs = process_ctcs(boundary_indices)
 
-        # Add the valid CTCs from this slice to the total lists
-        wm_ctcs_total.extend(wm_ctcs)
-        cortical_gm_ctcs_total.extend(cortical_gm_ctcs)
+        # Add the valid CTCs from this slice to the total lists used for
+        # global Ki calculations.  White matter, cortical grey matter and
+        # boundary contributions can optionally exclude slices from the
+        # inferior and superior ends of the volume.
+        include_global = (i >= skip_bottom) and (i < n_slices - skip_top)
+        if include_global:
+            wm_ctcs_total.extend(wm_ctcs)
+            cortical_gm_ctcs_total.extend(cortical_gm_ctcs)
+            if boundary and boundary_ctcs:
+                boundary_ctcs_total.extend(boundary_ctcs)
+        else:
+            # Even if excluded from global totals we still compute per-slice
+            # and per-voxel values.
+            pass
         subcortical_gm_ctcs_total.extend(subcortical_gm_ctcs)
         gm_brainstem_ctcs_total.extend(gm_brainstem_ctcs)
         gm_cerebellum_ctcs_total.extend(gm_cerebellum_ctcs)
         wm_cerebellum_ctcs_total.extend(wm_cerebellum_ctcs)
         wm_cc_ctcs_total.extend(wm_cc_ctcs)
-        if boundary and boundary_ctcs:
-            boundary_ctcs_total.extend(boundary_ctcs)
 
         # Compute median CTCs if valid CTCs are available
         avg_wm_ctc = np.median(wm_ctcs, axis=0) if wm_ctcs else np.array([])
