@@ -1583,11 +1583,16 @@ def compute_and_plot_ctcs_median(
     if boundary:
         Ki_boundary_image = np.full(data_4d.shape[:3], np.nan)
 
-    # Initialize per-voxel Ki and CBF arrays if needed
+    # Initialize per-voxel Ki-related arrays if needed
     if compute_per_voxel_Ki:
         Ki_per_voxel = np.full(data_4d.shape[:3], np.nan)
+        lambda_per_voxel = np.full(data_4d.shape[:3], np.nan)
+        SD_per_voxel = np.full(data_4d.shape[:3], np.nan)
     if compute_per_voxel_CBF:
         CBF_per_voxel = np.full(data_4d.shape[:3], np.nan)
+
+    if boundary:
+        boundary_mask_full = np.zeros(data_4d.shape[:3], dtype=bool)
 
     # Add tqdm progress bar to the loop
     for i in tqdm(range(n_slices), desc="Processing slices"):
@@ -2000,9 +2005,11 @@ def compute_and_plot_ctcs_median(
             brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
             brain_indices = np.argwhere(brain_mask_slice)
 
-            # Initialize K_i and CBF slice arrays
+            # Initialize per-voxel slice arrays
             if compute_per_voxel_Ki:
                 Ki_slice = np.full(brain_mask_slice.shape, np.nan)
+                lam_slice = np.full(brain_mask_slice.shape, np.nan)
+                SD_slice = np.full(brain_mask_slice.shape, np.nan)
             if compute_per_voxel_CBF:
                 CBF_slice = np.full(brain_mask_slice.shape, np.nan)
 
@@ -2027,8 +2034,12 @@ def compute_and_plot_ctcs_median(
 
                 if compute_per_voxel_Ki:
                     # Perform Patlak analysis
-                    Ki_voxel, _, _, _, _, _ = patlak_analysis_plotting(C_t_voxel, C_a_voxel, time_points_voxel)
+                    Ki_voxel, lam_voxel, SD_voxel, _, _, _ = patlak_analysis_plotting(
+                        C_t_voxel, C_a_voxel, time_points_voxel
+                    )
                     Ki_slice[x, y] = Ki_voxel
+                    lam_slice[x, y] = lam_voxel
+                    SD_slice[x, y] = SD_voxel
 
                 if compute_per_voxel_CBF:
                     delta_t = np.diff(time_points_voxel)[0]
@@ -2050,8 +2061,13 @@ def compute_and_plot_ctcs_median(
             # Store the K_i and/or CBF slice in the 3D arrays
             if compute_per_voxel_Ki:
                 Ki_per_voxel[:, :, i] = Ki_slice
+                lambda_per_voxel[:, :, i] = lam_slice
+                SD_per_voxel[:, :, i] = SD_slice
             if compute_per_voxel_CBF:
                 CBF_per_voxel[:, :, i] = CBF_slice
+
+        if boundary:
+            boundary_mask_full[:, :, i] = boundary_mask if boundary_mask is not None else False
 
     # Save Ki images as NIfTI files
     affine = nib.load(dce_path).affine
@@ -2128,6 +2144,88 @@ def compute_and_plot_ctcs_median(
         CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel.nii.gz')
         nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
         print(f"CBF per voxel saved to {CBF_per_voxel_path}")
+
+    # ------------------------------------------------------------------
+    # Per-voxel Ki statistics and JSON output
+    # ------------------------------------------------------------------
+    if compute_per_voxel_Ki:
+        voxelwise_slice_data = []
+        for i in range(n_slices):
+            def median_for(mask, skip=False):
+                m = mask.copy()
+                if skip:
+                    if i < skip_bottom or i >= n_slices - skip_top:
+                        m[...] = False
+                vals_Ki = Ki_per_voxel[:, :, i][m]
+                vals_lam = lambda_per_voxel[:, :, i][m]
+                vals_SD = SD_per_voxel[:, :, i][m]
+                return (
+                    float(np.nanmedian(vals_Ki)) if vals_Ki.size else float('nan'),
+                    float(np.nanmedian(vals_SD)) if vals_SD.size else float('nan'),
+                    float(np.nanmedian(vals_lam)) if vals_lam.size else float('nan'),
+                    int(np.sum(m))
+                )
+
+            wm_Ki, wm_SD, wm_lam, wm_vox = median_for(wm_mask_dce[:, :, i], skip=True)
+            cgm_Ki, cgm_SD, cgm_lam, cgm_vox = median_for(cortical_gm_mask_dce[:, :, i], skip=True)
+            sgm_Ki, sgm_SD, sgm_lam, sgm_vox = median_for(subcortical_gm_mask_dce[:, :, i])
+            bs_Ki, bs_SD, bs_lam, bs_vox = median_for(gm_brainstem_mask_dce[:, :, i])
+            gc_Ki, gc_SD, gc_lam, gc_vox = median_for(gm_cerebellum_mask_dce[:, :, i])
+            wc_Ki, wc_SD, wc_lam, wc_vox = median_for(wm_cerebellum_mask_dce[:, :, i])
+            cc_Ki, cc_SD, cc_lam, cc_vox = median_for(wm_cc_mask_dce[:, :, i])
+            slice_entry = {
+                'slice': i + 1,
+                'white_matter_voxelwise': {'Ki': wm_Ki, 'SD_Ki': wm_SD, 'lambda': wm_lam, 'voxel_count': wm_vox},
+                'cortical_gray_matter_voxelwise': {'Ki': cgm_Ki, 'SD_Ki': cgm_SD, 'lambda': cgm_lam, 'voxel_count': cgm_vox},
+                'subcortical_gray_matter_voxelwise': {'Ki': sgm_Ki, 'SD_Ki': sgm_SD, 'lambda': sgm_lam, 'voxel_count': sgm_vox},
+                'gm_brainstem_voxelwise': {'Ki': bs_Ki, 'SD_Ki': bs_SD, 'lambda': bs_lam, 'voxel_count': bs_vox},
+                'gm_cerebellum_voxelwise': {'Ki': gc_Ki, 'SD_Ki': gc_SD, 'lambda': gc_lam, 'voxel_count': gc_vox},
+                'wm_cerebellum_voxelwise': {'Ki': wc_Ki, 'SD_Ki': wc_SD, 'lambda': wc_lam, 'voxel_count': wc_vox},
+                'wm_cc_voxelwise': {'Ki': cc_Ki, 'SD_Ki': cc_SD, 'lambda': cc_lam, 'voxel_count': cc_vox}
+            }
+            if boundary:
+                b_Ki, b_SD, b_lam, b_vox = median_for(boundary_mask_full[:, :, i], skip=True)
+                slice_entry['boundary_voxelwise'] = {'Ki': b_Ki, 'SD_Ki': b_SD, 'lambda': b_lam, 'voxel_count': b_vox}
+            voxelwise_slice_data.append(slice_entry)
+
+        json_voxel_slice = os.path.join(analysis_directory, 'AI_values_voxelwise.json')
+        with open(json_voxel_slice, 'w') as jf:
+            json.dump(voxelwise_slice_data, jf, indent=4)
+
+        # Global medians across slices
+        slice_mask = np.ones(n_slices, dtype=bool)
+        slice_mask[:skip_bottom] = False
+        slice_mask[n_slices - skip_top:] = False
+
+        def global_median(mask, skip=False):
+            m = mask.copy()
+            if skip:
+                m[:, :, ~slice_mask] = False
+            vals_Ki = Ki_per_voxel[m]
+            vals_lam = lambda_per_voxel[m]
+            vals_SD = SD_per_voxel[m]
+            return {
+                'Ki': float(np.nanmedian(vals_Ki)) if vals_Ki.size else float('nan'),
+                'SD_Ki': float(np.nanmedian(vals_SD)) if vals_SD.size else float('nan'),
+                'lambda': float(np.nanmedian(vals_lam)) if vals_lam.size else float('nan'),
+                'voxel_count': int(np.sum(m))
+            }
+
+        voxelwise_global = {
+            'white_matter_voxelwise_total': global_median(wm_mask_dce, skip=True),
+            'cortical_gm_voxelwise_total': global_median(cortical_gm_mask_dce, skip=True),
+            'subcortical_gm_voxelwise_total': global_median(subcortical_gm_mask_dce),
+            'gm_brainstem_voxelwise_total': global_median(gm_brainstem_mask_dce),
+            'gm_cerebellum_voxelwise_total': global_median(gm_cerebellum_mask_dce),
+            'wm_cerebellum_voxelwise_total': global_median(wm_cerebellum_mask_dce),
+            'wm_cc_voxelwise_total': global_median(wm_cc_mask_dce)
+        }
+        if boundary:
+            voxelwise_global['boundary_voxelwise_total'] = global_median(boundary_mask_full, skip=True)
+
+        json_voxel_global = os.path.join(analysis_directory, 'AI_values_voxelwise_total.json')
+        with open(json_voxel_global, 'w') as jf:
+            json.dump(voxelwise_global, jf, indent=4)
 
     # Save all Patlak data to JSON file after processing all slices
     json_file_path = os.path.join(analysis_directory, "AI_values_median.json")
