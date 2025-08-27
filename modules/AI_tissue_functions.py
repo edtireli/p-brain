@@ -532,14 +532,14 @@ def segmentation(
             if apple_metal:
                 command = (
                     f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
-                    f"{fastsurfer_path} --seg_only --segstats --device mps "
+                    f"{fastsurfer_path} --device mps "
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
                 )
             else:
                 command = (
-                    f"{fastsurfer_path} --seg_only --segstats "
+                    f"{fastsurfer_path} "
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
@@ -550,7 +550,7 @@ def segmentation(
                 if apple_metal:
                     command = (
                         f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
-                        f"{fastsurfer_path} --seg_only --segstats --device mps "
+                        f"{fastsurfer_path} --device mps "
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "
@@ -559,7 +559,7 @@ def segmentation(
                     )
                 else:
                     command = (
-                        f"{fastsurfer_path} --seg_only --segstats "
+                        f"{fastsurfer_path} "
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "
