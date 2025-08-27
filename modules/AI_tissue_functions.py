@@ -18,6 +18,7 @@ import subprocess
 import os
 import multiprocessing
 import shutil
+import warnings
 import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
@@ -485,7 +486,13 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
     for j in range(n_slices, n_rows * n_cols):
         fig.delaxes(axes.flatten()[j])
 
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="This figure includes Axes that are not compatible with tight_layout",
+            category=UserWarning,
+        )
+        plt.tight_layout()
     os.makedirs(os.path.join(image_directory, 'AI', 'Segmentation'), exist_ok=True)
     plt.savefig(os.path.join(image_directory, 'AI', 'Segmentation', 'T2_WM_GM_masks.png'))
     if not turbo_mode:
@@ -763,7 +770,13 @@ def plot_total_ct_and_patlak(time_points, C_t_total, C_a,
         ax2.text(0.5, 0.5, 'No fit', ha='center', va='center')
 
 
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="This figure includes Axes that are not compatible with tight_layout",
+            category=UserWarning,
+        )
+        plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
@@ -1479,7 +1492,13 @@ def plot_ctcs_and_patlak(
                 ha='center', va='top',
                 bbox=dict(facecolor='white', alpha=0.75))
 
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="This figure includes Axes that are not compatible with tight_layout",
+            category=UserWarning,
+        )
+        plt.tight_layout()
     if save_path:
         # Ensure the destination directory exists before saving
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
