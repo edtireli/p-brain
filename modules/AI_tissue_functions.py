@@ -521,11 +521,26 @@ def segmentation(
                 "FastSurfer not found, ensure correct installation and configuration of path."
             )
 
-        seg_stats_path = os.path.join(output_dir, sid, "stats", "asegdkt.stats")
+        # FastSurfer changes the naming of the generated stats file depending on
+        # the version.  Older releases used ``asegdkt.stats`` while newer
+        # versions ship ``aseg+DKT.stats``.  To support both we consider the
+        # possible names when checking for existing results.
+        seg_stats_candidates = [
+            os.path.join(output_dir, sid, "stats", "aseg+DKT.stats"),
+            os.path.join(output_dir, sid, "stats", "asegdkt.stats"),
+        ]
+
+        seg_stats_path = next(
+            (p for p in seg_stats_candidates if os.path.exists(p)),
+            seg_stats_candidates[0],
+        )
+
+        def seg_stats_exists():
+            return any(os.path.exists(p) for p in seg_stats_candidates)
 
         # Run FastSurfer if the segmentation or stats files don't exist or rerun is forced
-        if rerun or not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
-            if os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path):
+        if rerun or not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
+            if os.path.exists(seg_mgz_path) and seg_stats_exists():
                 print("Rerunning FastSurfer segmentation...")
             else:
                 print("Segmentation output not found, running FastSurfer...")
@@ -545,7 +560,7 @@ def segmentation(
                     f"--sd {output_dir}"
                 )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            if result.returncode != 0 or not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
+            if result.returncode != 0 or not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
                 print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
                 if apple_metal:
                     command = (
@@ -567,7 +582,7 @@ def segmentation(
                         f"--no_cereb"
                     )
                 subprocess.run(command, shell=True)
-                if not (os.path.exists(seg_mgz_path) and os.path.exists(seg_stats_path)):
+                if not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
                     raise RuntimeError("FastSurfer segmentation failed even with vox_size 1")
         else:
             print("Segmentation file already exists, skipping FastSurfer segmentation.")
