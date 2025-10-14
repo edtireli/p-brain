@@ -121,14 +121,20 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
         bad_mask = np.zeros_like(C_t, dtype=bool)
 
     # --- Patlak co-ordinates (never introduce NaNs here) --------
+    t = np.asarray(t, dtype=float)
     dt = np.diff(t)
     x = np.concatenate(([0], np.cumsum(C_a[:-1] * dt))) / C_a
     y = C_t / C_a
 
     # points that *could* be used
-    finite   = np.isfinite(x) & np.isfinite(y) & (C_a != 0)
-    # classic ⅓-to-⅔ window
-    w        = (x >= x[finite].max() / 3) & (x <= x[finite].max())
+    finite   = np.isfinite(x) & np.isfinite(y) & np.isfinite(t) & (C_a != 0)
+    # Time-based ⅓-to-end window keeps the last ⅔ of the acquisition.
+    if finite.any():
+        t_finite = t[finite]
+        t_start = t_finite.min() + (t_finite.max() - t_finite.min()) / 3
+        w = (t >= t_start) & (t <= t_finite.max())
+    else:
+        w = np.zeros_like(t, dtype=bool)
     include  = finite & w & (~bad_mask)
 
     # bail-out if <2 points
@@ -1185,15 +1191,19 @@ def patlak_analysis_plotting(c_tissue, c_input, time):
     if len(time) < 2:
         return (np.nan,)*3 + (np.array([]),)*3
 
+    time = np.asarray(time, dtype=float)
     delta_t = np.diff(time)
     y = c_tissue / c_input
     x = np.concatenate(([0], np.cumsum(c_input[:-1]*delta_t))) / c_input
-    good = (~np.isnan(x)) & (~np.isnan(y)) & (c_input != 0)
+    good = (~np.isnan(x)) & (~np.isnan(y)) & (~np.isnan(time)) & (c_input != 0)
 
-    # 1/3–2/3 Patlak window
-    x_max = np.nanmax(x[good]) if good.any() else np.nan
-    w = (x >= x_max/3) & (x <= x_max)
-    good &= w
+    # Time-based 1/3–to–end Patlak window to ensure the last 2/3 of the
+    # acquisition is considered regardless of AIF scaling.
+    if good.any():
+        t_good = time[good]
+        t_start = t_good.min() + (t_good.max() - t_good.min()) / 3
+        window = (time >= t_start) & (time <= t_good.max())
+        good &= window
 
     if good.sum() < 2:
         return (np.nan,)*3 + (x, y, good)
