@@ -150,6 +150,6 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
     delta_t = np.diff(time_array)[0]
     A = construct_convolution_matrix(c_input, delta_t)
     residue = tikhonov_regularization(A, c_tissue, lambd)
-    CBF = residue[0] * 6000
+    CBF = max(residue[0] * 6000, 0.0)
 
     return Ki, lam, vp_fitted, CBF, fitted_curve

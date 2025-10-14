@@ -69,7 +69,7 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     delta_t = np.diff(time_array)[0]
     A = construct_convolution_matrix(aif, delta_t)
     tikh = tikhonov_regularization(A, tissue_curve, lambd)
-    CBF = tikh[0] * 6000
+    CBF = max(tikh[0] * 6000, 0.0)
     return Ki, lam, SD_Ki, fit_curve
 
 def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
@@ -2126,7 +2126,7 @@ def compute_and_plot_ctcs_median(
                     try:
                         R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
                         # R[0] represents flow in 1/s. Scale to ml/100g/min.
-                        CBF_voxel = R_estimated[0] * 6000
+                        CBF_voxel = max(R_estimated[0] * 6000, 0.0)
                         CBF_slice[x, y] = CBF_voxel
                     except np.linalg.LinAlgError:
                         continue  # Skip if the matrix is singular
