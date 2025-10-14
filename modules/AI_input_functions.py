@@ -229,7 +229,13 @@ def preprocess_data(filename):
     normalized_data = (time_averaged_data - time_averaged_data.min()) / (time_averaged_data.max() - time_averaged_data.min())
     return normalized_data, mri_data
 
-def extract_and_accumulate_rois(rotated_data, slice_classifier, roi_model, choice):
+def extract_and_accumulate_rois(
+    rotated_data,
+    slice_classifier,
+    roi_model,
+    choice,
+    slice_relevance_threshold=0.5,
+):
     relevant_slices = []
     relevant_rois = []
     original_slices = []
@@ -244,7 +250,7 @@ def extract_and_accumulate_rois(rotated_data, slice_classifier, roi_model, choic
 
         slice_relevance = slice_classifier.predict(resized_slice_expanded)[0][0]
 
-        if slice_relevance > 0.5:
+        if slice_relevance > slice_relevance_threshold:
             print(f"Slice {slice_index} is classified as relevant (probability: {slice_relevance:.2f}).")
             predicted_mask = roi_model.predict(resized_slice_expanded).squeeze()
             threshold = 0.5 * predicted_mask.max()
@@ -257,6 +263,64 @@ def extract_and_accumulate_rois(rotated_data, slice_classifier, roi_model, choic
             slice_labels.append(choice)
 
     return original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels
+
+
+def _describe_choice(choice):
+    _, subtype = choice2type(choice)
+    return subtype
+
+
+def extract_rois_with_fallback(
+    rotated_data,
+    slice_classifier,
+    roi_model,
+    choice,
+    slice_relevance_thresholds=(0.5, 0.3),
+):
+    if not slice_relevance_thresholds:
+        slice_relevance_thresholds = (0.5,)
+
+    choice_description = _describe_choice(choice)
+    last_result = ([], [], [], [], {})
+
+    for idx, threshold in enumerate(slice_relevance_thresholds):
+        result = extract_and_accumulate_rois(
+            rotated_data,
+            slice_classifier,
+            roi_model,
+            choice,
+            slice_relevance_threshold=threshold,
+        )
+
+        if result[2]:
+            if idx > 0:
+                print(
+                    colored(
+                        f"{choice_description} slices detected after lowering the threshold to {threshold:.2f}.",
+                        "yellow",
+                    )
+                )
+            return result
+
+        last_result = result
+
+        if idx < len(slice_relevance_thresholds) - 1:
+            print(
+                colored(
+                    f"No {choice_description} slices detected with threshold {threshold:.2f}. "
+                    f"Retrying with {slice_relevance_thresholds[idx + 1]:.2f}...",
+                    "yellow",
+                )
+            )
+
+    print(
+        colored(
+            f"No {choice_description} slices detected even after lowering the threshold.",
+            "red",
+        )
+    )
+
+    return last_result
 
 def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_rois, slice_labels, image_directory):
     global turbo_mode
@@ -324,8 +388,23 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
 
     rotated_data, mri_data = preprocess_data(filename)
 
-    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = extract_and_accumulate_rois(rotated_data, slice_classifier_rica, rica_roi_model, choice=3)
-    ss_orig_slices, ss_slices, ss_rois, ss_labels, ss_voxels = extract_and_accumulate_rois(rotated_data, slice_classifier_ss, ss_roi_model, choice=1)
+    slice_thresholds = (0.5, 0.3)
+
+    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = extract_rois_with_fallback(
+        rotated_data,
+        slice_classifier_rica,
+        rica_roi_model,
+        choice=3,
+        slice_relevance_thresholds=slice_thresholds,
+    )
+
+    ss_orig_slices, ss_slices, ss_rois, ss_labels, ss_voxels = extract_rois_with_fallback(
+        rotated_data,
+        slice_classifier_ss,
+        ss_roi_model,
+        choice=1,
+        slice_relevance_thresholds=slice_thresholds,
+    )
 
     all_orig_slices = rica_orig_slices + ss_orig_slices
     all_slices = rica_slices + ss_slices
