@@ -1252,6 +1252,7 @@ def plot_ctcs_and_patlak(
     wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
     wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
     avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
+    time_points, C_a,
     x_patlak_wm, y_patlak_wm, Ki_wm, lambda_wm,
     x_patlak_cortical_gm, y_patlak_cortical_gm, Ki_cortical_gm, lambda_cortical_gm,
     x_patlak_subcortical_gm, y_patlak_subcortical_gm, Ki_subcortical_gm, lambda_subcortical_gm,
@@ -1296,15 +1297,16 @@ def plot_ctcs_and_patlak(
             ax.imshow(np.rot90(rgba_img), interpolation='none')
 
     # --------------- figure set-up --------------
-    fig  = plt.figure(figsize=(14, 18))
-    gs   = GridSpec(3, 2, figure=fig,
-                    height_ratios=[1, 1, 1], width_ratios=[1, 1])
+    fig  = plt.figure(figsize=(14, 22))
+    gs   = GridSpec(4, 2, figure=fig,
+                    height_ratios=[1, 1, 1, 1], width_ratios=[1, 1])
     gs.update(hspace=0.4)
 
     ax_t2  = fig.add_subplot(gs[0, 0])
     ax_dce = fig.add_subplot(gs[0, 1])
-    ax_ctc = fig.add_subplot(gs[1, :])
-    ax_pat = fig.add_subplot(gs[2, :])
+    ax_aif = fig.add_subplot(gs[1, :])
+    ax_ctc = fig.add_subplot(gs[2, :])
+    ax_pat = fig.add_subplot(gs[3, :])
 
     # ---------------- T2 / DCE panels ----------------
     t2_vmin, t2_vmax   = np.percentile(t2_img_slice, (1, 99))
@@ -1377,23 +1379,47 @@ def plot_ctcs_and_patlak(
         overlay_mask(ax_dce, boundary_dce_r, col['boundary'])
     ax_dce.set_title(f'DCE Slice {slice_idx} with masks'); ax_dce.axis('off')
 
+    # ---------------- Input function panel -----------------
+    ax_aif.set_facecolor('#f7f7f7')
+    if C_a is not None and np.asarray(C_a).size and time_points is not None and np.asarray(time_points).size:
+        t_arr = np.asarray(time_points)
+        C_a_arr = np.asarray(C_a)
+        n = min(t_arr.size, C_a_arr.size)
+        t_arr = t_arr[:n]
+        C_a_arr = C_a_arr[:n]
+        ax_aif.plot(t_arr, C_a_arr, color='purple', lw=2, label='Input function')
+        ax_aif.set_title('Maximum time-shifted input function')
+        ax_aif.set_xlabel('Time (s)')
+        ax_aif.set_ylabel('C_a(t)')
+        ax_aif.grid(True)
+        ax_aif.legend(loc='upper right')
+    else:
+        ax_aif.set_visible(False)
+
     # ---------------- CTC panel -----------------
     ax_ctc.set_facecolor('#f7f7f7')
 
     # helper to add curve, points & build bad-mask list
-    union_len = 0
     bad_masks = []
+    t_arr = np.asarray(time_points) if time_points is not None else None
 
     def add_curve(ctc, label, colour, bad_mask):
-        nonlocal union_len
         if ctc is None or not ctc.size:
             return
-        ax_ctc.plot(ctc, label=label, color=colour)
+        if t_arr is not None and t_arr.size >= ctc.size:
+            x_vals = t_arr[:ctc.size]
+        else:
+            x_vals = np.arange(ctc.size)
+        ax_ctc.plot(x_vals, ctc, label=label, color=colour)
         if bad_mask is not None and bad_mask.any():
-            ax_ctc.scatter(np.where(bad_mask), ctc[bad_mask],
+            bad_mask = bad_mask[:ctc.size]
+            if t_arr is not None and t_arr.size >= ctc.size:
+                bad_times = t_arr[:ctc.size][bad_mask]
+            else:
+                bad_times = np.where(bad_mask)[0]
+            ax_ctc.scatter(bad_times, ctc[bad_mask],
                            facecolors='none', edgecolors='black', s=50)
             bad_masks.append(bad_mask.copy())
-            union_len = max(union_len, bad_mask.size)
 
     add_curve(avg_wm_ctc,              'Cortical WM',   'blue',      bad_wm)
     add_curve(avg_cortical_gm_ctc,     'Cortical GM',   'red',       bad_cortical_gm)
@@ -1406,24 +1432,39 @@ def plot_ctcs_and_patlak(
 
     # ----------- compute & shade UNION of bad regions -----------
     if bad_masks:
-        # pad masks so they all have equal length
-        unified = np.zeros(union_len, dtype=bool)
-        for m in bad_masks:
-            pad = union_len - m.size
-            if pad > 0:
-                m = np.pad(m, (0, pad), constant_values=False)
-            unified |= m
+        if t_arr is not None and t_arr.size:
+            union_len = min(t_arr.size, max(m.size for m in bad_masks))
+            unified = np.zeros(union_len, dtype=bool)
+            for m in bad_masks:
+                unified |= m[:union_len]
 
-        # find contiguous True blocks
-        idx = np.where(unified)[0]
-        if idx.size:
-            boundaries = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
-            for block in boundaries:
-                ax_ctc.axvspan(block[0], block[-1], color='grey', alpha=0.3)
+            idx = np.where(unified)[0]
+            if idx.size:
+                boundaries = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+                for block in boundaries:
+                    ax_ctc.axvspan(t_arr[block[0]], t_arr[block[-1]], color='grey', alpha=0.3)
+        else:
+            union_len = max(m.size for m in bad_masks)
+            unified = np.zeros(union_len, dtype=bool)
+            for m in bad_masks:
+                pad = union_len - m.size
+                if pad > 0:
+                    m = np.pad(m, (0, pad), constant_values=False)
+                unified |= m
+
+            idx = np.where(unified)[0]
+            if idx.size:
+                boundaries = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+                for block in boundaries:
+                    ax_ctc.axvspan(block[0], block[-1], color='grey', alpha=0.3)
 
     ax_ctc.set_title('Concentration functions')
     ax_ctc.legend(loc='upper right')
     ax_ctc.grid(True)
+    if t_arr is not None and t_arr.size:
+        ax_ctc.set_xlabel('Time (s)')
+    else:
+        ax_ctc.set_xlabel('Frames')
 
 
     # ---------------- Patlak panel (bottom) ------------------
@@ -1802,6 +1843,20 @@ def compute_and_plot_ctcs_median(
         else:
             C_t_boundary = np.array([])
 
+        def trim_mask(mask):
+            if mask is None or not getattr(mask, 'size', 0):
+                return mask
+            return mask[:min_length]
+
+        bad_wm = trim_mask(bad_wm)
+        bad_cortical_gm = trim_mask(bad_cortical_gm)
+        bad_subcortical_gm = trim_mask(bad_subcortical_gm)
+        bad_gm_brainstem = trim_mask(bad_gm_brainstem)
+        bad_gm_cerebellum = trim_mask(bad_gm_cerebellum)
+        bad_wm_cerebellum = trim_mask(bad_wm_cerebellum)
+        bad_wm_cc = trim_mask(bad_wm_cc)
+        bad_boundary = trim_mask(bad_boundary)
+
         # Perform kinetic model fit for each tissue type
         def perform_model_fit(C_t):
             if C_t.size == 0:
@@ -1901,39 +1956,40 @@ def compute_and_plot_ctcs_median(
             t2_img[:, :, i], data_4d[:, :, i, 20],
             wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
             wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,
-            avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
+            C_t_wm, C_t_cortical_gm, C_t_subcortical_gm,
+            time_points, C_a_slice,
             x_wm, y_wm, Ki_wm, lambda_wm,
             x_cgm, y_cgm, Ki_cortical_gm, lambda_cortical_gm,
             x_sgm, y_sgm, Ki_subcortical_gm, lambda_subcortical_gm,
             slice_idx=i+1,
             save_path=os.path.join(image_directory, 'AI', 'Tissue functions', f"AI_Tissue_slice_{i+1}_segmented_median.png"),
             boundary_mask=boundary_mask,
-            boundary_ctc=avg_boundary_ctc,
+            boundary_ctc=C_t_boundary,
             x_patlak_boundary=x_bnd, y_patlak_boundary=y_bnd,
             Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary,
             included_wm=included_wm,
             included_cortical_gm=included_cortical_gm,
             included_subcortical_gm=included_subcortical_gm,
             included_boundary=included_boundary,
-            gm_brainstem_ctc=avg_gm_brainstem_ctc,
+            gm_brainstem_ctc=C_t_gm_brainstem,
             x_patlak_gm_brainstem=x_bs,
             y_patlak_gm_brainstem=y_bs,
             Ki_gm_brainstem=Ki_gm_brainstem,
             lambda_gm_brainstem=lambda_gm_brainstem,
             included_gm_brainstem=included_gm_brainstem,
-            gm_cerebellum_ctc=avg_gm_cerebellum_ctc,
+            gm_cerebellum_ctc=C_t_gm_cerebellum,
             x_patlak_gm_cerebellum=x_gc,
             y_patlak_gm_cerebellum=y_gc,
             Ki_gm_cerebellum=Ki_gm_cerebellum,
             lambda_gm_cerebellum=lambda_gm_cerebellum,
             included_gm_cerebellum=included_gm_cerebellum,
-            wm_cerebellum_ctc=avg_wm_cerebellum_ctc,
+            wm_cerebellum_ctc=C_t_wm_cerebellum,
             x_patlak_wm_cerebellum=x_wc,
             y_patlak_wm_cerebellum=y_wc,
             Ki_wm_cerebellum=Ki_wm_cerebellum,
             lambda_wm_cerebellum=lambda_wm_cerebellum,
             included_wm_cerebellum=included_wm_cerebellum,
-            wm_cc_ctc=avg_wm_cc_ctc,
+            wm_cc_ctc=C_t_wm_cc,
             x_patlak_wm_cc=x_cc,
             y_patlak_wm_cc=y_cc,
             Ki_wm_cc=Ki_wm_cc,
