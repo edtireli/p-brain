@@ -197,5 +197,6 @@ def main():
                         image_directory, filenames, parameters, pseudo=True)
 
     save_run_settings(analysis_directory, parameters)
+    settings.save_runtime_metadata(analysis_directory)
 if __name__ == '__main__':
     main()

@@ -1,8 +1,17 @@
 import os
 import sys
 import json
+import platform
+import subprocess
+from datetime import datetime, timezone
+
 import numpy as np
 import matplotlib
+
+try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # pragma: no cover - fallback for very old Python versions
+    import importlib_metadata  # type: ignore
 matplotlib.use("TkAgg")
 
 # Global toggle for analysing control data. The flag can also be
@@ -193,3 +202,102 @@ def save_run_settings(analysis_directory, parameters):
     settings_path = os.path.join(analysis_directory, "run_settings.json")
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=4)
+
+
+def _git_metadata():
+    """Collect basic Git metadata if the repository is available."""
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+    metadata = {"commit": commit}
+
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        metadata["branch"] = branch
+    except Exception:
+        pass
+
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        metadata["is_dirty"] = bool(status.strip())
+    except Exception:
+        pass
+
+    return metadata
+
+
+def save_runtime_metadata(analysis_directory, *, extra_environment_keys=None):
+    """Record runtime metadata for the executed analysis pipeline.
+
+    The metadata is written to ``runtime_metadata.json`` within the analysis
+    directory.  The recorded information focuses on reproducibility and avoids
+    dumping the entire environment to reduce the risk of leaking secrets.
+    """
+
+    env_keys = [
+        "P_BRAIN_DATA_DIR",
+        "P_BRAIN_MODEL",
+        "P_BRAIN_CORES",
+        "P_BRAIN_LAMBDA",
+        "P_BRAIN_GLOBAL_KI_SKIP_BOTTOM",
+        "P_BRAIN_GLOBAL_KI_SKIP_TOP",
+        "PBRAIN_CONTROLS",
+        "PBRAIN_TURBO",
+    ]
+    if extra_environment_keys:
+        env_keys.extend(k for k in extra_environment_keys if k not in env_keys)
+
+    environment = {
+        key: os.environ.get(key)
+        for key in env_keys
+        if os.environ.get(key) is not None
+    }
+
+    packages = {}
+    for package in ("numpy", "scipy", "matplotlib", "nibabel", "torch"):
+        try:
+            packages[package] = importlib_metadata.version(package)
+        except Exception:
+            continue
+
+    metadata = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "python": {
+            "version": sys.version.split()[0],
+            "executable": sys.executable,
+        },
+        "platform": platform.platform(),
+        "argv": sys.argv,
+    }
+
+    if environment:
+        metadata["environment"] = environment
+    if packages:
+        metadata["packages"] = packages
+
+    git_info = _git_metadata()
+    if git_info:
+        metadata["git"] = git_info
+
+    os.makedirs(analysis_directory, exist_ok=True)
+    metadata_path = os.path.join(analysis_directory, "runtime_metadata.json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    return metadata_path
