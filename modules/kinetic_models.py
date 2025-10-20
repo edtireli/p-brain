@@ -50,17 +50,19 @@ def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
     if enforce_monotone:
         working = np.minimum.accumulate(working)
 
-    mtt = float(np.trapezoid(working, dx=dt))
+    # np.trapezoid was introduced in newer NumPy releases; np.trapz provides
+    # the same functionality and is available in older versions as well.
+    mtt = float(np.trapz(working, dx=dt))
 
     h = np.maximum(0.0, -np.gradient(working, dt, edge_order=2))
-    s = float(np.trapezoid(h, dx=dt))
+    s = float(np.trapz(h, dx=dt))
     if s <= 0.0:
         return mtt, np.nan, np.full_like(working, np.nan), np.nan
 
     h /= s
     time = np.arange(working.size, dtype=float) * dt
-    mu = float(np.trapezoid(time * h, dx=dt))
-    variance = float(np.trapezoid(((time - mu) ** 2) * h, dx=dt))
+    mu = float(np.trapz(time * h, dx=dt))
+    variance = float(np.trapz(((time - mu) ** 2) * h, dx=dt))
     cth = float(np.sqrt(max(variance, 0.0)))
 
     return mtt, cth, h, mu
