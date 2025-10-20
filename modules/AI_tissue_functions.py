@@ -2250,7 +2250,7 @@ def compute_and_plot_ctcs_median(
         CBF_per_voxel_nii = nib.Nifti1Image(np.asarray(CBF_per_voxel, dtype=np.float32),
                                             affine=ref_affine,
                                             header=ref_header.copy())
-        CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel.nii.gz')
+        CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel_tikhonov.nii.gz')
         nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
         print(f"CBF per voxel saved to {CBF_per_voxel_path}")
 
@@ -2476,6 +2476,41 @@ def compute_and_plot_ctcs_median(
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
         return Ki, lam, SD, None
 
+    def tikhonov_total(C_t):
+        n = min(len(C_t), len(C_a_total), len(time_points_total))
+        if n < 2:
+            return float('nan'), float('nan'), float('nan')
+
+        C_t_use = np.asarray(C_t[:n], dtype=float)
+        C_a_use = np.asarray(C_a_total[:n], dtype=float)
+        times_use = np.asarray(time_points_total[:n], dtype=float)
+
+        if not np.all(np.isfinite(C_t_use)) or not np.all(np.isfinite(C_a_use)):
+            return float('nan'), float('nan'), float('nan')
+
+        deltas = np.diff(times_use)
+        deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+        if deltas.size == 0:
+            return float('nan'), float('nan'), float('nan')
+
+        delta_t = float(deltas[0])
+
+        A = construct_convolution_matrix(C_a_use, delta_t)
+        if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
+            lambd = settings.AUTO_LAMBDA_VALUE
+        else:
+            lambd = settings.TIKHONOV_LAMBDA
+
+        try:
+            residue = tikhonov_regularization(A, C_t_use, lambd)
+        except np.linalg.LinAlgError:
+            return float('nan'), float('nan'), float('nan')
+
+        cbf = max(float(residue[0]) * 6000.0, 0.0)
+        mtt, cth, _, _ = residue_metrics(residue, delta_t)
+
+        return cbf, float(mtt) if np.isfinite(mtt) else float('nan'), float(cth) if np.isfinite(cth) else float('nan')
+
     # ----------------------------------------------------------------------------- 
     # 3) Patlak for every tissue
     # -----------------------------------------------------------------------------
@@ -2488,24 +2523,110 @@ def compute_and_plot_ctcs_median(
     Ki_wm_cerebellum_total,lambda_wm_cerebellum_total,SD_Ki_wm_cerebellum_total, fit_wm_cerebellum_total = patlak_total(C_t_wm_cerebellum_total)
     Ki_wm_cc_total,        lambda_wm_cc_total,        SD_Ki_wm_cc_total,        fit_wm_cc_total = patlak_total(C_t_wm_cc_total)
 
+    CBF_wm_total,          MTT_wm_total,          CTH_wm_total          = tikhonov_total(C_t_wm_total)
+    CBF_cortical_gm_total, MTT_cortical_gm_total, CTH_cortical_gm_total = tikhonov_total(C_t_cortical_gm_total)
+    CBF_subcortical_gm_total, MTT_subcortical_gm_total, CTH_subcortical_gm_total = tikhonov_total(C_t_subcortical_gm_total)
+    CBF_boundary_total,    MTT_boundary_total,    CTH_boundary_total    = tikhonov_total(C_t_boundary_total)
+    CBF_gm_brainstem_total, MTT_gm_brainstem_total, CTH_gm_brainstem_total = tikhonov_total(C_t_gm_brainstem_total)
+    CBF_gm_cerebellum_total, MTT_gm_cerebellum_total, CTH_gm_cerebellum_total = tikhonov_total(C_t_gm_cerebellum_total)
+    CBF_wm_cerebellum_total, MTT_wm_cerebellum_total, CTH_wm_cerebellum_total = tikhonov_total(C_t_wm_cerebellum_total)
+    CBF_wm_cc_total,       MTT_wm_cc_total,       CTH_wm_cc_total       = tikhonov_total(C_t_wm_cc_total)
+
     # ----------------------------------------------------------------------------- 
     # 4) Collect everything for JSON and plotting
     # -----------------------------------------------------------------------------
     tissue_results = {
-        "white_matter":      dict(C_t=C_t_wm_total,           Ki=Ki_wm_total,           lam=lambda_wm_total,           SD_Ki=SD_Ki_wm_total,          fit_curve=fit_wm_total,          vox=len(wm_ctcs_total)),
-        "cortical_gm":       dict(C_t=C_t_cortical_gm_total,  Ki=Ki_cortical_gm_total,  lam=lambda_cortical_gm_total,  SD_Ki=SD_Ki_cortical_gm_total,  fit_curve=fit_cortical_gm_total,  vox=len(cortical_gm_ctcs_total)),
-        "subcortical_gm":    dict(C_t=C_t_subcortical_gm_total,Ki=Ki_subcortical_gm_total,lam=lambda_subcortical_gm_total,SD_Ki=SD_Ki_subcortical_gm_total,fit_curve=fit_subcortical_gm_total,vox=len(subcortical_gm_ctcs_total)),
-        "gm_brainstem":      dict(C_t=C_t_gm_brainstem_total, Ki=Ki_gm_brainstem_total, lam=lambda_gm_brainstem_total, SD_Ki=SD_Ki_gm_brainstem_total, fit_curve=fit_gm_brainstem_total, vox=len(gm_brainstem_ctcs_total)),
-        "gm_cerebellum":     dict(C_t=C_t_gm_cerebellum_total,Ki=Ki_gm_cerebellum_total,lam=lambda_gm_cerebellum_total,SD_Ki=SD_Ki_gm_cerebellum_total,fit_curve=fit_gm_cerebellum_total,vox=len(gm_cerebellum_ctcs_total)),
-        "wm_cerebellum":     dict(C_t=C_t_wm_cerebellum_total,Ki=Ki_wm_cerebellum_total,lam=lambda_wm_cerebellum_total,SD_Ki=SD_Ki_wm_cerebellum_total,fit_curve=fit_wm_cerebellum_total,vox=len(wm_cerebellum_ctcs_total)),
-        "wm_cc":             dict(C_t=C_t_wm_cc_total,        Ki=Ki_wm_cc_total,        lam=lambda_wm_cc_total,        SD_Ki=SD_Ki_wm_cc_total,       fit_curve=fit_wm_cc_total,       vox=len(wm_cc_ctcs_total)),
+        "white_matter": {
+            "C_t": C_t_wm_total,
+            "Ki": Ki_wm_total,
+            "lam": lambda_wm_total,
+            "SD_Ki": SD_Ki_wm_total,
+            "fit_curve": fit_wm_total,
+            "vox": len(wm_ctcs_total),
+            "CBF_tikhonov": CBF_wm_total,
+            "MTT_tikhonov": MTT_wm_total,
+            "CTH_tikhonov": CTH_wm_total,
+        },
+        "cortical_gm": {
+            "C_t": C_t_cortical_gm_total,
+            "Ki": Ki_cortical_gm_total,
+            "lam": lambda_cortical_gm_total,
+            "SD_Ki": SD_Ki_cortical_gm_total,
+            "fit_curve": fit_cortical_gm_total,
+            "vox": len(cortical_gm_ctcs_total),
+            "CBF_tikhonov": CBF_cortical_gm_total,
+            "MTT_tikhonov": MTT_cortical_gm_total,
+            "CTH_tikhonov": CTH_cortical_gm_total,
+        },
+        "subcortical_gm": {
+            "C_t": C_t_subcortical_gm_total,
+            "Ki": Ki_subcortical_gm_total,
+            "lam": lambda_subcortical_gm_total,
+            "SD_Ki": SD_Ki_subcortical_gm_total,
+            "fit_curve": fit_subcortical_gm_total,
+            "vox": len(subcortical_gm_ctcs_total),
+            "CBF_tikhonov": CBF_subcortical_gm_total,
+            "MTT_tikhonov": MTT_subcortical_gm_total,
+            "CTH_tikhonov": CTH_subcortical_gm_total,
+        },
+        "gm_brainstem": {
+            "C_t": C_t_gm_brainstem_total,
+            "Ki": Ki_gm_brainstem_total,
+            "lam": lambda_gm_brainstem_total,
+            "SD_Ki": SD_Ki_gm_brainstem_total,
+            "fit_curve": fit_gm_brainstem_total,
+            "vox": len(gm_brainstem_ctcs_total),
+            "CBF_tikhonov": CBF_gm_brainstem_total,
+            "MTT_tikhonov": MTT_gm_brainstem_total,
+            "CTH_tikhonov": CTH_gm_brainstem_total,
+        },
+        "gm_cerebellum": {
+            "C_t": C_t_gm_cerebellum_total,
+            "Ki": Ki_gm_cerebellum_total,
+            "lam": lambda_gm_cerebellum_total,
+            "SD_Ki": SD_Ki_gm_cerebellum_total,
+            "fit_curve": fit_gm_cerebellum_total,
+            "vox": len(gm_cerebellum_ctcs_total),
+            "CBF_tikhonov": CBF_gm_cerebellum_total,
+            "MTT_tikhonov": MTT_gm_cerebellum_total,
+            "CTH_tikhonov": CTH_gm_cerebellum_total,
+        },
+        "wm_cerebellum": {
+            "C_t": C_t_wm_cerebellum_total,
+            "Ki": Ki_wm_cerebellum_total,
+            "lam": lambda_wm_cerebellum_total,
+            "SD_Ki": SD_Ki_wm_cerebellum_total,
+            "fit_curve": fit_wm_cerebellum_total,
+            "vox": len(wm_cerebellum_ctcs_total),
+            "CBF_tikhonov": CBF_wm_cerebellum_total,
+            "MTT_tikhonov": MTT_wm_cerebellum_total,
+            "CTH_tikhonov": CTH_wm_cerebellum_total,
+        },
+        "wm_cc": {
+            "C_t": C_t_wm_cc_total,
+            "Ki": Ki_wm_cc_total,
+            "lam": lambda_wm_cc_total,
+            "SD_Ki": SD_Ki_wm_cc_total,
+            "fit_curve": fit_wm_cc_total,
+            "vox": len(wm_cc_ctcs_total),
+            "CBF_tikhonov": CBF_wm_cc_total,
+            "MTT_tikhonov": MTT_wm_cc_total,
+            "CTH_tikhonov": CTH_wm_cc_total,
+        },
     }
 
     if boundary and C_t_boundary_total.size:
-        tissue_results["boundary"] = dict(C_t=C_t_boundary_total, Ki=Ki_boundary_total,
-                                        lam=lambda_boundary_total, SD_Ki=SD_Ki_boundary_total,
-                                        fit_curve=fit_boundary_total,
-                                        vox=len(boundary_ctcs_total))
+        tissue_results["boundary"] = {
+            "C_t": C_t_boundary_total,
+            "Ki": Ki_boundary_total,
+            "lam": lambda_boundary_total,
+            "SD_Ki": SD_Ki_boundary_total,
+            "fit_curve": fit_boundary_total,
+            "vox": len(boundary_ctcs_total),
+            "CBF_tikhonov": CBF_boundary_total,
+            "MTT_tikhonov": MTT_boundary_total,
+            "CTH_tikhonov": CTH_boundary_total,
+        }
 
     # ----------------------------------------------------------------------
     # Compute global median T1 and M0 values for each tissue
@@ -2567,10 +2688,13 @@ def compute_and_plot_ctcs_median(
     with open(json_file_path_total, "w") as jf:
         json.dump({
             t+"_median_total": {
-                "Ki":   d["Ki"],
-                "SD_Ki":d["SD_Ki"],
-                "lambda":d["lam"],
-                "voxel_count":d["vox"]
+                "Ki":            d["Ki"],
+                "SD_Ki":         d["SD_Ki"],
+                "lambda":        d["lam"],
+                "CBF_tikhonov":  d["CBF_tikhonov"],
+                "MTT_tikhonov":  d["MTT_tikhonov"],
+                "CTH_tikhonov":  d["CTH_tikhonov"],
+                "voxel_count":   d["vox"]
             } for t,d in tissue_results.items()
         }, jf, indent=4)
 
@@ -2681,7 +2805,6 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
         'Ki_cortical_gm.nii.gz',
         'Ki_subcortical_gm.nii.gz',
         'Ki_per_voxel.nii.gz',
-        'CBF_per_voxel.nii.gz',
         'AI_values_median.json',
         'Ki_vs_slice_median.png',
         'AI_values_median_total.json',
