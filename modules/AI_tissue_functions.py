@@ -29,6 +29,7 @@ from .kinetic_models import (
     tikhonov_regularization,
     extended_tofts_model,
     pick_lambda_via_l_curve,
+    residue_metrics,
 )
 from skimage.transform import resize
 import json
@@ -61,7 +62,13 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     """Two-compartment fit using Tikhonov regularisation."""
     if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
         lambd = settings.AUTO_LAMBDA_VALUE
-    Ktrans, ve, vp = extended_tofts_tikhonov(aif, tissue_curve, time_array, lambd=lambd)
+    x0 = (0.001, 0.2, 0.05)
+    if settings.TWO_COMPARTMENT_INIT_FROM_PATLAK:
+        ki_patlak, _, _ = patlak_total(tissue_curve, aif, time_array)
+        if np.isfinite(ki_patlak):
+            ktrans_guess = max(ki_patlak / 6000.0, 1e-8)
+            x0 = (ktrans_guess, x0[1], x0[2])
+    Ktrans, ve, vp = extended_tofts_tikhonov(aif, tissue_curve, time_array, lambd=lambd, x0=x0)
     Ki = Ktrans
     lam = ve
     SD_Ki = np.nan
@@ -1648,6 +1655,10 @@ def compute_and_plot_ctcs_median(
         SD_per_voxel = np.full(data_4d.shape[:3], np.nan)
     if compute_per_voxel_CBF:
         CBF_per_voxel = np.full(data_4d.shape[:3], np.nan)
+        MTT_per_voxel = np.full(data_4d.shape[:3], np.nan) if settings.WRITE_MTT else None
+        CTH_per_voxel = np.full(data_4d.shape[:3], np.nan) if settings.WRITE_CTH else None
+
+    gm_mask_dce_full = np.logical_or(cortical_gm_mask_dce, subcortical_gm_mask_dce)
 
     if boundary:
         boundary_mask_full = np.zeros(data_4d.shape[:3], dtype=bool)
@@ -2085,6 +2096,8 @@ def compute_and_plot_ctcs_median(
                 SD_slice = np.full(brain_mask_slice.shape, np.nan)
             if compute_per_voxel_CBF:
                 CBF_slice = np.full(brain_mask_slice.shape, np.nan)
+                MTT_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_MTT else None
+                CTH_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_CTH else None
 
             # For each voxel in the brain mask, compute K_i and/or CBF
             for (x, y) in brain_indices:
@@ -2104,6 +2117,9 @@ def compute_and_plot_ctcs_median(
                 C_t_voxel = C_t[:min_length_voxel]
                 C_a_voxel = C_a_full[:min_length_voxel]
                 time_points_voxel = time_points_s[:min_length_voxel]
+
+                if min_length_voxel < 2:
+                    continue
 
                 if compute_per_voxel_Ki:
                     # Perform Patlak analysis
@@ -2128,6 +2144,12 @@ def compute_and_plot_ctcs_median(
                         # R[0] represents flow in 1/s. Scale to ml/100g/min.
                         CBF_voxel = max(R_estimated[0] * 6000, 0.0)
                         CBF_slice[x, y] = CBF_voxel
+                        if settings.WRITE_MTT or settings.WRITE_CTH:
+                            mtt_voxel, cth_voxel, _, _ = residue_metrics(R_estimated, delta_t)
+                            if settings.WRITE_MTT and MTT_slice is not None:
+                                MTT_slice[x, y] = mtt_voxel
+                            if settings.WRITE_CTH and CTH_slice is not None:
+                                CTH_slice[x, y] = cth_voxel
                     except np.linalg.LinAlgError:
                         continue  # Skip if the matrix is singular
 
@@ -2138,12 +2160,16 @@ def compute_and_plot_ctcs_median(
                 SD_per_voxel[:, :, i] = SD_slice
             if compute_per_voxel_CBF:
                 CBF_per_voxel[:, :, i] = CBF_slice
+                if settings.WRITE_MTT and MTT_per_voxel is not None and MTT_slice is not None:
+                    MTT_per_voxel[:, :, i] = MTT_slice
+                if settings.WRITE_CTH and CTH_per_voxel is not None and CTH_slice is not None:
+                    CTH_per_voxel[:, :, i] = CTH_slice
 
         if boundary:
             boundary_mask_full[:, :, i] = boundary_mask if boundary_mask is not None else False
 
     # Save Ki images as NIfTI files
-    affine = nib.load(dce_path).affine
+    affine = ref_affine
 
     Ki_wm_nii = nib.Nifti1Image(Ki_wm_image, affine)
     Ki_wm_path = os.path.join(analysis_directory, 'Ki_wm.nii.gz')
@@ -2187,7 +2213,7 @@ def compute_and_plot_ctcs_median(
             )
 
         # Save Ki_per_voxel as a .nii file
-        Ki_per_voxel_nii = nib.Nifti1Image(Ki_per_voxel, affine=nib.load(dce_path).affine)
+        Ki_per_voxel_nii = nib.Nifti1Image(Ki_per_voxel, affine=ref_affine)
         Ki_per_voxel_path = os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz')
         nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
         print(f"K_i per voxel saved to {Ki_per_voxel_path}")
@@ -2213,10 +2239,44 @@ def compute_and_plot_ctcs_median(
             )
 
         # Save CBF_per_voxel as a .nii file
-        CBF_per_voxel_nii = nib.Nifti1Image(CBF_per_voxel, affine=nib.load(dce_path).affine)
+        CBF_per_voxel_nii = nib.Nifti1Image(np.asarray(CBF_per_voxel, dtype=np.float32),
+                                            affine=ref_affine,
+                                            header=ref_header.copy())
         CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel.nii.gz')
         nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
         print(f"CBF per voxel saved to {CBF_per_voxel_path}")
+
+        def finite_median(data):
+            finite = data[np.isfinite(data)]
+            if finite.size == 0:
+                return np.nan
+            return float(np.median(finite))
+
+        def log_median(metric_name, array):
+            gm_median = finite_median(array[gm_mask_dce_full])
+            wm_median = finite_median(array[wm_mask_dce])
+            if np.isfinite(gm_median) or np.isfinite(wm_median):
+                print(f"{metric_name} median GM: {gm_median:.3f} s, WM: {wm_median:.3f} s")
+            else:
+                print(f"{metric_name} median GM/WM: no finite values")
+
+        if settings.WRITE_MTT and MTT_per_voxel is not None:
+            mtt_img = nib.Nifti1Image(np.asarray(MTT_per_voxel, dtype=np.float32),
+                                      affine=ref_affine,
+                                      header=ref_header.copy())
+            mtt_path = os.path.join(analysis_directory, 'mtt_map.nii.gz')
+            nib.save(mtt_img, mtt_path)
+            print(f"MTT map saved to {mtt_path}")
+            log_median("MTT", MTT_per_voxel)
+
+        if settings.WRITE_CTH and CTH_per_voxel is not None:
+            cth_img = nib.Nifti1Image(np.asarray(CTH_per_voxel, dtype=np.float32),
+                                      affine=ref_affine,
+                                      header=ref_header.copy())
+            cth_path = os.path.join(analysis_directory, 'cth_map.nii.gz')
+            nib.save(cth_img, cth_path)
+            print(f"CTH map saved to {cth_path}")
+            log_median("CTH", CTH_per_voxel)
 
     # ------------------------------------------------------------------
     # Per-voxel Ki statistics and JSON output
@@ -2726,14 +2786,17 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     # Continue with the rest of your processing, ensuring to include the new masks in your analysis and plotting
 
     # Load the DCE 4D data
-    data_4d = np.array(nib.load(dce_path).get_fdata())
+    ref_img = nib.load(dce_path)
+    data_4d = np.array(ref_img.get_fdata())
+    ref_affine = ref_img.affine
+    ref_header = ref_img.header.copy()
 
     # Load T1 and M0 matrices
     T1_matrix = load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
     M0_matrix = load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl'))
 
     # Compute time_points_s
-    TR = nib.load(dce_path).header.get_zooms()[-1]
+    TR = ref_img.header.get_zooms()[-1]
     num_volumes = data_4d.shape[-1]
     total_scan_duration = TR * num_volumes
     time_points_s = np.linspace(0, total_scan_duration, num_volumes)
