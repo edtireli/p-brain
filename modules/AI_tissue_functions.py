@@ -1,5 +1,5 @@
 turbo_mode = False  # Set to True to suppress all plots
-force_recreate_masks = True  # If True: recreate all masks regardless of existence
+force_recreate_masks = False  # If True: recreate all masks regardless of existence
 # If True, drop detection is performed on tissue CTCs and the ignored
 # regions are excluded from the Patlak fit.  When False, every sample
 # is used for the Patlak analysis.
@@ -37,6 +37,14 @@ from scipy.ndimage import binary_dilation
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 import re
+
+
+# Allow overriding the default mask regeneration behaviour via an
+# environment variable.  By default, existing masks are re-used to avoid
+# unnecessary recomputation.  Setting ``FORCE_RECREATE_MASKS`` to ``1``
+# (or ``true``/``yes``) restores the previous eager regeneration.
+if os.getenv("FORCE_RECREATE_MASKS", "0").lower() in {"1", "true", "yes"}:
+    force_recreate_masks = True
 
 def _get_first_npy(folder):
     npy_files = [f for f in os.listdir(folder) if f.endswith('.npy') and not f.startswith('.')]
