@@ -16,22 +16,78 @@ def extended_tofts_model(t, Ktrans, ve, vp, Cp):
 
 
 def construct_convolution_matrix(C_a, delta_t):
-    """Build a Toeplitz matrix for convolution."""
-    n = len(C_a)
-    A = np.zeros((n, n))
+    """Build a Toeplitz convolution matrix discretising the Volterra integral."""
+
+    C_a = np.asarray(C_a, dtype=float).reshape(-1)
+    delta_t = float(delta_t)
+    if C_a.size == 0 or not np.isfinite(delta_t) or delta_t <= 0.0:
+        raise ValueError("C_a must be non-empty and delta_t must be a positive finite number.")
+
+    n = C_a.size
+    A = np.zeros((n, n), dtype=float)
     for i in range(n):
         A[i, : i + 1] = C_a[i::-1] * delta_t
     return A
 
 
-def tikhonov_regularization(A, C_t, lambd):
-    """Solve A x = C_t with Tikhonov regularisation."""
-    n = A.shape[1]
-    L = np.eye(n)
-    ATA = A.T @ A
-    LTL = L.T @ L
-    regularized = ATA + lambd * LTL
-    return np.linalg.solve(regularized, A.T @ C_t)
+def _prepare_penalty_matrix(size, penalty):
+    """Return the Tikhonov penalty operator of appropriate shape."""
+
+    if penalty is None or penalty == "identity":
+        return np.eye(size, dtype=float)
+
+    if penalty == "derivative":
+        if size < 2:
+            return np.zeros((0, size), dtype=float)
+        L = np.zeros((size - 1, size), dtype=float)
+        for i in range(size - 1):
+            L[i, i] = -1.0
+            L[i, i + 1] = 1.0
+        return L
+
+    penalty_matrix = np.asarray(penalty, dtype=float)
+    if penalty_matrix.ndim != 2 or penalty_matrix.shape[1] != size:
+        raise ValueError("Penalty matrix must be two-dimensional with shape (m, n) where n matches A.shape[1].")
+    return penalty_matrix
+
+
+def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
+    """Solve ``A r = C_t`` with Tikhonov regularisation.
+
+    Parameters
+    ----------
+    A : array_like
+        Convolution matrix relating the residue to the tissue curve.
+    C_t : array_like
+        Tissue concentration samples.
+    lambd : float
+        Regularisation strength :math:`\lambda`.
+    penalty : {"identity", "derivative"} or ndarray, optional
+        Operator :math:`L` used in the quadratic penalty term. When an array is
+        provided it must have shape ``(m, n)`` with ``n == A.shape[1]``.
+    """
+
+    A = np.asarray(A, dtype=float)
+    C_t = np.asarray(C_t, dtype=float).reshape(A.shape[0])
+    n_cols = A.shape[1]
+
+    L = _prepare_penalty_matrix(n_cols, penalty)
+    ata = A.T @ A
+    ltl = L.T @ L if L.size else np.zeros((n_cols, n_cols), dtype=float)
+    lam_sq = float(max(lambd, 0.0)) ** 2
+    regularised = ata + lam_sq * ltl
+    rhs = A.T @ C_t
+    return np.linalg.solve(regularised, rhs)
+
+
+def residue_to_cbf(residue0):
+    """Convert the residue's initial value to CBF in ml/100g/min."""
+
+    scale = 6000.0 / settings.TISSUE_DENSITY
+    if settings.PLASMA_DERIVED_AIF:
+        scale *= max(1.0 - settings.HEMATOCRIT, 0.0)
+    cbf = float(residue0) * scale
+    return max(cbf, 0.0)
 
 
 def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
@@ -136,7 +192,8 @@ def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
 
 def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
                                  lambd=settings.TIKHONOV_LAMBDA,
-                                 ktrans_initial=None):
+                                 ktrans_initial=None,
+                                 *, penalty="identity"):
     """Fit the extended Tofts model using Tikhonov regularisation.
 
     Parameters
@@ -152,6 +209,8 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
     ktrans_initial : float, optional
         Optional initial guess for Ktrans in 1/s. When ``None`` the default
         value 0.5/6000 is used.
+    penalty : {"identity", "derivative"} or ndarray, optional
+        Choice of Tikhonov penalty operator :math:`L`.
 
     Returns
     -------
@@ -165,6 +224,8 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
         Cerebral blood flow in ml/100g/min estimated from deconvolution.
     fitted_curve : ndarray
         Model prediction at ``time_array``.
+    residue : ndarray
+        Estimated residue function :math:`r(t)`.
     """
 
     if c_input.shape[0] != c_tissue.shape[0]:
@@ -191,9 +252,9 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
     fitted_curve = model(res.x)
 
     # Estimate CBF using model-free deconvolution
-    delta_t = np.diff(time_array)[0]
+    delta_t = float(np.diff(time_array)[0])
     A = construct_convolution_matrix(c_input, delta_t)
-    residue = tikhonov_regularization(A, c_tissue, lambd)
-    CBF = max(residue[0] * 6000, 0.0)
+    residue = tikhonov_regularization(A, c_tissue, lambd, penalty=penalty)
+    CBF = residue_to_cbf(residue[0])
 
-    return Ki, lam, vp_fitted, CBF, fitted_curve
+    return Ki, lam, vp_fitted, CBF, fitted_curve, residue

@@ -19,6 +19,7 @@ sys.modules['modules.kinetic_models'] = km
 spec_km.loader.exec_module(km)
 extended_tofts_tikhonov = km.extended_tofts_tikhonov
 residue_metrics = km.residue_metrics
+residue_to_cbf = km.residue_to_cbf
 
 spec_ai = importlib.util.spec_from_file_location('modules.AI_tissue_functions', os.path.join(ROOT, 'modules', 'AI_tissue_functions.py'), submodule_search_locations=[os.path.join(ROOT, 'modules')])
 ai = importlib.util.module_from_spec(spec_ai)
@@ -112,3 +113,34 @@ def test_two_compartment_uses_patlak_initial_guess():
     assert 'x0' in captured
     assert np.isfinite(captured['x0'][0])
     assert np.isclose(captured['x0'][0], ki_patlak / 6000.0, rtol=0.05)
+
+
+def test_tikhonov_uses_lambda_squared():
+    a = np.eye(4)
+    ct = np.arange(1, 5, dtype=float)
+    lam = 2.0
+    sol = km.tikhonov_regularization(a, ct, lam)
+    expected = ct / (1.0 + lam ** 2)
+    assert np.allclose(sol, expected)
+
+
+def test_residue_to_cbf_scaling():
+    original_density = km.settings.TISSUE_DENSITY
+    original_plasma = km.settings.PLASMA_DERIVED_AIF
+    original_hematocrit = km.settings.HEMATOCRIT
+    try:
+        km.settings.TISSUE_DENSITY = 1.04
+        km.settings.PLASMA_DERIVED_AIF = False
+        value = residue_to_cbf(0.002)
+        expected = max(0.002 * 6000.0 / 1.04, 0.0)
+        assert np.isclose(value, expected)
+
+        km.settings.PLASMA_DERIVED_AIF = True
+        km.settings.HEMATOCRIT = 0.42
+        plasma_value = residue_to_cbf(0.002)
+        expected_plasma = max(0.002 * 6000.0 / 1.04 * (1.0 - 0.42), 0.0)
+        assert np.isclose(plasma_value, expected_plasma)
+    finally:
+        km.settings.TISSUE_DENSITY = original_density
+        km.settings.PLASMA_DERIVED_AIF = original_plasma
+        km.settings.HEMATOCRIT = original_hematocrit

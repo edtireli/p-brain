@@ -8,6 +8,7 @@ from .kinetic_models import (
     tikhonov_regularization,
     extended_tofts_model,
     pick_lambda_via_l_curve,
+    residue_to_cbf,
 )
 import numpy as np
 from termcolor import colored
@@ -197,7 +198,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         else:
             cbf_lambda = settings.TIKHONOV_LAMBDA
         residue = tikhonov_regularization(A, C_t, cbf_lambda)
-        CBF = max(residue[0] * 6000, 0.0)
+        CBF = residue_to_cbf(residue[0])
         print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
               f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
         save_values(
@@ -265,7 +266,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             else:
                 cbf_lambda = settings.TIKHONOV_LAMBDA
             residue = tikhonov_regularization(A, C_t, cbf_lambda)
-            CBF = max(residue[0] * 6000, 0.0)
+            CBF = residue_to_cbf(residue[0])
             print(f'[!] Two-compartment Ki: {Ki:.5f} ml/100g/min, '
                   f'lambda: {lamda:.5f} ml/100g, vp: {vp:.5f}, CBF: {CBF:.5f}')
             save_values(

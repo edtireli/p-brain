@@ -3,6 +3,8 @@ import subprocess
 import os
 import sys
 
+import utils.settings as settings
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run p-brain on multiple datasets")
@@ -21,7 +23,23 @@ def parse_args():
     return parser.parse_args()
 
 
-def collect_datasets(data_directory, use_all, ids):
+def _list_subdirectories(path):
+    """Return sorted subdirectories under ``path`` (non-recursive)."""
+
+    try:
+        entries = sorted(os.listdir(path))
+    except FileNotFoundError:
+        return []
+
+    result = []
+    for name in entries:
+        full_path = os.path.join(path, name)
+        if os.path.isdir(full_path):
+            result.append(name)
+    return result
+
+
+def collect_datasets(data_directory, use_all, ids, *, use_controls=False):
     """Return a list of dataset identifiers to process.
 
     Parameters
@@ -33,20 +51,47 @@ def collect_datasets(data_directory, use_all, ids):
     ids:
         Optional explicit list of dataset identifiers supplied on the command
         line.
+    use_controls:
+        When ``True`` operate on control datasets stored inside a ``controls``
+        subdirectory.
     """
 
     datasets = []
+    data_directory = os.fspath(data_directory)
+    controls_directory = os.path.join(data_directory, "controls")
 
     if use_all:
-        top = sorted(os.listdir(data_directory))
-        for name in top:
-            full_path = os.path.join(data_directory, name)
-            if not os.path.isdir(full_path):
-                continue
-            datasets.append(name)
+        if use_controls:
+            for name in _list_subdirectories(controls_directory):
+                datasets.append((name, True))
+        else:
+            for name in _list_subdirectories(data_directory):
+                if name == "controls":
+                    continue
+                datasets.append((name, False))
 
     elif ids:
-        datasets.extend(ids)
+        for dataset_id in ids:
+            dataset_id = str(dataset_id)
+            control_path = os.path.join(controls_directory, dataset_id)
+            patient_path = os.path.join(data_directory, dataset_id)
+
+            is_control = False
+            if os.path.isdir(control_path):
+                is_control = True
+                dataset_path = control_path
+            else:
+                dataset_path = patient_path
+
+            if not os.path.isdir(dataset_path):
+                raise FileNotFoundError(f"Dataset {dataset_id} not found in {data_directory}.")
+
+            # Honour explicit ``use_controls`` flag even if the directory lives
+            # outside ``controls``.
+            if use_controls:
+                is_control = True
+
+            datasets.append((dataset_id, is_control))
 
     else:
         raise ValueError("No datasets specified")
@@ -65,7 +110,12 @@ def main():
         use_all = True
 
     try:
-        datasets = collect_datasets(data_directory, use_all, ids)
+        datasets = collect_datasets(
+            data_directory,
+            use_all,
+            ids,
+            use_controls=settings.CONTROLS,
+        )
     except FileNotFoundError:
         print(f"Data dir missing: {data_directory}")
         sys.exit(1)
@@ -80,11 +130,15 @@ def main():
     # Build command
     command_template = "python3 main.py --id {} --mode auto --data-dir {}"
 
-    for dataset_id in datasets:
+    for dataset_id, is_control in datasets:
         command = command_template.format(dataset_id, data_directory)
         env = os.environ.copy()
         env["P_BRAIN_DATA_DIR"] = data_directory
         env["PBRAIN_TURBO"] = "1"
+        if is_control:
+            env["PBRAIN_CONTROLS"] = "1"
+        else:
+            env.pop("PBRAIN_CONTROLS", None)
         print(f"Running: {command}")
         subprocess.run(command, shell=True, env=env)
 

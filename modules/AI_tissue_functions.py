@@ -25,11 +25,12 @@ from utils.loading import *
 from utils.plotting import *
 from .kinetic_models import (
     extended_tofts_tikhonov,
-    construct_convolution_matrix,
-    tikhonov_regularization,
+    construct_convolution_matrix as km_construct_convolution_matrix,
+    tikhonov_regularization as km_tikhonov_regularization,
     extended_tofts_model,
     pick_lambda_via_l_curve,
     residue_metrics,
+    residue_to_cbf,
 )
 from skimage.transform import resize
 import json
@@ -66,7 +67,9 @@ def patlak_total(C_t, C_a, t):
     return Ki, lam, SD
 
 def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
-                             lambd=settings.TIKHONOV_LAMBDA):
+                             lambd=settings.TIKHONOV_LAMBDA,
+                             penalty="identity",
+                             return_residue=False):
     """Two-compartment fit using Tikhonov regularisation."""
     if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
         lambd = settings.AUTO_LAMBDA_VALUE
@@ -81,10 +84,13 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     lam = ve
     SD_Ki = np.nan
     fit_curve = extended_tofts_model(time_array, Ktrans, ve, vp, aif)
-    delta_t = np.diff(time_array)[0]
+    delta_t = float(np.diff(time_array)[0])
     A = construct_convolution_matrix(aif, delta_t)
-    tikh = tikhonov_regularization(A, tissue_curve, lambd)
-    CBF = max(tikh[0] * 6000, 0.0)
+    residue = tikhonov_regularization(A, tissue_curve, lambd, penalty=penalty)
+    cbf = residue_to_cbf(residue[0])
+
+    if return_residue:
+        return Ki, lam, SD_Ki, fit_curve, residue, cbf
     return Ki, lam, SD_Ki, fit_curve
 
 def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
@@ -425,24 +431,11 @@ def compute_Ki_from_atlas(
 
 
 def construct_convolution_matrix(C_a, delta_t):
-    n = len(C_a)
-    A = np.zeros((n, n))
-    for i in range(n):
-        A[i, :i+1] = C_a[i::-1] * delta_t
-    return A
+    return km_construct_convolution_matrix(C_a, delta_t)
 
 
-from scipy.linalg import solve
-
-def tikhonov_regularization(A, C_t, lambd):
-    n = A.shape[1]
-    L = np.eye(n)  # Using identity matrix for regularization
-    ATA = A.T @ A
-    LTL = L.T @ L
-    regularized_matrix = ATA + lambd * LTL
-    ATC_t = A.T @ C_t
-    R = np.linalg.solve(regularized_matrix, ATC_t)
-    return R
+def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
+    return km_tikhonov_regularization(A, C_t, lambd, penalty=penalty)
 
 def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm_mask, gm_brainstem_mask, gm_cerebellum_mask, wm_cerebellum_mask, wm_cc_mask, image_directory):
     n_slices = image.shape[2]
@@ -2157,8 +2150,7 @@ def compute_and_plot_ctcs_median(
                     # Solve for the residue function
                     try:
                         R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
-                        # R[0] represents flow in 1/s. Scale to ml/100g/min.
-                        CBF_voxel = max(R_estimated[0] * 6000, 0.0)
+                        CBF_voxel = residue_to_cbf(R_estimated[0])
                         CBF_slice[x, y] = CBF_voxel
                         if settings.WRITE_MTT or settings.WRITE_CTH:
                             mtt_voxel, cth_voxel, _, _ = residue_metrics(R_estimated, delta_t)
@@ -2514,7 +2506,7 @@ def compute_and_plot_ctcs_median(
         except np.linalg.LinAlgError:
             return float('nan'), float('nan'), float('nan')
 
-        cbf = max(float(residue[0]) * 6000.0, 0.0)
+        cbf = residue_to_cbf(residue[0])
         mtt, cth, _, _ = residue_metrics(residue, delta_t)
 
         return cbf, float(mtt) if np.isfinite(mtt) else float('nan'), float(cth) if np.isfinite(cth) else float('nan')
