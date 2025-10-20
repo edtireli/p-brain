@@ -75,20 +75,29 @@ def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
     ata = A.T @ A
     ltl = L.T @ L if L.size else np.zeros((n_cols, n_cols), dtype=float)
     lam = float(max(lambd, 0.0))
-    regularised = ata + lam * ltl
+    # Canonical Tikhonov: minimise ||A r - C_t||^2 + λ^2 ||L r||^2
+    regularised = ata + lam**2 * ltl
     rhs = A.T @ C_t
     return np.linalg.solve(regularised, rhs)
 
 
-def residue_to_cbf(residue0):
-    """Convert the residue's initial value to CBF in ml/100g/min.
+def residue_to_cbf(residue0, rho_tissue=1.04, hematocrit=None, aif_type="whole_blood"):
+    """CBF in mL/100 g/min from r(0).
 
-    Historically the pipeline has scaled the first residue sample by 6000 to
-    express perfusion in millilitres per 100 grams per minute.  Restore that
-    behaviour without additional density or hematocrit adjustments.
+    Inputs are residue r(t) from deconvolution with:
+      - AIF in plasma concentration [mM]
+      - Tissue curve in [mM]
+      - Time step in seconds
+    If AIF is plasma, convert to whole-blood flow using (1 - Hct).
     """
 
-    cbf = float(residue0) * 6000.0
+    r0 = float(residue0)
+    scale = 1.0
+    if aif_type == "plasma":
+        if hematocrit is None:
+            hematocrit = 0.42
+        scale *= (1.0 - float(hematocrit))
+    cbf = 6000.0 * r0 * scale / float(rho_tissue)
     return max(cbf, 0.0)
 
 

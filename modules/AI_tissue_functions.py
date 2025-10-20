@@ -87,7 +87,7 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     delta_t = float(np.diff(time_array)[0])
     A = construct_convolution_matrix(aif, delta_t)
     residue = tikhonov_regularization(A, tissue_curve, lambd, penalty=penalty)
-    cbf = residue_to_cbf(residue[0])
+    cbf = residue_to_cbf(residue[0], aif_type="plasma", hematocrit=0.42)
 
     if return_residue:
         return Ki, lam, SD_Ki, fit_curve, residue, cbf
@@ -2150,7 +2150,7 @@ def compute_and_plot_ctcs_median(
                     # Solve for the residue function
                     try:
                         R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
-                        CBF_voxel = residue_to_cbf(R_estimated[0])
+                        CBF_voxel = residue_to_cbf(R_estimated[0], aif_type="plasma", hematocrit=0.42)
                         CBF_slice[x, y] = CBF_voxel
                         if settings.WRITE_MTT or settings.WRITE_CTH:
                             mtt_voxel, cth_voxel, _, _ = residue_metrics(R_estimated, delta_t)
@@ -2506,7 +2506,7 @@ def compute_and_plot_ctcs_median(
         except np.linalg.LinAlgError:
             return float('nan'), float('nan'), float('nan')
 
-        cbf = residue_to_cbf(residue[0])
+        cbf = residue_to_cbf(residue[0], aif_type="plasma", hematocrit=0.42)
         mtt, cth, _, _ = residue_metrics(residue, delta_t)
 
         return cbf, float(mtt) if np.isfinite(mtt) else float('nan'), float(cth) if np.isfinite(cth) else float('nan')
