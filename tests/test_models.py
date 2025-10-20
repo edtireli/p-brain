@@ -116,16 +116,16 @@ def test_two_compartment_uses_patlak_initial_guess():
     assert np.isclose(captured['x0'][0], ki_patlak / 6000.0, rtol=0.05)
 
 
-def test_tikhonov_regularisation_uses_linear_lambda():
+def test_tikhonov_regularisation_uses_quadratic_lambda():
     a = np.eye(4)
     ct = np.arange(1, 5, dtype=float)
     lam = 2.0
     sol = km.tikhonov_regularization(a, ct, lam)
-    expected = ct / (1.0 + lam)
+    expected = ct / (1.0 + lam**2)
     assert np.allclose(sol, expected)
 
 
 def test_residue_to_cbf_scaling():
     value = residue_to_cbf(0.002)
-    expected = max(0.002 * 6000.0, 0.0)
+    expected = max(0.002 * 6000.0 / 1.04, 0.0)
     assert np.isclose(value, expected)
