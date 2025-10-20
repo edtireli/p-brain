@@ -1935,7 +1935,7 @@ def compute_and_plot_ctcs_median(
 
         # Plot the results for the current slice. Images are always written
         # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
-        # move the entire directory to ``AI_patlak`` or ``AI_two_compartment`` after
+        # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
         # the model run completes.
         fit_curves = {
             'wm': curve_wm,
@@ -2835,15 +2835,6 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
             shutil.rmtree(dst_dir, ignore_errors=True)
         os.rename(ai_dir, dst_dir)
 
-    if suffix == '_two_compartment':
-        old_files = glob.glob(os.path.join(analysis_directory, '*_tikhonov*'))
-        for path in old_files:
-            new_name = os.path.basename(path).replace('_tikhonov', suffix)
-            os.rename(path, os.path.join(analysis_directory, new_name))
-        old_dir = os.path.join(image_directory, 'AI_tikhonov')
-        new_dir = os.path.join(image_directory, 'AI_two_compartment')
-        if os.path.exists(old_dir) and not os.path.exists(new_dir):
-            os.rename(old_dir, new_dir)
 
 
 def _tissue_function_AI(model, analysis_directory, nifti_directory, image_directory, filenames, parameters):
@@ -2975,7 +2966,8 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         patlak_analysis_plotting=patlak_analysis_plotting
     )
 
-    _rename_model_outputs(analysis_directory, image_directory, f"_{model}", boundary)
+    suffix = '_patlak' if model == 'patlak' else '_tikhonov'
+    _rename_model_outputs(analysis_directory, image_directory, suffix, boundary)
 
 
 def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):

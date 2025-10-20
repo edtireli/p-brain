@@ -259,8 +259,8 @@ via model-free deconvolution. Adjust the variable `KINETIC_MODEL` in
 `utils/settings.py` or export the environment variable `P_BRAIN_MODEL`
 with one of `patlak`, `two_compartment` or `both` to control which models are
 run. When both models are executed, output files are suffixed with
-`_patlak` and `_two_compartment` respectively.
-Image outputs are stored in `AI_patlak/` and `AI_two_compartment/` subfolders
+`_patlak` and `_tikhonov` respectively.
+Image outputs are stored in `AI_patlak/` and `AI_tikhonov/` subfolders
 under the main `Images` directory.
 During execution the files are first written to an `AI/` directory and
 renamed to the model-specific location by the script once processing
