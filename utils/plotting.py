@@ -9,6 +9,7 @@ from utils.loading import *
 from matplotlib.path import Path
 from scipy.signal import argrelextrema
 from matplotlib.widgets import Button
+import utils.settings as settings
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
@@ -79,37 +80,44 @@ def custom_shifter(array, baseline_point):
     return np.concatenate([np.zeros(baseline_point), shifted_array])
 
 
-def find_major_peaks(gradient, radius=10):
+def find_major_peaks(gradient, radius=10, num_peaks=None):
     """
-    Finds the indices of the two major peaks in the given 1D array based on the gradient.
-    
+    Finds the indices of the major peaks in the given 1D array based on the gradient.
+
     Parameters:
         gradient (numpy.ndarray): The 1D array containing the gradient data.
         radius (int): The radius around the peaks for filtering out subdominant peaks.
-        
+        num_peaks (int, optional): Number of dominant peaks to return. Defaults to
+            ``settings.NUMBER_OF_PEAKS``.
+
     Returns:
-        list: The indices of the two major peaks.
+        list: The indices of the dominant peaks.
     """
+    if num_peaks is None:
+        num_peaks = settings.NUMBER_OF_PEAKS
+
     # Identify peaks
     peak_indices = argrelextrema(gradient, np.greater)[0]
     peak_values = gradient[peak_indices]
-    
+
     # Sort peaks by value
     sorted_peak_indices = [x for _, x in sorted(zip(peak_values, peak_indices), reverse=True)]
-    
-    # Extract the two major peaks based on radius
+
+    # Extract the major peaks based on radius
     major_peaks = []
     for peak in sorted_peak_indices:
         if all(abs(peak - mp) >= radius for mp in major_peaks):
             major_peaks.append(peak)
-            if len(major_peaks) >= 2:
+            if len(major_peaks) >= num_peaks:
                 break
     return major_peaks
 
 
-def find_main_peaks(data, height_threshold):
+def find_main_peaks(data, height_threshold, num_peaks=None):
+    if num_peaks is None:
+        num_peaks = settings.NUMBER_OF_PEAKS
     peaks, _ = find_peaks(data, height=height_threshold)
-    sorted_peaks = sorted(peaks, key=lambda x: data[x], reverse=True)[:2]
+    sorted_peaks = sorted(peaks, key=lambda x: data[x], reverse=True)[:num_peaks]
     return sorted(sorted_peaks)
 
 def find_baseline_from_minima_skip(data, first_peak, skip_points):
@@ -121,8 +129,8 @@ def find_baseline_from_minima_skip(data, first_peak, skip_points):
             min_idx = i
     return min_idx
 
-def find_shifted_baseline(data, height_threshold=0.5, skip_points=10):
-    main_peaks = find_main_peaks(data, height_threshold * np.max(data))
+def find_shifted_baseline(data, height_threshold=0.5, skip_points=10, num_peaks=None):
+    main_peaks = find_main_peaks(data, height_threshold * np.max(data), num_peaks=num_peaks)
     if main_peaks:
         first_peak = main_peaks[0]
         baseline_point = find_baseline_from_minima_skip(data, first_peak, skip_points)
