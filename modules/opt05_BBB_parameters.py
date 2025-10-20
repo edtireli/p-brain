@@ -205,7 +205,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             Ki, SD_Ki, lamda, Ki, 0.0,
             subtype_tissue, slice_tissue,
             subtype_artery, venous_slice, arterial_slice,
-            analysis_directory, suffix='_two_compartment'
+            analysis_directory, suffix='_tikhonov'
         )
 
     if use_patlak:
@@ -228,7 +228,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
 
     if subtype_artery == 'Max':
         if use_two_compartment:
-            json1 = os.path.join(analysis_directory, 'values_two_compartment.json')
+            json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
             json2 = os.path.join(analysis_directory, 'max_info.json')
             replace_max_with_artery_type_and_delete(json1, json2)
         if use_patlak:
@@ -273,7 +273,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
                 Ki, SD_Ki, lamda, Ki, 0.0,
                 subtype_tissue, slice_tissue,
                 subtype_artery, venous_slice, arterial_slice,
-                analysis_directory, suffix='_two_compartment'
+                analysis_directory, suffix='_tikhonov'
             )
 
         if use_patlak:
@@ -294,7 +294,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
 
         if subtype_artery == 'Max':
             if use_two_compartment:
-                json1 = os.path.join(analysis_directory, 'values_two_compartment.json')
+                json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
                 json2 = os.path.join(analysis_directory, 'max_info.json')
                 replace_max_with_artery_type_and_delete(json1, json2)
             if use_patlak:
