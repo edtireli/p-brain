@@ -81,12 +81,14 @@ def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
 
 
 def residue_to_cbf(residue0):
-    """Convert the residue's initial value to CBF in ml/100g/min."""
+    """Convert the residue's initial value to CBF in ml/100g/min.
 
-    scale = 6000.0 / settings.TISSUE_DENSITY
-    if settings.PLASMA_DERIVED_AIF:
-        scale *= max(1.0 - settings.HEMATOCRIT, 0.0)
-    cbf = float(residue0) * scale
+    Historically the pipeline has scaled the first residue sample by 6000 to
+    express perfusion in millilitres per 100 grams per minute.  Restore that
+    behaviour without additional density or hematocrit adjustments.
+    """
+
+    cbf = float(residue0) * 6000.0
     return max(cbf, 0.0)
 
 
