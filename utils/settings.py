@@ -31,6 +31,15 @@ NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 # ``P_BRAIN_MODEL`` is not provided the default is ``both``.
 KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")
 
+# Optionally use the Patlak permeability (Ki) as the initial guess for
+# Ktrans in the two-compartment optimisation.
+TWO_COMPARTMENT_INIT_FROM_PATLAK = False
+
+# Control writing of additional voxelwise parametric maps derived from the
+# deconvolution residue.
+WRITE_MTT = True
+WRITE_CTH = True
+
 # Regularisation strength for the two-compartment model
 TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 0.5))
 
@@ -200,6 +209,9 @@ def save_run_settings(analysis_directory, parameters):
         "TIKHONOV_LAMBDA": TIKHONOV_LAMBDA,
         "GLOBAL_KI_SKIP_BOTTOM": GLOBAL_KI_SKIP_BOTTOM,
         "GLOBAL_KI_SKIP_TOP": GLOBAL_KI_SKIP_TOP,
+        "TWO_COMPARTMENT_INIT_FROM_PATLAK": TWO_COMPARTMENT_INIT_FROM_PATLAK,
+        "WRITE_MTT": WRITE_MTT,
+        "WRITE_CTH": WRITE_CTH,
     })
     if AUTO_LAMBDA:
         settings["AUTO_LAMBDA_VALUE"] = AUTO_LAMBDA_VALUE

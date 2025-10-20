@@ -34,6 +34,38 @@ def tikhonov_regularization(A, C_t, lambd):
     return np.linalg.solve(regularized, A.T @ C_t)
 
 
+def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
+    """CTH (capillary transit time heterogeneity) measures the spread of capillary transit times in seconds.
+    It is defined as the standard deviation of the transit time distribution h(t) derived from the residue r(t).
+    MTT = ∫ r(t) dt,  h(t) = -dr/dt normalized to unit area,  CTH = sqrt( ∫ (t - μ)^2 h(t) dt ),  μ = ∫ t h(t) dt.
+    """
+
+    residue = np.asarray(residue, dtype=float).reshape(-1)
+    if residue.size < 5 or np.isnan(residue).any() or not np.isfinite(dt) or dt <= 0:
+        return np.nan, np.nan, np.full(residue.shape, np.nan), np.nan
+
+    working = residue.copy()
+    if enforce_nonneg:
+        working = np.clip(working, 0.0, None)
+    if enforce_monotone:
+        working = np.minimum.accumulate(working)
+
+    mtt = float(np.trapezoid(working, dx=dt))
+
+    h = np.maximum(0.0, -np.gradient(working, dt, edge_order=2))
+    s = float(np.trapezoid(h, dx=dt))
+    if s <= 0.0:
+        return mtt, np.nan, np.full_like(working, np.nan), np.nan
+
+    h /= s
+    time = np.arange(working.size, dtype=float) * dt
+    mu = float(np.trapezoid(time * h, dx=dt))
+    variance = float(np.trapezoid(((time - mu) ** 2) * h, dx=dt))
+    cth = float(np.sqrt(max(variance, 0.0)))
+
+    return mtt, cth, h, mu
+
+
 def pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas):
     """Return the lambda corresponding to the L-curve corner."""
     delta_t = np.diff(time_array).mean()
@@ -85,6 +117,8 @@ def plot_l_curve(aif, tissue_curve, time_array, lambdas, *, best=None):
 
 def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
                             x0=(0.001, 0.2, 0.05)):
+    x0 = np.asarray(x0, dtype=float)
+
     def residual(theta):
         Ktrans, ve, vp = theta
         Ct_pred = extended_tofts_model(t, Ktrans, ve, vp, Cp)
@@ -99,7 +133,8 @@ def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
 
 
 def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
-                                 lambd=settings.TIKHONOV_LAMBDA):
+                                 lambd=settings.TIKHONOV_LAMBDA,
+                                 ktrans_initial=None):
     """Fit the extended Tofts model using Tikhonov regularisation.
 
     Parameters
@@ -112,6 +147,9 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
         Time points in seconds.
     lambd : float, optional
         Regularisation weight.
+    ktrans_initial : float, optional
+        Optional initial guess for Ktrans in 1/s. When ``None`` the default
+        value 0.5/6000 is used.
 
     Returns
     -------
@@ -130,7 +168,11 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
     if c_input.shape[0] != c_tissue.shape[0]:
         raise ValueError("The number of time points in c_input and c_tissue must be the same.")
 
-    initial_guess = [0.5 / 6000, 0.2, 0.05]
+    if ktrans_initial is None or not np.isfinite(ktrans_initial):
+        k0 = 0.5 / 6000
+    else:
+        k0 = max(float(ktrans_initial), 1e-8)
+    initial_guess = [k0, 0.2, 0.05]
 
     def model(params):
         return extended_tofts_model(time_array, params[0], params[1], params[2], c_input)

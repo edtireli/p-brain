@@ -34,6 +34,17 @@ def mode_choice():
     return int(choice)
 
 
+def _str2bool(value):
+    if isinstance(value, bool):
+        return value
+    val = value.lower()
+    if val in {"true", "t", "1", "yes", "y"}:
+        return True
+    if val in {"false", "f", "0", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the neuroimagining analysis tool")
     parser.add_argument('--id', type=str, help='Patient ID, corresponding to folder names in data/', required=False)
@@ -49,6 +60,12 @@ def parse_args():
     parser.add_argument('--data-dir', dest='data_dir', type=str,
                         default=os.environ.get('P_BRAIN_DATA_DIR'),
                         help='Directory containing subject folders (default: ./Data)')
+    parser.add_argument('--init-ktrans-from-patlak', action='store_true',
+                        help='Use the Patlak Ki as the initial Ktrans guess for the two-compartment fit')
+    parser.add_argument('--write-mtt', type=_str2bool, nargs='?', const=True, default=None,
+                        help='Enable or disable writing the voxelwise MTT map (default: True in auto mode)')
+    parser.add_argument('--write-cth', type=_str2bool, nargs='?', const=True, default=None,
+                        help='Enable or disable writing the voxelwise CTH map (default: True in auto mode)')
     return parser.parse_args()
 
 
@@ -131,6 +148,12 @@ def main():
         settings.TIKHONOV_LAMBDA = args.tikhonov_lambda
     if args.enable_lcurve:
         settings.AUTO_LAMBDA = True
+    if args.init_ktrans_from_patlak:
+        settings.TWO_COMPARTMENT_INIT_FROM_PATLAK = True
+    if args.write_mtt is not None:
+        settings.WRITE_MTT = args.write_mtt
+    if args.write_cth is not None:
+        settings.WRITE_CTH = args.write_cth
 
     # Respect ``PBRAIN_TURBO`` to disable plotting when running in batch mode.
     # Individual modes may override this later (manual/pseudo always show plots).

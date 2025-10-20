@@ -18,6 +18,7 @@ km = importlib.util.module_from_spec(spec_km)
 sys.modules['modules.kinetic_models'] = km
 spec_km.loader.exec_module(km)
 extended_tofts_tikhonov = km.extended_tofts_tikhonov
+residue_metrics = km.residue_metrics
 
 spec_ai = importlib.util.spec_from_file_location('modules.AI_tissue_functions', os.path.join(ROOT, 'modules', 'AI_tissue_functions.py'), submodule_search_locations=[os.path.join(ROOT, 'modules')])
 ai = importlib.util.module_from_spec(spec_ai)
@@ -71,3 +72,43 @@ def test_two_compartment_handles_constant_aif():
     ct = np.ones_like(t) * 0.2
     ki, _, _, _ = two_compartment(ca, ct, time_array=t)
     assert np.isfinite(ki)
+
+
+def test_residue_metrics_exponential_residue():
+    tau = 5.0
+    dt = 1.0
+    time = np.arange(0, 301)
+    residue = np.exp(-time / tau)
+    mtt, cth, h, mu = residue_metrics(residue, dt)
+    h_expected = (1.0 / tau) * np.exp(-time / tau)
+    assert np.isclose(mtt, tau, rtol=0.05)
+    assert np.isclose(mu, tau, rtol=0.05)
+    assert np.isclose(cth, tau, rtol=0.05)
+    rel_err = np.linalg.norm(h - h_expected) / np.linalg.norm(h_expected)
+    assert rel_err < 0.05
+
+
+def test_two_compartment_uses_patlak_initial_guess():
+    t, ca, ct = synthetic_data()
+    ki_patlak, _, _ = patlak_total(ct, ca, t)
+    captured = {}
+
+    original = ai.extended_tofts_tikhonov
+    settings_module = ai.settings
+
+    def recorder(aif, tissue, time_array, lambd=settings_module.TIKHONOV_LAMBDA, x0=(0.001, 0.2, 0.05)):
+        captured['x0'] = x0
+        return km.extended_tofts_tikhonov(aif, tissue, time_array, lambd=lambd, x0=x0)
+
+    previous_flag = settings_module.TWO_COMPARTMENT_INIT_FROM_PATLAK
+    try:
+        ai.extended_tofts_tikhonov = recorder
+        settings_module.TWO_COMPARTMENT_INIT_FROM_PATLAK = True
+        two_compartment(ca, ct, time_array=t)
+    finally:
+        settings_module.TWO_COMPARTMENT_INIT_FROM_PATLAK = previous_flag
+        ai.extended_tofts_tikhonov = original
+
+    assert 'x0' in captured
+    assert np.isfinite(captured['x0'][0])
+    assert np.isclose(captured['x0'][0], ki_patlak / 6000.0, rtol=0.05)
