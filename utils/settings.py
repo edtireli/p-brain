@@ -41,6 +41,10 @@ AUTO_LAMBDA_CANDIDATES = np.logspace(-2, 2, 30)
 # Holds the most recently chosen value when ``AUTO_LAMBDA`` is True
 AUTO_LAMBDA_VALUE = None
 
+# Number of bolus peaks expected in the acquisition.  Defaults to two but can
+# be overridden via the ``P_BRAIN_NUMBER_OF_PEAKS`` environment variable.
+NUMBER_OF_PEAKS = int(os.environ.get("P_BRAIN_NUMBER_OF_PEAKS", 2))
+
 # Number of slices to omit from the inferior (bottom) and superior (top)
 # ends when computing global Ki for white matter, cortical grey matter
 # and boundary tissues.  These can be overridden via the environment
