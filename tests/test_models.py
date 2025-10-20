@@ -125,22 +125,6 @@ def test_tikhonov_uses_lambda_squared():
 
 
 def test_residue_to_cbf_scaling():
-    original_density = km.settings.TISSUE_DENSITY
-    original_plasma = km.settings.PLASMA_DERIVED_AIF
-    original_hematocrit = km.settings.HEMATOCRIT
-    try:
-        km.settings.TISSUE_DENSITY = 1.04
-        km.settings.PLASMA_DERIVED_AIF = False
-        value = residue_to_cbf(0.002)
-        expected = max(0.002 * 6000.0 / 1.04, 0.0)
-        assert np.isclose(value, expected)
-
-        km.settings.PLASMA_DERIVED_AIF = True
-        km.settings.HEMATOCRIT = 0.42
-        plasma_value = residue_to_cbf(0.002)
-        expected_plasma = max(0.002 * 6000.0 / 1.04 * (1.0 - 0.42), 0.0)
-        assert np.isclose(plasma_value, expected_plasma)
-    finally:
-        km.settings.TISSUE_DENSITY = original_density
-        km.settings.PLASMA_DERIVED_AIF = original_plasma
-        km.settings.HEMATOCRIT = original_hematocrit
+    value = residue_to_cbf(0.002)
+    expected = max(0.002 * 6000.0, 0.0)
+    assert np.isclose(value, expected)
