@@ -43,6 +43,11 @@ WRITE_CTH = True
 # Regularisation strength for the two-compartment model
 TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 0.5))
 
+# Physiological constants for residue-based perfusion metrics
+TISSUE_DENSITY = float(os.environ.get("P_BRAIN_TISSUE_DENSITY", 1.04))
+HEMATOCRIT = float(os.environ.get("P_BRAIN_HEMATOCRIT", 0.42))
+PLASMA_DERIVED_AIF = os.environ.get("P_BRAIN_PLASMA_AIF", "0").lower() in {"1", "true", "yes"}
+
 # When enabled, pick the regularisation weight automatically using an L-curve
 # search across ``AUTO_LAMBDA_CANDIDATES``.
 AUTO_LAMBDA = False
