@@ -27,6 +27,7 @@ sys.modules['modules.AI_tissue_functions'] = ai
 spec_ai.loader.exec_module(ai)
 patlak_total = ai.patlak_total
 two_compartment = ai.two_compartment_tikhonov
+settings_module = ai.settings
 
 
 def synthetic_data():
@@ -115,12 +116,12 @@ def test_two_compartment_uses_patlak_initial_guess():
     assert np.isclose(captured['x0'][0], ki_patlak / 6000.0, rtol=0.05)
 
 
-def test_tikhonov_uses_lambda_squared():
+def test_tikhonov_regularisation_uses_linear_lambda():
     a = np.eye(4)
     ct = np.arange(1, 5, dtype=float)
     lam = 2.0
     sol = km.tikhonov_regularization(a, ct, lam)
-    expected = ct / (1.0 + lam ** 2)
+    expected = ct / (1.0 + lam)
     assert np.allclose(sol, expected)
 
 

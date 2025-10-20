@@ -74,8 +74,8 @@ def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
     L = _prepare_penalty_matrix(n_cols, penalty)
     ata = A.T @ A
     ltl = L.T @ L if L.size else np.zeros((n_cols, n_cols), dtype=float)
-    lam_sq = float(max(lambd, 0.0)) ** 2
-    regularised = ata + lam_sq * ltl
+    lam = float(max(lambd, 0.0))
+    regularised = ata + lam * ltl
     rhs = A.T @ C_t
     return np.linalg.solve(regularised, rhs)
 
