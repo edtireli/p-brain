@@ -1397,7 +1397,7 @@ def plot_ctcs_and_patlak(
         ax_aif.plot(t_arr, C_a_arr, color='purple', lw=2, label='Input function')
         ax_aif.set_title('Maximum time-shifted input function')
         ax_aif.set_xlabel('Time (s)')
-        ax_aif.set_ylabel('C_a(t)')
+        ax_aif.set_ylabel('C_a(t) (mmol)')
         ax_aif.grid(True)
         ax_aif.legend(loc='upper right')
     else:
@@ -1472,6 +1472,7 @@ def plot_ctcs_and_patlak(
         ax_ctc.set_xlabel('Time (s)')
     else:
         ax_ctc.set_xlabel('Frames')
+    ax_ctc.set_ylabel('C_tissue(t) (mmol)')
 
 
     # ---------------- Patlak panel (bottom) ------------------
