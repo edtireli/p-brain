@@ -1578,7 +1578,7 @@ def compute_and_plot_ctcs_median(
     wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
     wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
     T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory,
-    dce_path, boundary=False, compute_per_voxel_Ki=False, compute_per_voxel_CBF=False,
+    dce_path, ref_affine=None, ref_header=None, boundary=False, compute_per_voxel_Ki=False, compute_per_voxel_CBF=False,
     gm_brainstem_mask_t2=None, gm_brainstem_mask_dce=None,
     gm_cerebellum_mask_t2=None, gm_cerebellum_mask_dce=None,
     wm_cerebellum_mask_t2=None, wm_cerebellum_mask_dce=None,
@@ -1604,6 +1604,13 @@ def compute_and_plot_ctcs_median(
     max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
     ca_file = _get_first_npy(max_folder)
     C_a_full = np.load(os.path.join(max_folder, ca_file))
+
+    if ref_affine is None or ref_header is None:
+        ref_img = nib.load(dce_path)
+        if ref_affine is None:
+            ref_affine = ref_img.affine
+        if ref_header is None:
+            ref_header = ref_img.header.copy()
 
     all_patlak_data = []
     Ki_wm_list = []
@@ -2807,7 +2814,8 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         data_4d, t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
         wm_mask_dce, cortical_gm_mask_dce, subcortical_gm_mask_dce,
         T1_matrix, M0_matrix, analysis_directory, time_points_s, image_directory,
-        dce_path=dce_path, boundary=boundary, compute_per_voxel_Ki=True, compute_per_voxel_CBF=True,
+        dce_path=dce_path, ref_affine=ref_affine, ref_header=ref_header,
+        boundary=boundary, compute_per_voxel_Ki=True, compute_per_voxel_CBF=True,
         gm_brainstem_mask_t2=gm_brainstem_mask_t2, gm_brainstem_mask_dce=gm_brainstem_mask_dce,
         gm_cerebellum_mask_t2=gm_cerebellum_mask_t2, gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
         wm_cerebellum_mask_t2=wm_cerebellum_mask_t2, wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
