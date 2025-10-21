@@ -2226,6 +2226,16 @@ def compute_and_plot_ctcs_median(
         nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
         print(f"K_i per voxel saved to {Ki_per_voxel_path}")
 
+        # Save Patlak vp (lambda) per voxel as a .nii file
+        vp_data = np.asarray(lambda_per_voxel, dtype=np.float32)
+        if ref_header is not None:
+            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine, header=ref_header.copy())
+        else:
+            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine)
+        vp_per_voxel_path = os.path.join(analysis_directory, 'vp_per_voxel.nii.gz')
+        nib.save(vp_per_voxel_nii, vp_per_voxel_path)
+        print(f"v_p per voxel saved to {vp_per_voxel_path}")
+
     # Compute global min and max for CBF
     if compute_per_voxel_CBF:
         global_CBF_min = np.nanmin(CBF_per_voxel)
@@ -2805,6 +2815,7 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
         'Ki_cortical_gm.nii.gz',
         'Ki_subcortical_gm.nii.gz',
         'Ki_per_voxel.nii.gz',
+        'vp_per_voxel.nii.gz',
         'AI_values_median.json',
         'Ki_vs_slice_median.png',
         'AI_values_median_total.json',
