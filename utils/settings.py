@@ -59,6 +59,17 @@ AUTO_LAMBDA_VALUE = None
 # be overridden via the ``P_BRAIN_NUMBER_OF_PEAKS`` environment variable.
 NUMBER_OF_PEAKS = int(os.environ.get("P_BRAIN_NUMBER_OF_PEAKS", 2))
 
+# Lower bound for the Patlak inclusion window expressed as a fraction of the
+# maximum Patlak x-coordinate.  Higher values restrict the fit to the tail.
+PATLAK_WINDOW_START_FRACTION = float(
+    os.environ.get("P_BRAIN_PATLAK_WINDOW_START_FRACTION", 1 / 3)
+)
+
+# Minimum coefficient of determination required when choosing the Patlak
+# fitting segment.  The solver progressively discards early points until this
+# target is reached (or the best achievable R² is used).
+PATLAK_MIN_R2 = float(os.environ.get("P_BRAIN_PATLAK_MIN_R2", 0.985))
+
 # Number of slices to omit from the inferior (bottom) and superior (top)
 # ends when computing global Ki for white matter, cortical grey matter
 # and boundary tissues.  These can be overridden via the environment

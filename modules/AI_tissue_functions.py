@@ -147,12 +147,69 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
     y = C_t / C_a
 
     # points that *could* be used
-    finite   = np.isfinite(x) & np.isfinite(y) & (C_a != 0)
-    # classic ⅓-to-⅔ window
-    w        = (x >= x[finite].max() / 3) & (x <= x[finite].max())
-    include  = finite & w & (~bad_mask)
+    finite = np.isfinite(x) & np.isfinite(y) & (C_a != 0)
+    usable = finite & (~bad_mask)
 
     # bail-out if <2 points
+    if usable.sum() < 2:
+        return np.nan, np.nan, np.nan, x, y, usable
+
+    # classic window with configurable lower bound and R^2-based refinement
+    window_start = settings.PATLAK_WINDOW_START_FRACTION
+    if not (0 < window_start < 1):
+        window_start = 1 / 3
+    xmax = x[usable].max()
+    min_x = window_start * xmax
+
+    candidate_indices = np.where(usable & (x >= min_x))[0]
+    if candidate_indices.size == 0:
+        candidate_indices = np.where(usable)[0]
+
+    target_r2 = getattr(settings, "PATLAK_MIN_R2", 0.0)
+    if not (0 <= target_r2 < 1):
+        target_r2 = 0.0
+
+    include = None
+    best_r2 = -np.inf
+    fallback_mask = None
+
+    for idx in candidate_indices:
+        candidate_mask = usable.copy()
+        candidate_mask[:idx] = False
+
+        if candidate_mask.sum() < 2:
+            continue
+
+        x_sel = x[candidate_mask]
+        y_sel = y[candidate_mask]
+        xm = x_sel.mean()
+        ym = y_sel.mean()
+        denom = ((x_sel - xm) ** 2).sum()
+        if denom <= 0:
+            continue
+
+        slope = ((x_sel - xm) * (y_sel - ym)).sum() / denom
+        intercept = ym - slope * xm
+        resid = y_sel - (intercept + slope * x_sel)
+        ss_res = (resid ** 2).sum()
+        ss_tot = ((y_sel - ym) ** 2).sum()
+
+        if ss_tot <= 0:
+            r2 = 1.0 if ss_res <= 1e-12 else 0.0
+        else:
+            r2 = 1 - ss_res / ss_tot
+
+        if r2 > best_r2:
+            best_r2 = r2
+            fallback_mask = candidate_mask
+
+        if r2 >= target_r2:
+            include = candidate_mask
+            break
+
+    if include is None:
+        include = fallback_mask if fallback_mask is not None else usable
+
     if include.sum() < 2:
         return np.nan, np.nan, np.nan, x, y, include
 
@@ -1200,7 +1257,10 @@ def patlak_analysis_plotting(c_tissue, c_input, time):
 
     # 1/3–2/3 Patlak window
     x_max = np.nanmax(x[good]) if good.any() else np.nan
-    w = (x >= x_max/3) & (x <= x_max)
+    window_start = settings.PATLAK_WINDOW_START_FRACTION
+    if not (0 < window_start < 1):
+        window_start = 1/3
+    w = (x >= window_start * x_max) & (x <= x_max)
     good &= w
 
     if good.sum() < 2:
