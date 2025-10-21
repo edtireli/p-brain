@@ -19,6 +19,12 @@ def parse_args():
         help="Directory containing dataset folders",
     )
     parser.add_argument("--all", action="store_true", help="Process all datasets in the data directory")
+    parser.add_argument(
+        "--from",
+        dest="start_id",
+        type=str,
+        help="Start processing from the specified dataset ID (inclusive)",
+    )
     parser.add_argument("ids", nargs="*", help="Specific dataset IDs to process")
     return parser.parse_args()
 
@@ -104,6 +110,7 @@ def main():
     data_directory = os.path.abspath(args.data_dir)
     use_all = args.all
     ids = args.ids
+    start_id = args.start_id
 
     # If user gave no ids and no --all, default to all
     if not ids and not use_all:
@@ -122,6 +129,17 @@ def main():
     except ValueError as exc:
         print(f"{exc}. Provide log numbers or use --all.")
         sys.exit(1)
+
+    if start_id:
+        start_id = str(start_id)
+        try:
+            start_index = next(
+                index for index, (dataset_id, _) in enumerate(datasets) if dataset_id == start_id
+            )
+        except StopIteration:
+            print(f"Start dataset {start_id} not found in selection.")
+            sys.exit(1)
+        datasets = datasets[start_index:]
 
     if not datasets:
         print("No datasets found to process.")
