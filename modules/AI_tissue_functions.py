@@ -148,8 +148,12 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
 
     # points that *could* be used
     finite   = np.isfinite(x) & np.isfinite(y) & (C_a != 0)
-    # classic ⅓-to-⅔ window
-    w        = (x >= x[finite].max() / 3) & (x <= x[finite].max())
+    # classic window with configurable lower bound
+    window_start = settings.PATLAK_WINDOW_START_FRACTION
+    if not (0 < window_start < 1):
+        window_start = 1/3
+    xmax = x[finite].max()
+    w = (x >= window_start * xmax) & (x <= xmax)
     include  = finite & w & (~bad_mask)
 
     # bail-out if <2 points
@@ -1200,7 +1204,10 @@ def patlak_analysis_plotting(c_tissue, c_input, time):
 
     # 1/3–2/3 Patlak window
     x_max = np.nanmax(x[good]) if good.any() else np.nan
-    w = (x >= x_max/3) & (x <= x_max)
+    window_start = settings.PATLAK_WINDOW_START_FRACTION
+    if not (0 < window_start < 1):
+        window_start = 1/3
+    w = (x >= window_start * x_max) & (x <= x_max)
     good &= w
 
     if good.sum() < 2:
