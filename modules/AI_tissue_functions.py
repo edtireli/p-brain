@@ -380,7 +380,43 @@ def _process_label(lbl):
 
     Ki, lam, SD_Ki, _, _, _ = _patlak_analysis_plotting(
         C_t_label, C_a_label, t_label)
-    return (lbl, Ki, SD_Ki, lam, len(indices))
+
+    cbf = float('nan')
+    mtt = float('nan')
+    cth = float('nan')
+
+    if len(t_label) >= 2:
+        deltas = np.diff(t_label)
+        deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+        if deltas.size:
+            delta_t = float(deltas[0])
+            C_t_use = np.asarray(C_t_label[:len(t_label)], dtype=float)
+            C_a_use = np.asarray(C_a_label[:len(t_label)], dtype=float)
+            lambd = (settings.AUTO_LAMBDA_VALUE if settings.AUTO_LAMBDA
+                     and settings.AUTO_LAMBDA_VALUE is not None
+                     else settings.TIKHONOV_LAMBDA)
+            try:
+                residue = tikhonov_regularization(
+                    construct_convolution_matrix(C_a_use, delta_t),
+                    C_t_use,
+                    lambd,
+                )
+            except np.linalg.LinAlgError:
+                residue = None
+
+            if residue is not None and residue.size:
+                cbf_val = residue_to_cbf(
+                    residue[0],
+                    rho_tissue=settings.TISSUE_DENSITY,
+                    hematocrit=settings.HEMATOCRIT,
+                    aif_type="plasma",
+                )
+                mtt_val, cth_val, _, _ = residue_metrics(residue, delta_t)
+                cbf = float(cbf_val) if np.isfinite(cbf_val) else float('nan')
+                mtt = float(mtt_val) if np.isfinite(mtt_val) else float('nan')
+                cth = float(cth_val) if np.isfinite(cth_val) else float('nan')
+
+    return (lbl, Ki, SD_Ki, lam, cbf, mtt, cth, len(indices))
 
 
 def compute_Ki_from_atlas(
@@ -407,10 +443,15 @@ def compute_Ki_from_atlas(
 
     label_lookup = _load_label_lookup()
 
-    # Prepare empty 3D volumes for Ki, SD(Ki), and vp
+    # Prepare empty 3D volumes for Ki, SD(Ki), vp and perfusion metrics
     Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     SD_Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     vp_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
+    CBF_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
+    MTT_map = (np.full(atlas_data.shape, np.nan, dtype=np.float32)
+               if settings.WRITE_MTT else None)
+    CTH_map = (np.full(atlas_data.shape, np.nan, dtype=np.float32)
+               if settings.WRITE_CTH else None)
 
     # Dictionary to keep numerical results per label for JSON output
     atlas_results = {}
@@ -450,18 +491,26 @@ def compute_Ki_from_atlas(
     else:
         results = [_process_label(lbl) for lbl in unique_labels]
 
-    for lbl, Ki, SD_Ki, lam, voxel_count in results:
+    for lbl, Ki, SD_Ki, lam, cbf, mtt, cth, voxel_count in results:
         if np.isnan(Ki):
             continue
         mask = (atlas_data == lbl)
         Ki_map[mask] = Ki
         SD_Ki_map[mask] = SD_Ki
         vp_map[mask] = lam
+        CBF_map[mask] = cbf
+        if MTT_map is not None:
+            MTT_map[mask] = mtt
+        if CTH_map is not None:
+            CTH_map[mask] = cth
         label_key = label_lookup.get(int(lbl), str(lbl))
         atlas_results[label_key] = {
             "Ki": float(Ki),
             "SD_Ki": float(SD_Ki),
             "vp": float(lam),
+            "CBF_tikhonov": float(cbf) if np.isfinite(cbf) else float('nan'),
+            "MTT_tikhonov": float(mtt) if np.isfinite(mtt) else float('nan'),
+            "CTH_tikhonov": float(cth) if np.isfinite(cth) else float('nan'),
             "voxel_count": int(voxel_count)
         }
 
@@ -475,6 +524,14 @@ def compute_Ki_from_atlas(
     nib.save(Ki_nii, os.path.join(output_directory, 'Ki_map_atlas.nii.gz'))
     nib.save(SD_Ki_nii, os.path.join(output_directory, 'SD_Ki_map_atlas.nii.gz'))
     nib.save(vp_nii, os.path.join(output_directory, 'vp_map_atlas.nii.gz'))
+    nib.save(nib.Nifti1Image(CBF_map, affine),
+             os.path.join(output_directory, 'CBF_tikhonov_map_atlas.nii.gz'))
+    if MTT_map is not None:
+        nib.save(nib.Nifti1Image(MTT_map, affine),
+                 os.path.join(output_directory, 'MTT_tikhonov_map_atlas.nii.gz'))
+    if CTH_map is not None:
+        nib.save(nib.Nifti1Image(CTH_map, affine),
+                 os.path.join(output_directory, 'CTH_tikhonov_map_atlas.nii.gz'))
 
     # Save numerical results to JSON
     json_path = os.path.join(output_directory, 'Ki_values_atlas.json')
@@ -485,6 +542,11 @@ def compute_Ki_from_atlas(
     print("  Ki_map_atlas.nii.gz")
     print("  SD_Ki_map_atlas.nii.gz")
     print("  vp_map_atlas.nii.gz")
+    print("  CBF_tikhonov_map_atlas.nii.gz")
+    if MTT_map is not None:
+        print("  MTT_tikhonov_map_atlas.nii.gz")
+    if CTH_map is not None:
+        print("  CTH_tikhonov_map_atlas.nii.gz")
 
 
 def construct_convolution_matrix(C_a, delta_t):
@@ -1955,6 +2017,58 @@ def compute_and_plot_ctcs_median(
             )
             return Ki, lam, SD_Ki, (x_patlak, y_patlak), included
 
+        def compute_tikhonov_metrics(C_t):
+            if C_t.size == 0:
+                return (float('nan'), float('nan'), float('nan'))
+
+            n = min(len(C_t), len(C_a_slice), len(time_points))
+            if n < 2:
+                return (float('nan'), float('nan'), float('nan'))
+
+            C_t_use = np.asarray(C_t[:n], dtype=float)
+            C_a_use = np.asarray(C_a_slice[:n], dtype=float)
+            t_use = np.asarray(time_points[:n], dtype=float)
+
+            if (not np.all(np.isfinite(C_t_use)) or
+                    not np.all(np.isfinite(C_a_use)) or
+                    not np.all(np.isfinite(t_use))):
+                return (float('nan'), float('nan'), float('nan'))
+
+            deltas = np.diff(t_use)
+            deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+            if deltas.size == 0:
+                return (float('nan'), float('nan'), float('nan'))
+
+            delta_t = float(deltas[0])
+            lambd = (settings.AUTO_LAMBDA_VALUE if settings.AUTO_LAMBDA
+                     and settings.AUTO_LAMBDA_VALUE is not None
+                     else settings.TIKHONOV_LAMBDA)
+
+            try:
+                residue = tikhonov_regularization(
+                    construct_convolution_matrix(C_a_use, delta_t),
+                    C_t_use,
+                    lambd,
+                )
+            except np.linalg.LinAlgError:
+                return (float('nan'), float('nan'), float('nan'))
+
+            if residue.size == 0:
+                return (float('nan'), float('nan'), float('nan'))
+
+            cbf_val = residue_to_cbf(
+                residue[0],
+                rho_tissue=settings.TISSUE_DENSITY,
+                hematocrit=settings.HEMATOCRIT,
+                aif_type="plasma",
+            )
+            mtt_val, cth_val, _, _ = residue_metrics(residue, delta_t)
+
+            cbf = float(cbf_val) if np.isfinite(cbf_val) else float('nan')
+            mtt = float(mtt_val) if np.isfinite(mtt_val) else float('nan')
+            cth = float(cth_val) if np.isfinite(cth_val) else float('nan')
+            return cbf, mtt, cth
+
         Ki_wm, lambda_wm, SD_Ki_wm, curve_wm, included_wm = perform_model_fit(C_t_wm)
         Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, curve_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
         Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, curve_subcortical_gm, included_subcortical_gm = perform_model_fit(C_t_subcortical_gm)
@@ -1970,6 +2084,20 @@ def compute_and_plot_ctcs_median(
             SD_Ki_boundary = np.nan
             curve_boundary = None
             included_boundary = np.array([], dtype=bool)
+
+        CBF_wm, MTT_wm, CTH_wm = compute_tikhonov_metrics(C_t_wm)
+        CBF_cortical_gm, MTT_cortical_gm, CTH_cortical_gm = compute_tikhonov_metrics(C_t_cortical_gm)
+        CBF_subcortical_gm, MTT_subcortical_gm, CTH_subcortical_gm = compute_tikhonov_metrics(C_t_subcortical_gm)
+        CBF_gm_brainstem, MTT_gm_brainstem, CTH_gm_brainstem = compute_tikhonov_metrics(C_t_gm_brainstem)
+        CBF_gm_cerebellum, MTT_gm_cerebellum, CTH_gm_cerebellum = compute_tikhonov_metrics(C_t_gm_cerebellum)
+        CBF_wm_cerebellum, MTT_wm_cerebellum, CTH_wm_cerebellum = compute_tikhonov_metrics(C_t_wm_cerebellum)
+        CBF_wm_cc, MTT_wm_cc, CTH_wm_cc = compute_tikhonov_metrics(C_t_wm_cc)
+        if boundary and C_t_boundary.size > 0:
+            CBF_boundary, MTT_boundary, CTH_boundary = compute_tikhonov_metrics(C_t_boundary)
+        else:
+            CBF_boundary = float('nan')
+            MTT_boundary = float('nan')
+            CTH_boundary = float('nan')
 
         # Collect Ki values for plotting
         Ki_wm_list.append(Ki_wm)
@@ -2101,42 +2229,63 @@ def compute_and_plot_ctcs_median(
                 'Ki': Ki_wm,
                 'SD_Ki': SD_Ki_wm,
                 'lambda': lambda_wm,
+                'CBF_tikhonov': CBF_wm,
+                'MTT_tikhonov': MTT_wm,
+                'CTH_tikhonov': CTH_wm,
                 'voxel_count': int(np.sum(wm_slice_dce))
             },
             'cortical_gray_matter_median': {
                 'Ki': Ki_cortical_gm,
                 'SD_Ki': SD_Ki_cortical_gm,
                 'lambda': lambda_cortical_gm,
+                'CBF_tikhonov': CBF_cortical_gm,
+                'MTT_tikhonov': MTT_cortical_gm,
+                'CTH_tikhonov': CTH_cortical_gm,
                 'voxel_count': int(np.sum(cortical_gm_slice_dce))
             },
             'subcortical_gray_matter_median': {
                 'Ki': Ki_subcortical_gm,
                 'SD_Ki': SD_Ki_subcortical_gm,
                 'lambda': lambda_subcortical_gm,
+                'CBF_tikhonov': CBF_subcortical_gm,
+                'MTT_tikhonov': MTT_subcortical_gm,
+                'CTH_tikhonov': CTH_subcortical_gm,
                 'voxel_count': int(np.sum(subcortical_gm_slice_dce))
             },
             'gm_brainstem_median': {
                 'Ki': Ki_gm_brainstem,
                 'SD_Ki': SD_Ki_gm_brainstem,
                 'lambda': lambda_gm_brainstem,
+                'CBF_tikhonov': CBF_gm_brainstem,
+                'MTT_tikhonov': MTT_gm_brainstem,
+                'CTH_tikhonov': CTH_gm_brainstem,
                 'voxel_count': int(np.sum(gm_brainstem_slice_dce))
             },
             'gm_cerebellum_median': {
                 'Ki': Ki_gm_cerebellum,
                 'SD_Ki': SD_Ki_gm_cerebellum,
                 'lambda': lambda_gm_cerebellum,
+                'CBF_tikhonov': CBF_gm_cerebellum,
+                'MTT_tikhonov': MTT_gm_cerebellum,
+                'CTH_tikhonov': CTH_gm_cerebellum,
                 'voxel_count': int(np.sum(gm_cerebellum_slice_dce))
             },
             'wm_cerebellum_median': {
                 'Ki': Ki_wm_cerebellum,
                 'SD_Ki': SD_Ki_wm_cerebellum,
                 'lambda': lambda_wm_cerebellum,
+                'CBF_tikhonov': CBF_wm_cerebellum,
+                'MTT_tikhonov': MTT_wm_cerebellum,
+                'CTH_tikhonov': CTH_wm_cerebellum,
                 'voxel_count': int(np.sum(wm_cerebellum_slice_dce))
             },
             'wm_cc_median': {
                 'Ki': Ki_wm_cc,
                 'SD_Ki': SD_Ki_wm_cc,
                 'lambda': lambda_wm_cc,
+                'CBF_tikhonov': CBF_wm_cc,
+                'MTT_tikhonov': MTT_wm_cc,
+                'CTH_tikhonov': CTH_wm_cc,
                 'voxel_count': int(np.sum(wm_cc_slice_dce))
             }
         }
@@ -2146,6 +2295,9 @@ def compute_and_plot_ctcs_median(
                 'Ki': Ki_boundary,
                 'SD_Ki': SD_Ki_boundary,
                 'lambda': lambda_boundary,
+                'CBF_tikhonov': CBF_boundary,
+                'MTT_tikhonov': MTT_boundary,
+                'CTH_tikhonov': CTH_boundary,
                 'voxel_count': int(np.sum(boundary_mask))
             }
 
@@ -2883,6 +3035,9 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
         'Ki_map_atlas.nii.gz',
         'SD_Ki_map_atlas.nii.gz',
         'vp_map_atlas.nii.gz',
+        'CBF_tikhonov_map_atlas.nii.gz',
+        'MTT_tikhonov_map_atlas.nii.gz',
+        'CTH_tikhonov_map_atlas.nii.gz',
         'Ki_values_atlas.json',
     ]
     if boundary:
