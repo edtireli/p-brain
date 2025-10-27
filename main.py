@@ -6,6 +6,7 @@ import utils.settings as settings
 from modules import *
 import utils.plotting as plotting
 from utils.cli_logging import (
+    auto_logging_suppressed,
     install_auto_logging_hooks,
     log_auto,
     log_process_end,
@@ -218,8 +219,9 @@ def main():
         elif mode == 'auto':
             install_auto_logging_hooks()
             hooks_installed = True
-            log_auto("Fully automatic analysis pipeline initialised.")
-            print_banner()
+            with auto_logging_suppressed():
+                print_banner()
+            log_auto("Fully automatic analysis pipeline initialised.", level="info")
             log_process_start("T1 fitting")
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
             log_process_end("T1 fitting")
@@ -229,7 +231,7 @@ def main():
             log_process_start("Tissue kinetic modelling")
             tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
             log_process_end("Tissue kinetic modelling")
-            log_auto("Fully automatic analysis pipeline completed.")
+            log_auto("Fully automatic analysis pipeline completed.", level="success")
         elif mode == 'pseudo':
             set_turbo_mode(False)
             print_banner()
