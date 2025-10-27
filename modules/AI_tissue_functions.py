@@ -19,6 +19,7 @@ import os
 import multiprocessing
 import shutil
 import warnings
+import logging
 import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
@@ -31,6 +32,7 @@ from .kinetic_models import (
     pick_lambda_via_l_curve,
     residue_metrics,
     residue_to_cbf,
+    gamma_fit_metrics,
 )
 from skimage.transform import resize
 import json
@@ -39,6 +41,8 @@ from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 import re
 
+
+logger = logging.getLogger(__name__)
 
 # Allow overriding the default mask regeneration behaviour via an
 # environment variable.  By default, existing masks are re-used to avoid
@@ -92,6 +96,231 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     if return_residue:
         return Ki, lam, SD_Ki, fit_curve, residue, cbf
     return Ki, lam, SD_Ki, fit_curve
+
+
+def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
+                               auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
+                               lambd_default=settings.TIKHONOV_LAMBDA):
+    """Replicate the legacy Tikhonov-based MTT/CTH computation."""
+
+    if C_t.size == 0:
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    n = min(len(C_t), len(C_a), len(t))
+    if n < 2:
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    C_t_use = np.asarray(C_t[:n], dtype=float)
+    C_a_use = np.asarray(C_a[:n], dtype=float)
+    t_use = np.asarray(t[:n], dtype=float)
+
+    if (not np.all(np.isfinite(C_t_use)) or
+            not np.all(np.isfinite(C_a_use)) or
+            not np.all(np.isfinite(t_use))):
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    deltas = np.diff(t_use)
+    deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+    if deltas.size == 0:
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    delta_t = float(deltas[0])
+    lambd = (auto_lambda_value if auto_lambda and auto_lambda_value is not None
+             else lambd_default)
+
+    try:
+        residue = km_tikhonov_regularization(
+            km_construct_convolution_matrix(C_a_use, delta_t),
+            C_t_use,
+            lambd,
+        )
+    except np.linalg.LinAlgError:
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    if residue.size == 0:
+        return {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+            "residue": None,
+            "delta_t": None,
+            "h": None,
+        }
+
+    cbf_val = residue_to_cbf(
+        residue[0],
+        rho_tissue=settings.TISSUE_DENSITY,
+        hematocrit=settings.HEMATOCRIT,
+        aif_type="plasma",
+    )
+    mtt_val, cth_val, h, _ = residue_metrics(residue, delta_t)
+
+    cbf = float(cbf_val) if np.isfinite(cbf_val) else float("nan")
+    mtt = float(mtt_val) if np.isfinite(mtt_val) else float("nan")
+    cth = float(cth_val) if np.isfinite(cth_val) else float("nan")
+
+    return {
+        "cbf": cbf,
+        "mtt": mtt,
+        "cth": cth,
+        "residue": residue,
+        "delta_t": delta_t,
+        "h": h,
+    }
+
+
+def compute_mtt_cth(method, C_t, C_a, t, *, Ki=None, allow_gamma=True,
+                    logger=None,
+                    auto_lambda=settings.AUTO_LAMBDA,
+                    auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
+                    lambd_default=settings.TIKHONOV_LAMBDA):
+    """Dispatch between Tikhonov, gamma, and hybrid MTT/CTH computations."""
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    method = (method or "tikhonov").lower()
+    if method not in {"tikhonov", "gamma", "hybrid"}:
+        logger.warning("Unknown CTH/MTT method '%s'; defaulting to Tikhonov", method)
+        method = "tikhonov"
+
+    legacy = _existing_tikhonov_metrics(
+        C_t, C_a, t,
+        auto_lambda=auto_lambda,
+        auto_lambda_value=auto_lambda_value,
+        lambd_default=lambd_default,
+    )
+
+    extras = {
+        "method": method,
+        "tikhonov": legacy,
+    }
+
+    gamma_result = None
+    if method in {"gamma", "hybrid"} and allow_gamma:
+        gamma_result = gamma_fit_metrics(
+            C_t, C_a, t,
+            cbf_seed=legacy["cbf"],
+            Ki=Ki,
+        )
+        if not gamma_result.get("success"):
+            logger.warning("Gamma fit unavailable: %s", gamma_result.get("message", ""))
+            gamma_result = {
+                "success": False,
+                "MTT_gamma": float("nan"),
+                "CTH_gamma": float("nan"),
+                "a": float("nan"),
+                "b": float("nan"),
+                "t0": float("nan"),
+                "F_ml_per_100g_min": float("nan"),
+                "E": float("nan"),
+                "shape_ratio": float("nan"),
+                "residual_norm": float("nan"),
+            }
+        extras["gamma"] = gamma_result
+    elif method in {"gamma", "hybrid"} and not allow_gamma:
+        extras["gamma"] = {
+            "success": False,
+            "MTT_gamma": float("nan"),
+            "CTH_gamma": float("nan"),
+            "a": float("nan"),
+            "b": float("nan"),
+            "t0": float("nan"),
+            "F_ml_per_100g_min": float("nan"),
+            "E": float("nan"),
+            "shape_ratio": float("nan"),
+            "residual_norm": float("nan"),
+        }
+
+    return legacy["cbf"], legacy["mtt"], legacy["cth"], extras
+
+
+def extract_cth_mtt_sidecar_fields(extras):
+    """Return metadata fields for JSON sidecars given compute_mtt_cth extras."""
+
+    fields = {}
+    if not isinstance(extras, dict):
+        return fields
+
+    method = extras.get("method")
+    if method:
+        fields["cth_mtt_method"] = method
+
+    tikh = extras.get("tikhonov") or {}
+    if tikh:
+        fields["MTT_tikh_s"] = float(tikh.get("mtt", float("nan")))
+        fields["CTH_tikh_s"] = float(tikh.get("cth", float("nan")))
+
+    gamma = extras.get("gamma") or {}
+    if gamma:
+        iterations = gamma.get("iterations", float("nan"))
+        try:
+            iterations_val = int(iterations)
+        except (TypeError, ValueError):
+            iterations_val = 0
+        fields.update({
+            "MTT_gamma_s": float(gamma.get("MTT_gamma", float("nan"))),
+            "CTH_gamma_s": float(gamma.get("CTH_gamma", float("nan"))),
+            "gamma_a": float(gamma.get("a", float("nan"))),
+            "gamma_b": float(gamma.get("b", float("nan"))),
+            "gamma_t0_s": float(gamma.get("t0", float("nan"))),
+            "gamma_F_ml_per_100g_min": float(gamma.get("F_ml_per_100g_min", float("nan"))),
+            "gamma_E": float(gamma.get("E", float("nan"))),
+            "gamma_shape_ratio": float(gamma.get("shape_ratio", float("nan"))),
+            "gamma_residual_norm": float(gamma.get("residual_norm", float("nan"))),
+            "gamma_iterations": iterations_val,
+            "gamma_success": bool(gamma.get("success", False)),
+        })
+
+    return fields
+
+
+def annotate_cth_mtt_header(img):
+    """Annotate NIfTI headers with the selected CTH/MTT method."""
+
+    method = (settings.CTH_MTT_METHOD or "tikhonov").lower()
+    if method in {"gamma", "hybrid"}:
+        description = f"cth_mtt_method={settings.CTH_MTT_METHOD}"[:79]
+        try:
+            img.header["descrip"] = description.encode("ascii", errors="ignore")
+        except Exception:  # pragma: no cover - header assignment safety
+            pass
+    return img
 
 def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
     """
@@ -346,8 +575,17 @@ def _process_label(lbl):
 
     mask = (_atlas_data == lbl)
     indices = np.argwhere(mask)
+    default_extras = {
+        "method": settings.CTH_MTT_METHOD,
+        "tikhonov": {
+            "cbf": float("nan"),
+            "mtt": float("nan"),
+            "cth": float("nan"),
+        },
+    }
+
     if len(indices) < 1:
-        return (lbl, np.nan, np.nan, np.nan, 0)
+        return (lbl, np.nan, np.nan, np.nan, float("nan"), float("nan"), float("nan"), 0, default_extras)
 
     curves_for_label = []
     for (x, y, z) in indices:
@@ -368,7 +606,7 @@ def _process_label(lbl):
         curves_for_label.append(c_t)
 
     if len(curves_for_label) == 0:
-        return (lbl, np.nan, np.nan, np.nan, 0)
+        return (lbl, np.nan, np.nan, np.nan, float("nan"), float("nan"), float("nan"), 0, default_extras)
 
     curves_for_label = np.array(curves_for_label)
     median_ct = np.median(curves_for_label, axis=0)
@@ -384,39 +622,27 @@ def _process_label(lbl):
     cbf = float('nan')
     mtt = float('nan')
     cth = float('nan')
+    extras = {
+        "method": settings.CTH_MTT_METHOD,
+        "tikhonov": {
+            "cbf": cbf,
+            "mtt": mtt,
+            "cth": cth,
+        },
+    }
 
     if len(t_label) >= 2:
-        deltas = np.diff(t_label)
-        deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
-        if deltas.size:
-            delta_t = float(deltas[0])
-            C_t_use = np.asarray(C_t_label[:len(t_label)], dtype=float)
-            C_a_use = np.asarray(C_a_label[:len(t_label)], dtype=float)
-            lambd = (settings.AUTO_LAMBDA_VALUE if settings.AUTO_LAMBDA
-                     and settings.AUTO_LAMBDA_VALUE is not None
-                     else settings.TIKHONOV_LAMBDA)
-            try:
-                residue = tikhonov_regularization(
-                    construct_convolution_matrix(C_a_use, delta_t),
-                    C_t_use,
-                    lambd,
-                )
-            except np.linalg.LinAlgError:
-                residue = None
+        cbf, mtt, cth, extras = compute_mtt_cth(
+            settings.CTH_MTT_METHOD,
+            C_t_label,
+            C_a_label,
+            t_label,
+            Ki=Ki,
+            allow_gamma=True,
+            logger=logger,
+        )
 
-            if residue is not None and residue.size:
-                cbf_val = residue_to_cbf(
-                    residue[0],
-                    rho_tissue=settings.TISSUE_DENSITY,
-                    hematocrit=settings.HEMATOCRIT,
-                    aif_type="plasma",
-                )
-                mtt_val, cth_val, _, _ = residue_metrics(residue, delta_t)
-                cbf = float(cbf_val) if np.isfinite(cbf_val) else float('nan')
-                mtt = float(mtt_val) if np.isfinite(mtt_val) else float('nan')
-                cth = float(cth_val) if np.isfinite(cth_val) else float('nan')
-
-    return (lbl, Ki, SD_Ki, lam, cbf, mtt, cth, len(indices))
+    return (lbl, Ki, SD_Ki, lam, cbf, mtt, cth, len(indices), extras)
 
 
 def compute_Ki_from_atlas(
@@ -491,7 +717,7 @@ def compute_Ki_from_atlas(
     else:
         results = [_process_label(lbl) for lbl in unique_labels]
 
-    for lbl, Ki, SD_Ki, lam, cbf, mtt, cth, voxel_count in results:
+    for lbl, Ki, SD_Ki, lam, cbf, mtt, cth, voxel_count, extras in results:
         if np.isnan(Ki):
             continue
         mask = (atlas_data == lbl)
@@ -504,7 +730,7 @@ def compute_Ki_from_atlas(
         if CTH_map is not None:
             CTH_map[mask] = cth
         label_key = label_lookup.get(int(lbl), str(lbl))
-        atlas_results[label_key] = {
+        atlas_entry = {
             "Ki": float(Ki),
             "SD_Ki": float(SD_Ki),
             "vp": float(lam),
@@ -513,6 +739,8 @@ def compute_Ki_from_atlas(
             "CTH_tikhonov": float(cth) if np.isfinite(cth) else float('nan'),
             "voxel_count": int(voxel_count)
         }
+        atlas_entry.update(extract_cth_mtt_sidecar_fields(extras))
+        atlas_results[label_key] = atlas_entry
 
     # Save results as NIfTI
     os.makedirs(output_directory, exist_ok=True)
@@ -527,11 +755,11 @@ def compute_Ki_from_atlas(
     nib.save(nib.Nifti1Image(CBF_map, affine),
              os.path.join(output_directory, 'CBF_tikhonov_map_atlas.nii.gz'))
     if MTT_map is not None:
-        nib.save(nib.Nifti1Image(MTT_map, affine),
-                 os.path.join(output_directory, 'MTT_tikhonov_map_atlas.nii.gz'))
+        mtt_img = annotate_cth_mtt_header(nib.Nifti1Image(MTT_map, affine))
+        nib.save(mtt_img, os.path.join(output_directory, 'MTT_tikhonov_map_atlas.nii.gz'))
     if CTH_map is not None:
-        nib.save(nib.Nifti1Image(CTH_map, affine),
-                 os.path.join(output_directory, 'CTH_tikhonov_map_atlas.nii.gz'))
+        cth_img = annotate_cth_mtt_header(nib.Nifti1Image(CTH_map, affine))
+        nib.save(cth_img, os.path.join(output_directory, 'CTH_tikhonov_map_atlas.nii.gz'))
 
     # Save numerical results to JSON
     json_path = os.path.join(output_directory, 'Ki_values_atlas.json')
@@ -539,6 +767,7 @@ def compute_Ki_from_atlas(
         json.dump(atlas_results, jf, indent=4)
 
     print("Done. Wrote:")
+    print(f"  cth_mtt_method={settings.CTH_MTT_METHOD}")
     print("  Ki_map_atlas.nii.gz")
     print("  SD_Ki_map_atlas.nii.gz")
     print("  vp_map_atlas.nii.gz")
@@ -2017,58 +2246,6 @@ def compute_and_plot_ctcs_median(
             )
             return Ki, lam, SD_Ki, (x_patlak, y_patlak), included
 
-        def compute_tikhonov_metrics(C_t):
-            if C_t.size == 0:
-                return (float('nan'), float('nan'), float('nan'))
-
-            n = min(len(C_t), len(C_a_slice), len(time_points))
-            if n < 2:
-                return (float('nan'), float('nan'), float('nan'))
-
-            C_t_use = np.asarray(C_t[:n], dtype=float)
-            C_a_use = np.asarray(C_a_slice[:n], dtype=float)
-            t_use = np.asarray(time_points[:n], dtype=float)
-
-            if (not np.all(np.isfinite(C_t_use)) or
-                    not np.all(np.isfinite(C_a_use)) or
-                    not np.all(np.isfinite(t_use))):
-                return (float('nan'), float('nan'), float('nan'))
-
-            deltas = np.diff(t_use)
-            deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
-            if deltas.size == 0:
-                return (float('nan'), float('nan'), float('nan'))
-
-            delta_t = float(deltas[0])
-            lambd = (settings.AUTO_LAMBDA_VALUE if settings.AUTO_LAMBDA
-                     and settings.AUTO_LAMBDA_VALUE is not None
-                     else settings.TIKHONOV_LAMBDA)
-
-            try:
-                residue = tikhonov_regularization(
-                    construct_convolution_matrix(C_a_use, delta_t),
-                    C_t_use,
-                    lambd,
-                )
-            except np.linalg.LinAlgError:
-                return (float('nan'), float('nan'), float('nan'))
-
-            if residue.size == 0:
-                return (float('nan'), float('nan'), float('nan'))
-
-            cbf_val = residue_to_cbf(
-                residue[0],
-                rho_tissue=settings.TISSUE_DENSITY,
-                hematocrit=settings.HEMATOCRIT,
-                aif_type="plasma",
-            )
-            mtt_val, cth_val, _, _ = residue_metrics(residue, delta_t)
-
-            cbf = float(cbf_val) if np.isfinite(cbf_val) else float('nan')
-            mtt = float(mtt_val) if np.isfinite(mtt_val) else float('nan')
-            cth = float(cth_val) if np.isfinite(cth_val) else float('nan')
-            return cbf, mtt, cth
-
         Ki_wm, lambda_wm, SD_Ki_wm, curve_wm, included_wm = perform_model_fit(C_t_wm)
         Ki_cortical_gm, lambda_cortical_gm, SD_Ki_cortical_gm, curve_cortical_gm, included_cortical_gm = perform_model_fit(C_t_cortical_gm)
         Ki_subcortical_gm, lambda_subcortical_gm, SD_Ki_subcortical_gm, curve_subcortical_gm, included_subcortical_gm = perform_model_fit(C_t_subcortical_gm)
@@ -2085,19 +2262,44 @@ def compute_and_plot_ctcs_median(
             curve_boundary = None
             included_boundary = np.array([], dtype=bool)
 
-        CBF_wm, MTT_wm, CTH_wm = compute_tikhonov_metrics(C_t_wm)
-        CBF_cortical_gm, MTT_cortical_gm, CTH_cortical_gm = compute_tikhonov_metrics(C_t_cortical_gm)
-        CBF_subcortical_gm, MTT_subcortical_gm, CTH_subcortical_gm = compute_tikhonov_metrics(C_t_subcortical_gm)
-        CBF_gm_brainstem, MTT_gm_brainstem, CTH_gm_brainstem = compute_tikhonov_metrics(C_t_gm_brainstem)
-        CBF_gm_cerebellum, MTT_gm_cerebellum, CTH_gm_cerebellum = compute_tikhonov_metrics(C_t_gm_cerebellum)
-        CBF_wm_cerebellum, MTT_wm_cerebellum, CTH_wm_cerebellum = compute_tikhonov_metrics(C_t_wm_cerebellum)
-        CBF_wm_cc, MTT_wm_cc, CTH_wm_cc = compute_tikhonov_metrics(C_t_wm_cc)
+        def run_mtt_cth(C_t, Ki_value):
+            return compute_mtt_cth(
+                settings.CTH_MTT_METHOD,
+                C_t,
+                C_a_slice,
+                time_points,
+                Ki=Ki_value,
+                allow_gamma=True,
+                logger=logger,
+            )
+
+        CBF_wm, MTT_wm, CTH_wm, extras_wm = run_mtt_cth(C_t_wm, Ki_wm)
+        (CBF_cortical_gm, MTT_cortical_gm, CTH_cortical_gm,
+         extras_cortical_gm) = run_mtt_cth(C_t_cortical_gm, Ki_cortical_gm)
+        (CBF_subcortical_gm, MTT_subcortical_gm, CTH_subcortical_gm,
+         extras_subcortical_gm) = run_mtt_cth(C_t_subcortical_gm, Ki_subcortical_gm)
+        (CBF_gm_brainstem, MTT_gm_brainstem, CTH_gm_brainstem,
+         extras_gm_brainstem) = run_mtt_cth(C_t_gm_brainstem, Ki_gm_brainstem)
+        (CBF_gm_cerebellum, MTT_gm_cerebellum, CTH_gm_cerebellum,
+         extras_gm_cerebellum) = run_mtt_cth(C_t_gm_cerebellum, Ki_gm_cerebellum)
+        (CBF_wm_cerebellum, MTT_wm_cerebellum, CTH_wm_cerebellum,
+         extras_wm_cerebellum) = run_mtt_cth(C_t_wm_cerebellum, Ki_wm_cerebellum)
+        CBF_wm_cc, MTT_wm_cc, CTH_wm_cc, extras_wm_cc = run_mtt_cth(C_t_wm_cc, Ki_wm_cc)
         if boundary and C_t_boundary.size > 0:
-            CBF_boundary, MTT_boundary, CTH_boundary = compute_tikhonov_metrics(C_t_boundary)
+            (CBF_boundary, MTT_boundary, CTH_boundary,
+             extras_boundary) = run_mtt_cth(C_t_boundary, Ki_boundary)
         else:
             CBF_boundary = float('nan')
             MTT_boundary = float('nan')
             CTH_boundary = float('nan')
+            extras_boundary = {
+                "method": settings.CTH_MTT_METHOD,
+                "tikhonov": {
+                    "cbf": CBF_boundary,
+                    "mtt": MTT_boundary,
+                    "cth": CTH_boundary,
+                },
+            }
 
         # Collect Ki values for plotting
         Ki_wm_list.append(Ki_wm)
@@ -2225,6 +2427,7 @@ def compute_and_plot_ctcs_median(
         # Collect data for JSON output
         patlak_data = {
             'slice': i + 1,
+            'cth_mtt_method': settings.CTH_MTT_METHOD,
             'white_matter_median': {
                 'Ki': Ki_wm,
                 'SD_Ki': SD_Ki_wm,
@@ -2290,6 +2493,14 @@ def compute_and_plot_ctcs_median(
             }
         }
 
+        patlak_data['white_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_wm))
+        patlak_data['cortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_cortical_gm))
+        patlak_data['subcortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_subcortical_gm))
+        patlak_data['gm_brainstem_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_brainstem))
+        patlak_data['gm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_cerebellum))
+        patlak_data['wm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cerebellum))
+        patlak_data['wm_cc_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cc))
+
         if boundary and avg_boundary_ctc.size > 0:
             patlak_data['boundary_median'] = {
                 'Ki': Ki_boundary,
@@ -2300,11 +2511,22 @@ def compute_and_plot_ctcs_median(
                 'CTH_tikhonov': CTH_boundary,
                 'voxel_count': int(np.sum(boundary_mask))
             }
+            patlak_data['boundary_median'].update(extract_cth_mtt_sidecar_fields(extras_boundary))
 
         all_patlak_data.append(patlak_data)
 
         # Compute K_i and/or CBF per voxel if enabled
         if compute_per_voxel_Ki or compute_per_voxel_CBF:
+            if (compute_per_voxel_CBF and
+                    settings.CTH_MTT_METHOD.lower() in {"gamma", "hybrid"} and
+                    not settings.CTH_MTT_GAMMA_VOXELWISE and
+                    not getattr(logger, "_gamma_voxel_warning_emitted", False)):
+                logger.warning(
+                    "CTH/MTT method '%s' requested but voxelwise gamma fitting is disabled;"
+                    " using Tikhonov values for per-voxel maps.",
+                    settings.CTH_MTT_METHOD,
+                )
+                logger._gamma_voxel_warning_emitted = True
             # Combine WM and GM masks for the current slice
             gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
             brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
@@ -2342,6 +2564,7 @@ def compute_and_plot_ctcs_median(
                 if min_length_voxel < 2:
                     continue
 
+                Ki_value = None
                 if compute_per_voxel_Ki:
                     # Perform Patlak analysis
                     Ki_voxel, lam_voxel, SD_voxel, _, _, _ = patlak_analysis_plotting(
@@ -2350,28 +2573,24 @@ def compute_and_plot_ctcs_median(
                     Ki_slice[x, y] = Ki_voxel
                     lam_slice[x, y] = lam_voxel
                     SD_slice[x, y] = SD_voxel
+                    Ki_value = Ki_voxel
 
                 if compute_per_voxel_CBF:
-                    delta_t = np.diff(time_points_voxel)[0]
-                    A = construct_convolution_matrix(C_a_voxel, delta_t)
-                    if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
-                        lambd = settings.AUTO_LAMBDA_VALUE
-                    else:
-                        lambd = settings.TIKHONOV_LAMBDA
-
-                    # Solve for the residue function
-                    try:
-                        R_estimated = tikhonov_regularization(A, C_t_voxel, lambd)
-                        CBF_voxel = residue_to_cbf(R_estimated[0], aif_type="plasma", hematocrit=0.42)
-                        CBF_slice[x, y] = CBF_voxel
-                        if settings.WRITE_MTT or settings.WRITE_CTH:
-                            mtt_voxel, cth_voxel, _, _ = residue_metrics(R_estimated, delta_t)
-                            if settings.WRITE_MTT and MTT_slice is not None:
-                                MTT_slice[x, y] = mtt_voxel
-                            if settings.WRITE_CTH and CTH_slice is not None:
-                                CTH_slice[x, y] = cth_voxel
-                    except np.linalg.LinAlgError:
-                        continue  # Skip if the matrix is singular
+                    cbf_voxel, mtt_voxel, cth_voxel, _ = compute_mtt_cth(
+                        settings.CTH_MTT_METHOD,
+                        C_t_voxel,
+                        C_a_voxel,
+                        time_points_voxel,
+                        Ki=Ki_value,
+                        allow_gamma=settings.CTH_MTT_GAMMA_VOXELWISE,
+                        logger=logger,
+                    )
+                    if np.isfinite(cbf_voxel):
+                        CBF_slice[x, y] = cbf_voxel
+                    if settings.WRITE_MTT and MTT_slice is not None and np.isfinite(mtt_voxel):
+                        MTT_slice[x, y] = mtt_voxel
+                    if settings.WRITE_CTH and CTH_slice is not None and np.isfinite(cth_voxel):
+                        CTH_slice[x, y] = cth_voxel
 
             # Store the K_i and/or CBF slice in the 3D arrays
             if compute_per_voxel_Ki:
@@ -2494,18 +2713,20 @@ def compute_and_plot_ctcs_median(
             mtt_img = nib.Nifti1Image(np.asarray(MTT_per_voxel, dtype=np.float32),
                                       affine=ref_affine,
                                       header=ref_header.copy())
+            mtt_img = annotate_cth_mtt_header(mtt_img)
             mtt_path = os.path.join(analysis_directory, 'mtt_map.nii.gz')
             nib.save(mtt_img, mtt_path)
-            print(f"MTT map saved to {mtt_path}")
+            print(f"MTT map saved to {mtt_path} (method={settings.CTH_MTT_METHOD})")
             log_median("MTT", MTT_per_voxel)
 
         if settings.WRITE_CTH and CTH_per_voxel is not None:
             cth_img = nib.Nifti1Image(np.asarray(CTH_per_voxel, dtype=np.float32),
                                       affine=ref_affine,
                                       header=ref_header.copy())
+            cth_img = annotate_cth_mtt_header(cth_img)
             cth_path = os.path.join(analysis_directory, 'cth_map.nii.gz')
             nib.save(cth_img, cth_path)
-            print(f"CTH map saved to {cth_path}")
+            print(f"CTH map saved to {cth_path} (method={settings.CTH_MTT_METHOD})")
             log_median("CTH", CTH_per_voxel)
 
     # ------------------------------------------------------------------
@@ -2538,6 +2759,7 @@ def compute_and_plot_ctcs_median(
             cc_Ki, cc_SD, cc_lam, cc_vox = median_for(wm_cc_mask_dce[:, :, i])
             slice_entry = {
                 'slice': i + 1,
+                'cth_mtt_method': settings.CTH_MTT_METHOD,
                 'white_matter_voxelwise': {'Ki': wm_Ki, 'SD_Ki': wm_SD, 'lambda': wm_lam, 'voxel_count': wm_vox},
                 'cortical_gray_matter_voxelwise': {'Ki': cgm_Ki, 'SD_Ki': cgm_SD, 'lambda': cgm_lam, 'voxel_count': cgm_vox},
                 'subcortical_gray_matter_voxelwise': {'Ki': sgm_Ki, 'SD_Ki': sgm_SD, 'lambda': sgm_lam, 'voxel_count': sgm_vox},
@@ -2698,40 +2920,17 @@ def compute_and_plot_ctcs_median(
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
         return Ki, lam, SD, None
 
-    def tikhonov_total(C_t):
-        n = min(len(C_t), len(C_a_total), len(time_points_total))
-        if n < 2:
-            return float('nan'), float('nan'), float('nan')
-
-        C_t_use = np.asarray(C_t[:n], dtype=float)
-        C_a_use = np.asarray(C_a_total[:n], dtype=float)
-        times_use = np.asarray(time_points_total[:n], dtype=float)
-
-        if not np.all(np.isfinite(C_t_use)) or not np.all(np.isfinite(C_a_use)):
-            return float('nan'), float('nan'), float('nan')
-
-        deltas = np.diff(times_use)
-        deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
-        if deltas.size == 0:
-            return float('nan'), float('nan'), float('nan')
-
-        delta_t = float(deltas[0])
-
-        A = construct_convolution_matrix(C_a_use, delta_t)
-        if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
-            lambd = settings.AUTO_LAMBDA_VALUE
-        else:
-            lambd = settings.TIKHONOV_LAMBDA
-
-        try:
-            residue = tikhonov_regularization(A, C_t_use, lambd)
-        except np.linalg.LinAlgError:
-            return float('nan'), float('nan'), float('nan')
-
-        cbf = residue_to_cbf(residue[0], aif_type="plasma", hematocrit=0.42)
-        mtt, cth, _, _ = residue_metrics(residue, delta_t)
-
-        return cbf, float(mtt) if np.isfinite(mtt) else float('nan'), float(cth) if np.isfinite(cth) else float('nan')
+    def tikhonov_total(C_t, Ki_value):
+        cbf, mtt, cth, extras = compute_mtt_cth(
+            settings.CTH_MTT_METHOD,
+            C_t,
+            C_a_total,
+            time_points_total,
+            Ki=Ki_value,
+            allow_gamma=True,
+            logger=logger,
+        )
+        return cbf, mtt, cth, extras
 
     # ----------------------------------------------------------------------------- 
     # 3) Patlak for every tissue
@@ -2745,19 +2944,28 @@ def compute_and_plot_ctcs_median(
     Ki_wm_cerebellum_total,lambda_wm_cerebellum_total,SD_Ki_wm_cerebellum_total, fit_wm_cerebellum_total = patlak_total(C_t_wm_cerebellum_total)
     Ki_wm_cc_total,        lambda_wm_cc_total,        SD_Ki_wm_cc_total,        fit_wm_cc_total = patlak_total(C_t_wm_cc_total)
 
-    CBF_wm_total,          MTT_wm_total,          CTH_wm_total          = tikhonov_total(C_t_wm_total)
-    CBF_cortical_gm_total, MTT_cortical_gm_total, CTH_cortical_gm_total = tikhonov_total(C_t_cortical_gm_total)
-    CBF_subcortical_gm_total, MTT_subcortical_gm_total, CTH_subcortical_gm_total = tikhonov_total(C_t_subcortical_gm_total)
-    CBF_boundary_total,    MTT_boundary_total,    CTH_boundary_total    = tikhonov_total(C_t_boundary_total)
-    CBF_gm_brainstem_total, MTT_gm_brainstem_total, CTH_gm_brainstem_total = tikhonov_total(C_t_gm_brainstem_total)
-    CBF_gm_cerebellum_total, MTT_gm_cerebellum_total, CTH_gm_cerebellum_total = tikhonov_total(C_t_gm_cerebellum_total)
-    CBF_wm_cerebellum_total, MTT_wm_cerebellum_total, CTH_wm_cerebellum_total = tikhonov_total(C_t_wm_cerebellum_total)
-    CBF_wm_cc_total,       MTT_wm_cc_total,       CTH_wm_cc_total       = tikhonov_total(C_t_wm_cc_total)
+    (CBF_wm_total,          MTT_wm_total,          CTH_wm_total,
+     extras_wm_total) = tikhonov_total(C_t_wm_total, Ki_wm_total)
+    (CBF_cortical_gm_total, MTT_cortical_gm_total, CTH_cortical_gm_total,
+     extras_cortical_gm_total) = tikhonov_total(C_t_cortical_gm_total, Ki_cortical_gm_total)
+    (CBF_subcortical_gm_total, MTT_subcortical_gm_total, CTH_subcortical_gm_total,
+     extras_subcortical_gm_total) = tikhonov_total(C_t_subcortical_gm_total, Ki_subcortical_gm_total)
+    (CBF_boundary_total,    MTT_boundary_total,    CTH_boundary_total,
+     extras_boundary_total) = tikhonov_total(C_t_boundary_total, Ki_boundary_total)
+    (CBF_gm_brainstem_total, MTT_gm_brainstem_total, CTH_gm_brainstem_total,
+     extras_gm_brainstem_total) = tikhonov_total(C_t_gm_brainstem_total, Ki_gm_brainstem_total)
+    (CBF_gm_cerebellum_total, MTT_gm_cerebellum_total, CTH_gm_cerebellum_total,
+     extras_gm_cerebellum_total) = tikhonov_total(C_t_gm_cerebellum_total, Ki_gm_cerebellum_total)
+    (CBF_wm_cerebellum_total, MTT_wm_cerebellum_total, CTH_wm_cerebellum_total,
+     extras_wm_cerebellum_total) = tikhonov_total(C_t_wm_cerebellum_total, Ki_wm_cerebellum_total)
+    (CBF_wm_cc_total,       MTT_wm_cc_total,       CTH_wm_cc_total,
+     extras_wm_cc_total) = tikhonov_total(C_t_wm_cc_total, Ki_wm_cc_total)
 
     # ----------------------------------------------------------------------------- 
     # 4) Collect everything for JSON and plotting
     # -----------------------------------------------------------------------------
     tissue_results = {
+        "cth_mtt_method": settings.CTH_MTT_METHOD,
         "white_matter": {
             "C_t": C_t_wm_total,
             "Ki": Ki_wm_total,
@@ -2837,6 +3045,14 @@ def compute_and_plot_ctcs_median(
         },
     }
 
+    tissue_results["white_matter"].update(extract_cth_mtt_sidecar_fields(extras_wm_total))
+    tissue_results["cortical_gm"].update(extract_cth_mtt_sidecar_fields(extras_cortical_gm_total))
+    tissue_results["subcortical_gm"].update(extract_cth_mtt_sidecar_fields(extras_subcortical_gm_total))
+    tissue_results["gm_brainstem"].update(extract_cth_mtt_sidecar_fields(extras_gm_brainstem_total))
+    tissue_results["gm_cerebellum"].update(extract_cth_mtt_sidecar_fields(extras_gm_cerebellum_total))
+    tissue_results["wm_cerebellum"].update(extract_cth_mtt_sidecar_fields(extras_wm_cerebellum_total))
+    tissue_results["wm_cc"].update(extract_cth_mtt_sidecar_fields(extras_wm_cc_total))
+
     if boundary and C_t_boundary_total.size:
         tissue_results["boundary"] = {
             "C_t": C_t_boundary_total,
@@ -2849,6 +3065,9 @@ def compute_and_plot_ctcs_median(
             "MTT_tikhonov": MTT_boundary_total,
             "CTH_tikhonov": CTH_boundary_total,
         }
+        tissue_results["boundary"].update(extract_cth_mtt_sidecar_fields(extras_boundary_total))
+    elif boundary:
+        tissue_results["boundary"] = extract_cth_mtt_sidecar_fields(extras_boundary_total)
 
     # ----------------------------------------------------------------------
     # Compute global median T1 and M0 values for each tissue
@@ -2908,22 +3127,34 @@ def compute_and_plot_ctcs_median(
     # Write JSON
     json_file_path_total = os.path.join(analysis_directory, "AI_values_median_total.json")
     with open(json_file_path_total, "w") as jf:
-        json.dump({
-            t+"_median_total": {
+        extra_keys = [
+            "cth_mtt_method", "MTT_tikh_s", "CTH_tikh_s", "MTT_gamma_s", "CTH_gamma_s",
+            "gamma_a", "gamma_b", "gamma_t0_s", "gamma_F_ml_per_100g_min", "gamma_E",
+            "gamma_shape_ratio", "gamma_residual_norm", "gamma_iterations", "gamma_success",
+        ]
+        payload = {
+            t + "_median_total": {
                 "Ki":            d["Ki"],
                 "SD_Ki":         d["SD_Ki"],
                 "lambda":        d["lam"],
                 "CBF_tikhonov":  d["CBF_tikhonov"],
                 "MTT_tikhonov":  d["MTT_tikhonov"],
                 "CTH_tikhonov":  d["CTH_tikhonov"],
-                "voxel_count":   d["vox"]
-            } for t,d in tissue_results.items()
-        }, jf, indent=4)
+                "voxel_count":   d["vox"],
+                **{k: d[k] for k in extra_keys if k in d},
+            }
+            for t, d in tissue_results.items()
+            if isinstance(d, dict) and {"Ki", "SD_Ki", "lam", "CBF_tikhonov", "MTT_tikhonov", "CTH_tikhonov", "vox"} <= d.keys()
+        }
+        payload["cth_mtt_method"] = settings.CTH_MTT_METHOD
+        json.dump(payload, jf, indent=4)
 
     # ----------------------------------------------------------------------------- 
     # 5) Create one PNG per tissue
     # -----------------------------------------------------------------------------
     for tissue_name, vals in tissue_results.items():
+        if not isinstance(vals, dict) or "C_t" not in vals:
+            continue
         save_path = os.path.join(image_directory, "AI", "Tissue functions",
                                 f"{tissue_name}_total_CT_and_patlak.png")
         plot_total_ct_and_patlak(

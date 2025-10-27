@@ -1,5 +1,7 @@
+import logging
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.special import gamma as gamma_function
 import utils.settings as settings
 
 
@@ -133,6 +135,200 @@ def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
     cth = float(np.sqrt(max(variance, 0.0)))
 
     return mtt, cth, h, mu
+
+
+def _gamma_density(t, a, b, t0):
+    """Return the gamma-variate capillary transit-time density ``h(t)``."""
+
+    shifted = np.asarray(t, dtype=float) - float(t0)
+    h = np.zeros_like(shifted)
+    mask = shifted > 0.0
+    if not np.any(mask):
+        return h
+
+    positive = shifted[mask]
+    norm = (float(b) ** (a + 1.0)) * gamma_function(a + 1.0)
+    if norm <= 0.0:
+        return np.zeros_like(shifted)
+
+    h_val = (positive ** a) * np.exp(-positive / float(b)) / norm
+    h[mask] = h_val
+    return h
+
+
+def _gamma_rif(t, a, b, t0, *, extraction=0.0):
+    """Compute the residue impulse function from the gamma density."""
+
+    h = _gamma_density(t, a, b, t0)
+    if not np.any(h):
+        return np.ones_like(h), h
+
+    dt = np.diff(t, prepend=t[0])
+    dt[0] = 0.0
+    cumulative = np.cumsum((h + np.concatenate(([0.0], h[:-1]))) * 0.5 * dt)
+    if extraction is None:
+        extraction = 0.0
+    extraction = float(np.clip(extraction, 0.0, 0.4))
+    if extraction == 0.0:
+        rif = 1.0 - cumulative
+    else:
+        rif = 1.0 - (1.0 - extraction) * cumulative
+    return np.clip(rif, 0.0, None), h
+
+
+def _trapezoid_convolution(a, b, dt):
+    """Compute the discrete convolution using the trapezoidal rule."""
+
+    if a.size == 0 or b.size == 0:
+        return np.zeros(0, dtype=float)
+
+    dt = float(dt)
+    n = a.size
+    conv = np.convolve(a, b, mode="full")[:n]
+    b_head = np.pad(b, (0, max(0, n - b.size)))[:n]
+    a_head = a[:n]
+    first = a_head[0] * b_head
+    last = b_head[0] * a_head
+    return dt * (conv - 0.5 * (first + last))
+
+
+def gamma_fit_metrics(C_t, C_a, time_array, *,
+                      cbf_seed=None, Ki=None, t0_seed=None,
+                      flow_bounds=(5.0, 120.0), logger=None):
+    """Fit a gamma-variate transit time density and derive MTT/CTH metrics."""
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    C_t = np.asarray(C_t, dtype=float).reshape(-1)
+    C_a = np.asarray(C_a, dtype=float).reshape(-1)
+    time_array = np.asarray(time_array, dtype=float).reshape(-1)
+
+    n = min(C_t.size, C_a.size, time_array.size)
+    if n < 2:
+        return {
+            "success": False,
+            "message": "Insufficient samples",
+        }
+
+    C_t = C_t[:n]
+    C_a = C_a[:n]
+    time_array = time_array[:n]
+
+    if (np.isnan(C_t).any() or np.isnan(C_a).any() or np.isnan(time_array).any() or
+            np.isinf(C_t).any() or np.isinf(C_a).any() or np.isinf(time_array).any()):
+        return {
+            "success": False,
+            "message": "Invalid inputs",
+        }
+
+    dt = np.diff(time_array)
+    if not np.allclose(dt, dt[0]):
+        dt = dt.mean()
+    else:
+        dt = float(dt[0])
+    if not np.isfinite(dt) or dt <= 0.0:
+        return {
+            "success": False,
+            "message": "Invalid time step",
+        }
+
+    a0 = 2.0
+    b0 = 1.0
+    t0_0 = 0.0 if t0_seed is None else float(max(t0_seed, 0.0))
+
+    flow_lo, flow_hi = flow_bounds
+    flow_lo = float(flow_lo)
+    flow_hi = float(flow_hi)
+
+    if cbf_seed is not None and np.isfinite(cbf_seed):
+        F0 = float(np.clip(cbf_seed, flow_lo, flow_hi))
+    else:
+        F0 = 40.0
+    F0 = float(np.clip(F0, flow_lo, flow_hi))
+
+    if Ki is not None and np.isfinite(Ki) and Ki > 0.0 and np.isfinite(F0):
+        E0 = float(np.clip(F0 / Ki, 0.0, 0.4))
+        optimise_E = True
+    else:
+        E0 = 0.0
+        optimise_E = False
+
+    flow_scale = settings.TISSUE_DENSITY / 6000.0
+
+    t_max = float(time_array[-1]) if time_array.size else 1.0
+    weights = 1.0 + 0.5 * (time_array / max(t_max, 1e-3))
+
+    def pack_params(params):
+        if optimise_E:
+            a, b, t0, F, E = params
+        else:
+            a, b, t0, F = params
+            E = E0
+        return a, b, t0, F, np.clip(E, 0.0, 0.4)
+
+    def residuals(params):
+        a, b, t0, F_ml, E = pack_params(params)
+        if not (0.5 <= a <= 10.0 and 0.2 <= b <= 12.0 and 0.0 <= t0 <= 6.0 and flow_lo <= F_ml <= flow_hi):
+            return np.ones_like(C_t) * 1e6
+
+        rif, _ = _gamma_rif(time_array, a, b, t0, extraction=E)
+        F_internal = F_ml * flow_scale
+        Ct_hat = F_internal * _trapezoid_convolution(C_a, rif, dt)
+        misfit = Ct_hat - C_t
+        return np.sqrt(weights) * misfit
+
+    x0 = [a0, b0, t0_0, F0]
+    bounds_lower = [0.5, 0.2, 0.0, flow_lo]
+    bounds_upper = [10.0, 12.0, 6.0, flow_hi]
+    if optimise_E:
+        x0.append(E0)
+        bounds_lower.append(0.0)
+        bounds_upper.append(0.4)
+
+    try:
+        sol = least_squares(residuals, x0,
+                            bounds=(bounds_lower, bounds_upper),
+                            method="trf", x_scale="jac")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Gamma fit failed: %s", exc)
+        return {
+            "success": False,
+            "message": str(exc),
+        }
+
+    if not sol.success:
+        logger.warning("Gamma fit did not converge: status=%s message=%s", sol.status, sol.message)
+        return {
+            "success": False,
+            "message": sol.message,
+        }
+
+    a, b, t0, F_ml, E = pack_params(sol.x)
+
+    rif, h = _gamma_rif(time_array, a, b, t0, extraction=E)
+    F_internal = F_ml * flow_scale
+    Ct_hat = F_internal * _trapezoid_convolution(C_a, rif, dt)
+    residual_vec = Ct_hat - C_t
+    residual_norm = float(np.linalg.norm(residual_vec))
+
+    mtt_gamma = float((a + 1.0) * b)
+    cth_gamma = float(np.sqrt(a + 1.0) * b)
+    shape_ratio = float(1.0 / (a + 1.0))
+
+    return {
+        "success": True,
+        "a": float(a),
+        "b": float(b),
+        "t0": float(t0),
+        "F_ml_per_100g_min": float(F_ml),
+        "E": float(np.clip(E, 0.0, 0.4)) if optimise_E else 0.0,
+        "MTT_gamma": mtt_gamma,
+        "CTH_gamma": cth_gamma,
+        "shape_ratio": shape_ratio,
+        "residual_norm": residual_norm,
+        "iterations": int(getattr(sol, "nfev", 0)),
+    }
 
 
 def pick_lambda_via_l_curve(aif, tissue_curve, time_array, lambdas):
