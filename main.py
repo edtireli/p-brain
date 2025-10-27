@@ -5,6 +5,13 @@ from utils import *
 import utils.settings as settings
 from modules import *
 import utils.plotting as plotting
+from utils.cli_logging import (
+    install_auto_logging_hooks,
+    log_auto,
+    log_process_end,
+    log_process_start,
+    uninstall_auto_logging_hooks,
+)
 import modules.opt01_T1_fit as opt01_T1_fit
 import modules.AI_input_functions as AI_input_functions
 import modules.AI_tissue_functions as AI_tissue_functions
@@ -201,25 +208,41 @@ def main():
         else:
             return
 
-    if mode == 'manual' or args.option is not None:
-        set_turbo_mode(False)
-        manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
-                        image_directory, filenames, parameters)
-    elif mode == 'auto':
-        print_banner()
-        T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-    elif mode == 'pseudo':
-        set_turbo_mode(False)
-        print_banner()
-        T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-        manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
-                        image_directory, filenames, parameters, pseudo=True)
+    hooks_installed = False
 
-    save_run_settings(analysis_directory, parameters)
-    settings.save_runtime_metadata(analysis_directory)
+    try:
+        if mode == 'manual' or args.option is not None:
+            set_turbo_mode(False)
+            manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
+                            image_directory, filenames, parameters)
+        elif mode == 'auto':
+            install_auto_logging_hooks()
+            hooks_installed = True
+            log_auto("Fully automatic analysis pipeline initialised.")
+            print_banner()
+            log_process_start("T1 fitting")
+            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            log_process_end("T1 fitting")
+            log_process_start("AI input function extraction")
+            input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            log_process_end("AI input function extraction")
+            log_process_start("Tissue kinetic modelling")
+            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            log_process_end("Tissue kinetic modelling")
+            log_auto("Fully automatic analysis pipeline completed.")
+        elif mode == 'pseudo':
+            set_turbo_mode(False)
+            print_banner()
+            T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
+                            image_directory, filenames, parameters, pseudo=True)
+
+        save_run_settings(analysis_directory, parameters)
+        settings.save_runtime_metadata(analysis_directory)
+    finally:
+        if hooks_installed:
+            uninstall_auto_logging_hooks()
 if __name__ == '__main__':
     main()
