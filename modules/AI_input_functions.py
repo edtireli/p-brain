@@ -11,6 +11,7 @@ from utils.plotting import *
 from utils.loading import *
 from matplotlib.path import Path
 from utils.settings import AI_MODEL_PATHS
+from utils.cli_logging import auto_logging_enabled, log_process_end, log_process_start
 import glob
 import json
 import time
@@ -440,6 +441,8 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
     print(colored('Time shifting completed.', 'green'))
 
 def time_shifting(analysis_directory, nifti_directory, image_directory):
+    if auto_logging_enabled():
+        log_process_start("Time shifting")
     time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
 
     subtype = 'Right Interior Carotid' 
@@ -465,6 +468,8 @@ def time_shifting(analysis_directory, nifti_directory, image_directory):
     values = [f'Max artery type: {max_subtype}']
     with open(os.path.join(analysis_directory, 'max_info.json'), 'w') as f:
         json.dump(values, f)
+    if auto_logging_enabled():
+        log_process_end("Time shifting")
 
 def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image='dir', nifti='dir', filenames='filenames', IsVFA=False):
     run_ai_roi_extraction(filename, analysis, image, nifti, time, IsVFA=IsVFA, filenames=filenames)
