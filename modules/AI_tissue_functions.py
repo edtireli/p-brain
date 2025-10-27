@@ -357,10 +357,8 @@ def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
 
 # -------------- patlak_analysis.py (new version) --------------
 def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
-    """
-    Patlak that *plots everything* but fits only the good samples.
-    bad_mask == True  →  point is shown hollow and excluded from fit
-    """
+    """Patlak fit aligned with ``patlak_analysis_plotting`` semantics."""
+
     n = min(len(C_t), len(C_a), len(t))
     C_t, C_a, t = C_t[:n], C_a[:n], t[:n]
     if bad_mask is not None:
@@ -370,85 +368,41 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
     if bad_mask is None:
         bad_mask = np.zeros_like(C_t, dtype=bool)
 
-    # --- Patlak co-ordinates (never introduce NaNs here) --------
+    if C_t.size == 0:
+        return (np.nan, np.nan, np.nan, np.array([]), np.array([]), np.array([], dtype=bool))
+
     dt = np.diff(t)
     x = np.concatenate(([0], np.cumsum(C_a[:-1] * dt))) / C_a
     y = C_t / C_a
 
-    # points that *could* be used
-    finite = np.isfinite(x) & np.isfinite(y) & (C_a != 0)
-    usable = finite & (~bad_mask)
+    good = (~np.isnan(x)) & (~np.isnan(y)) & (C_a != 0) & (~bad_mask)
 
-    # bail-out if <2 points
-    if usable.sum() < 2:
-        return np.nan, np.nan, np.nan, x, y, usable
-
-    # classic window with configurable lower bound and R^2-based refinement
+    x_max = np.nanmax(x[good]) if good.any() else np.nan
     window_start = settings.PATLAK_WINDOW_START_FRACTION
     if not (0 < window_start < 1):
         window_start = 1 / 3
-    xmax = x[usable].max()
-    min_x = window_start * xmax
+    window = (x >= window_start * x_max) & (x <= x_max)
+    good &= window
 
-    candidate_indices = np.where(usable & (x >= min_x))[0]
-    if candidate_indices.size == 0:
-        candidate_indices = np.where(usable)[0]
+    if good.sum() < 2:
+        return np.nan, np.nan, np.nan, x, y, good
 
-    target_r2 = getattr(settings, "PATLAK_MIN_R2", 0.0)
-    if not (0 <= target_r2 < 1):
-        target_r2 = 0.0
+    xm, ym = x[good].mean(), y[good].mean()
+    denom = ((x[good] - xm) ** 2).sum()
+    if denom <= 0:
+        return np.nan, np.nan, np.nan, x, y, good
 
-    include = None
-    best_r2 = -np.inf
-    fallback_mask = None
+    Ki_raw = ((x[good] - xm) * (y[good] - ym)).sum() / denom
+    lam_raw = ym - Ki_raw * xm
 
-    for idx in candidate_indices:
-        candidate_mask = usable.copy()
-        candidate_mask[:idx] = False
+    resid = y[good] - (lam_raw + Ki_raw * x[good])
+    sd_denom = denom * (good.sum() - 2)
+    if sd_denom <= 0:
+        SD_raw = np.nan
+    else:
+        SD_raw = np.sqrt((resid ** 2).sum() / denom / (good.sum() - 2))
 
-        if candidate_mask.sum() < 2:
-            continue
-
-        x_sel = x[candidate_mask]
-        y_sel = y[candidate_mask]
-        xm = x_sel.mean()
-        ym = y_sel.mean()
-        denom = ((x_sel - xm) ** 2).sum()
-        if denom <= 0:
-            continue
-
-        slope = ((x_sel - xm) * (y_sel - ym)).sum() / denom
-        intercept = ym - slope * xm
-        resid = y_sel - (intercept + slope * x_sel)
-        ss_res = (resid ** 2).sum()
-        ss_tot = ((y_sel - ym) ** 2).sum()
-
-        if ss_tot <= 0:
-            r2 = 1.0 if ss_res <= 1e-12 else 0.0
-        else:
-            r2 = 1 - ss_res / ss_tot
-
-        if r2 > best_r2:
-            best_r2 = r2
-            fallback_mask = candidate_mask
-
-        if r2 >= target_r2:
-            include = candidate_mask
-            break
-
-    if include is None:
-        include = fallback_mask if fallback_mask is not None else usable
-
-    if include.sum() < 2:
-        return np.nan, np.nan, np.nan, x, y, include
-
-    xm, ym   = x[include].mean(), y[include].mean()
-    Ki       = ((x[include]-xm)*(y[include]-ym)).sum() / ((x[include]-xm)**2).sum()
-    lam      = ym - Ki*xm
-    resid    = y[include] - (lam + Ki*x[include])
-    SD_Ki    = np.sqrt((resid**2).sum() / ((x[include]-xm)**2).sum() / (include.sum()-2))
-
-    return Ki*6000, lam*100, SD_Ki*6000, x, y, include
+    return Ki_raw * 6000, lam_raw * 100, SD_raw * 6000, x, y, good
 
 
 def identify_drop_points(signal, tail_start: int = 100, threshold_factor: float = 0.5):
