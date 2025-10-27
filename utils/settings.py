@@ -39,6 +39,10 @@ TWO_COMPARTMENT_INIT_FROM_PATLAK = False
 # deconvolution residue.
 WRITE_MTT = True
 WRITE_CTH = True
+CTH_MTT_METHOD = os.environ.get("P_BRAIN_CTH_MTT_METHOD", "tikhonov")
+CTH_MTT_GAMMA_VOXELWISE = os.environ.get(
+    "P_BRAIN_CTH_MTT_GAMMA_VOXELWISE", "0"
+).lower() in {"1", "true", "yes"}
 
 # Regularisation strength for the two-compartment model
 TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 0.5))
@@ -228,6 +232,8 @@ def save_run_settings(analysis_directory, parameters):
         "TWO_COMPARTMENT_INIT_FROM_PATLAK": TWO_COMPARTMENT_INIT_FROM_PATLAK,
         "WRITE_MTT": WRITE_MTT,
         "WRITE_CTH": WRITE_CTH,
+        "CTH_MTT_METHOD": CTH_MTT_METHOD,
+        "CTH_MTT_GAMMA_VOXELWISE": CTH_MTT_GAMMA_VOXELWISE,
     })
     if AUTO_LAMBDA:
         settings["AUTO_LAMBDA_VALUE"] = AUTO_LAMBDA_VALUE
@@ -290,6 +296,8 @@ def save_runtime_metadata(analysis_directory, *, extra_environment_keys=None):
         "P_BRAIN_GLOBAL_KI_SKIP_TOP",
         "PBRAIN_CONTROLS",
         "PBRAIN_TURBO",
+        "P_BRAIN_CTH_MTT_METHOD",
+        "P_BRAIN_CTH_MTT_GAMMA_VOXELWISE",
     ]
     if extra_environment_keys:
         env_keys.extend(k for k in extra_environment_keys if k not in env_keys)
