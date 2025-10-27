@@ -24,6 +24,7 @@ import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
+from utils.montage import generate_parametric_montages
 from .kinetic_models import (
     extended_tofts_tikhonov,
     construct_convolution_matrix as km_construct_convolution_matrix,
@@ -3409,3 +3410,17 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
 
     if os.path.exists(screenshot_backup):
         os.remove(screenshot_backup)
+
+    dce_filename = filenames[-1] if filenames else None
+    if dce_filename:
+        dce_path = os.path.join(nifti_directory, dce_filename)
+        if os.path.exists(dce_path):
+            try:
+                generate_parametric_montages(analysis_directory, image_directory, dce_path)
+            except Exception as exc:
+                print(f"[montage] Unexpected error during montage rendering: {exc}")
+        else:
+            print(f"[montage] DCE file missing; skipping montage rendering: {dce_path}")
+    else:
+        print('[montage] No DCE filename available; skipping montage rendering.')
+
