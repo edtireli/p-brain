@@ -12,6 +12,7 @@ from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
+from utils.cli_logging import auto_logging_suppressed
 import warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 import threading
@@ -69,13 +70,14 @@ def build_voxel_matrix(dce_data):
 
     matrix = np.zeros(matrix_shape)
 
-    for idx, file in tqdm(enumerate(dce_data), desc="Building Voxel Matrix", total=len(dce_data)):
-        data_4d = nib.load(file).get_fdata()
-        # Ensure that the 4th dimension is handled correctly
-        if data_4d.ndim == 4:
-            matrix[idx, :, :, :] = data_4d[:, :, :, 0]
-        else:
-            matrix[idx, :, :, :] = data_4d
+    with auto_logging_suppressed():
+        for idx, file in tqdm(enumerate(dce_data), desc="Building Voxel Matrix", total=len(dce_data)):
+            data_4d = nib.load(file).get_fdata()
+            # Ensure that the 4th dimension is handled correctly
+            if data_4d.ndim == 4:
+                matrix[idx, :, :, :] = data_4d[:, :, :, 0]
+            else:
+                matrix[idx, :, :, :] = data_4d
 
     return matrix
 
@@ -146,17 +148,17 @@ def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
 
     if MULTIPROCESSING:
         with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
-            results = list(
-                tqdm(
+            with auto_logging_suppressed():
+                iterator = tqdm(
                     pool.imap(partial_fit, voxels),
                     total=total_voxels,
                     desc=" Fitting Voxel Matrix",
                 )
-            )
+                results = list(iterator)
     else:
-        results = [
-            partial_fit(v) for v in tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
-        ]
+        with auto_logging_suppressed():
+            iterator = tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
+            results = [partial_fit(v) for v in iterator]
 
     M0_values = np.array([r[0] for r in results]).reshape(shape_x, shape_y, shape_z)
     T1_values = np.array([r[1] for r in results]).reshape(shape_x, shape_y, shape_z)

@@ -4,8 +4,10 @@ from __future__ import annotations
 import builtins
 import os
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:  # Matplotlib is optional when running in headless/test modes
     import matplotlib.pyplot as plt  # type: ignore
@@ -28,7 +30,16 @@ import shutil
 
 _PREFIX = "[AUTO]"
 _BASE_PRINT = builtins.print
-_HOOK_STATE: Dict[str, Any] = {"installed": False}
+_HOOK_STATE: Dict[str, Any] = {"installed": False, "suppress_count": 0, "buffer": []}
+_SUPPRESS_LOCK = threading.RLock()
+
+_COLOURS = {
+    "info": "\033[36m",      # Cyan
+    "success": "\033[32m",   # Green
+    "warning": "\033[33m",   # Yellow
+    "error": "\033[31m",     # Red
+}
+_RESET = "\033[0m"
 
 
 def _timestamp() -> str:
@@ -42,17 +53,89 @@ def _format_path(path: os.PathLike[str] | str) -> str:
         return str(path)
 
 
-def log_auto(message: str) -> None:
+def _colour_enabled() -> bool:
+    if os.environ.get("NO_COLOR") or os.environ.get("PBRAIN_NO_COLOR"):
+        return False
+    stream = getattr(sys, "stdout", None)
+    return bool(stream and hasattr(stream, "isatty") and stream.isatty())
+
+
+def _level_from_message(message: str, override: Optional[str]) -> str:
+    if override:
+        return override
+    if message.startswith("[!]"):
+        return "warning"
+    if message.lower().startswith("error"):
+        return "error"
+    if message.lower().startswith("completed") or message.lower().startswith("fully automatic analysis pipeline completed"):
+        return "success"
+    return "info"
+
+
+def _emit_log(message: str, level: str) -> None:
+    colour = _COLOURS.get(level, "")
+    if not _colour_enabled() or not colour:
+        colour = ""
+    reset = _RESET if colour else ""
+    _BASE_PRINT(f"{colour}{_PREFIX} {_timestamp()} | {message}{reset}")
+
+
+def _buffer_log(message: str, level: str) -> None:
+    buffer: List[Tuple[str, str]] = _HOOK_STATE.setdefault("buffer", [])
+    buffer.append((message, level))
+
+
+def _flush_buffer() -> None:
+    buffer: List[Tuple[str, str]] = _HOOK_STATE.get("buffer", [])
+    if not buffer:
+        return
+    _HOOK_STATE["buffer"] = []
+    for msg, lvl in buffer:
+        _emit_log(msg, lvl)
+
+
+def _is_suppressed() -> bool:
+    return _HOOK_STATE.get("suppress_count", 0) > 0
+
+
+def _increment_suppression() -> None:
+    with _SUPPRESS_LOCK:
+        _HOOK_STATE["suppress_count"] = _HOOK_STATE.get("suppress_count", 0) + 1
+
+
+def _decrement_suppression() -> None:
+    with _SUPPRESS_LOCK:
+        count = max(_HOOK_STATE.get("suppress_count", 0) - 1, 0)
+        _HOOK_STATE["suppress_count"] = count
+        if count == 0:
+            _flush_buffer()
+
+
+@contextmanager
+def auto_logging_suppressed() -> Any:
+    """Context manager that buffers automatic logs and restores normal printing."""
+    _increment_suppression()
+    try:
+        yield
+    finally:
+        _decrement_suppression()
+
+
+def log_auto(message: str, *, level: Optional[str] = None) -> None:
     """Emit a standardised log message for automatic mode."""
-    _BASE_PRINT(f"{_PREFIX} {_timestamp()} | {message}")
+    resolved_level = _level_from_message(message, level)
+    if _is_suppressed():
+        _buffer_log(message, resolved_level)
+        return
+    _emit_log(message, resolved_level)
 
 
 def log_process_start(name: str) -> None:
-    log_auto(f"Starting process: {name}")
+    log_auto(f"Starting process: {name}", level="info")
 
 
 def log_process_end(name: str) -> None:
-    log_auto(f"Completed process: {name}")
+    log_auto(f"Completed process: {name}", level="success")
 
 
 def log_generated_file(path: os.PathLike[str] | str) -> None:
@@ -89,6 +172,9 @@ def _patch_print() -> None:
         message = sep.join(str(arg) for arg in args)
         if end and end != "\n":
             message = f"{message}{end}"
+        if _is_suppressed() or "\r" in message:
+            original_print(*args, sep=sep, end=end, file=file, flush=flush)
+            return
         log_auto(message)
 
     _HOOK_STATE["print"] = original_print
@@ -286,7 +372,6 @@ def install_auto_logging_hooks() -> None:
         patcher()
 
     _HOOK_STATE["installed"] = True
-    log_auto("Automatic logging hooks installed.")
 
 
 def uninstall_auto_logging_hooks() -> None:
@@ -320,5 +405,7 @@ def uninstall_auto_logging_hooks() -> None:
     if "rename" in _HOOK_STATE:
         os.rename = _HOOK_STATE.pop("rename")  # type: ignore[assignment]
 
+    _HOOK_STATE["suppress_count"] = 0
+    _flush_buffer()
     _HOOK_STATE["installed"] = False
     log_auto("Automatic logging hooks removed.")
