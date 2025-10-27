@@ -382,14 +382,40 @@ def plot_l_curve(aif, tissue_curve, time_array, lambdas, *, best=None):
 
 def extended_tofts_tikhonov(Cp, Ct, t, lambd=settings.TIKHONOV_LAMBDA,
                             x0=(0.001, 0.2, 0.05)):
+    Cp = np.asarray(Cp, dtype=float).reshape(-1)
+    Ct = np.asarray(Ct, dtype=float).reshape(-1)
+    t = np.asarray(t, dtype=float).reshape(-1)
+
+    if Cp.shape[0] != Ct.shape[0] or Cp.shape[0] != t.shape[0]:
+        raise ValueError("Cp, Ct and t must share the same length.")
+
+    valid = np.isfinite(Cp) & np.isfinite(Ct) & np.isfinite(t)
+    if not np.any(valid):
+        raise ValueError("Cp, Ct and t must contain at least one finite sample.")
+
+    if not np.all(valid):
+        Cp = Cp[valid]
+        Ct = Ct[valid]
+        t = t[valid]
+
+    if Cp.size < 3:
+        raise ValueError("Need at least three finite samples to fit the extended Tofts model.")
+
     x0 = np.asarray(x0, dtype=float)
+    if x0.shape != (3,) or not np.all(np.isfinite(x0)):
+        raise ValueError("x0 must be a finite iterable of length three.")
+
+    x0 = np.clip(x0, 1e-12, None)
 
     def residual(theta):
+        theta = np.clip(theta, 1e-12, None)
         Ktrans, ve, vp = theta
         Ct_pred = extended_tofts_model(t, Ktrans, ve, vp, Cp)
         misfit = Ct_pred - Ct
+        if np.any(~np.isfinite(misfit)):
+            return np.full(misfit.size + theta.size, np.inf)
         w = np.linalg.norm(misfit) / max(np.linalg.norm(theta), 1e-8)
-        penalty = np.sqrt(lambd) * w * np.array(theta)
+        penalty = np.sqrt(lambd) * w * theta
         return np.concatenate([misfit, penalty])
 
     sol = least_squares(residual, x0, bounds=(0, np.inf))
