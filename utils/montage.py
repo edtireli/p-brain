@@ -259,6 +259,13 @@ def _compute_color_scale(data: np.ndarray, job: MapJob) -> tuple[float, float]:
     if hi - lo < EPS:
         hi = lo + 1.0
 
+    # Round limits to whole-number boundaries for easier interpretation.
+    lo = float(np.floor(lo))
+    hi = float(np.ceil(hi))
+
+    if hi - lo < EPS:
+        hi = lo + 1.0
+
     return float(lo), float(hi)
 
 
@@ -330,6 +337,15 @@ def _spaced_unique_indices(zmin: int, zmax: int, k: int) -> np.ndarray:
     if idx.size < k:
         idx = np.pad(idx, (0, k - idx.size), mode="edge")
     return idx
+
+
+def _rotated_shape(shape_xy: Sequence[int], rotate: int) -> tuple[int, int]:
+    """Return the (height, width) of a slice after ``np.rot90`` rotation."""
+
+    rotate = rotate % 4
+    if rotate % 2:
+        return int(shape_xy[1]), int(shape_xy[0])
+    return int(shape_xy[0]), int(shape_xy[1])
 
 
 def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> tuple[int, int, int, int]:
@@ -445,7 +461,6 @@ def _render_montage(
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
 
-        union_crop = union_xy_r[r0:r1, c0:c1]
         if job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
@@ -457,7 +472,7 @@ def _render_montage(
         else:
             mask_slice = np.isfinite(slc)
 
-        arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
+        arr = np.ma.array(slc, mask=~mask_slice)
         ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
 
     # Hide any unused axes when there are fewer slices than tiles
