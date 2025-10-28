@@ -239,7 +239,11 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
     if nz <= 1:
         return np.zeros_like(z_fracs, dtype=int)
     z = np.rint(z_fracs * (nz - 1)).astype(int)
-    return np.clip(z, 0, nz - 1)
+    z = np.clip(z, 0, nz - 1)
+    for i in range(1, len(z)):
+        if z[i] <= z[i - 1] and nz > 1:
+            z[i] = min(nz - 1, z[i - 1] + 1)
+    return z
 
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
@@ -293,7 +297,8 @@ def _render_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
-    norm = mpl.colors.Normalize(vmin=job.vmin, vmax=job.vmax, clip=False)
+    vmin, vmax = _compute_display_range(data, job)
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="none")
@@ -333,8 +338,8 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
-    cb.set_ticks([job.vmin, job.vmax])
-    cb.set_ticklabels([f"{job.vmin:g}", f"{job.vmax:g}"])
+    cb.set_ticks([vmin, vmax])
+    cb.set_ticklabels([f"{vmin:g}", f"{vmax:g}"])
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
@@ -342,3 +347,51 @@ def _render_montage(
     plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
     plt.savefig(out_path, dpi=dpi, facecolor="none", transparent=True)
     plt.close(fig)
+
+
+def _compute_display_range(data: np.ndarray, job: MapJob) -> tuple[float, float]:
+    mask = np.isfinite(data)
+    if job.mask_zero:
+        mask &= data > EPS
+    finite_vals = data[mask]
+    if finite_vals.size == 0:
+        return job.vmin, job.vmax
+
+    lo, hi = np.percentile(finite_vals, [2.0, 98.0])
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        lo = float(np.nanmin(finite_vals))
+        hi = float(np.nanmax(finite_vals))
+
+    lo = float(lo)
+    hi = float(hi)
+    if hi <= lo:
+        lo = float(np.min(finite_vals))
+        hi = float(np.max(finite_vals))
+
+    if hi <= lo:
+        span = abs(lo) if lo != 0 else 1.0
+        lo = lo - 0.1 * span
+        hi = lo + 0.2 * span
+
+    return _round_bounds(lo, hi)
+
+
+def _round_bounds(lo: float, hi: float) -> tuple[float, float]:
+    span = hi - lo
+    if span <= 0:
+        return float(lo), float(hi if hi > lo else lo + 1.0)
+
+    if span >= 1.0:
+        lo_r = np.floor(lo)
+        hi_r = np.ceil(hi)
+        if lo_r == hi_r:
+            hi_r = lo_r + 1.0
+        return float(lo_r), float(hi_r)
+
+    decimals = int(np.ceil(-np.log10(span))) + 1
+    factor = 10 ** decimals
+    lo_r = np.floor(lo * factor) / factor
+    hi_r = np.ceil(hi * factor) / factor
+    if lo_r == hi_r:
+        hi_r = lo_r + 1.0 / factor
+    return float(lo_r), float(hi_r)
