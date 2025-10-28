@@ -377,13 +377,13 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int, tiles: int) -> np.ndarray:
         idx = idx[:tiles]
 
     for i in range(1, idx.size):
-        if idx[i] < idx[i - 1]:
-            idx[i] = idx[i - 1]
+        if idx[i] <= idx[i - 1]:
+            idx[i] = min(nz - 1, idx[i - 1] + 1)
 
-    if np.unique(idx).size < tiles and nz > 1:
-        idx = np.rint(np.linspace(0, nz - 1, tiles)).astype(int)
+    if np.unique(idx).size <= 1 and nz > 1:
+        idx = _spaced_unique_indices(0, nz - 1, tiles)
 
-    return np.clip(idx, 0, nz - 1).astype(int, copy=False)
+    return idx.astype(int, copy=False)
 
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
@@ -428,9 +428,12 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
+    valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
+    union_xy = np.any(valmask3d, axis=2)
+    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
+
     tiles = rows * cols
-    rot_shape = _rotated_shape(data.shape[:2], ref_info["rotate"])
-    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], rot_shape)
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
     z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], tiles)
     if z_indices.size < tiles:
         pad_value = z_indices[-1] if z_indices.size else 0
