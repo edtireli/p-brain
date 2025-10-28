@@ -2630,6 +2630,9 @@ def compute_and_plot_ctcs_median(
         global_CBF_max = np.nanmax(CBF_per_voxel)
         print(f"Global CBF min: {global_CBF_min}, max: {global_CBF_max}")
 
+        method_tag = settings.CTH_MTT_METHOD.lower().strip().replace(' ', '_')
+        method_suffix = f"_{method_tag}" if method_tag else ""
+
         # Generate overlay images for CBF
         for i in range(n_slices):
             CBF_slice = CBF_per_voxel[:, :, i]
@@ -2671,7 +2674,8 @@ def compute_and_plot_ctcs_median(
                                       affine=ref_affine,
                                       header=ref_header.copy())
             mtt_img = annotate_cth_mtt_header(mtt_img)
-            mtt_path = os.path.join(analysis_directory, 'mtt_map.nii.gz')
+            mtt_filename = f"mtt{method_suffix}_map.nii.gz"
+            mtt_path = os.path.join(analysis_directory, mtt_filename)
             nib.save(mtt_img, mtt_path)
             print(f"MTT map saved to {mtt_path} (method={settings.CTH_MTT_METHOD})")
             log_median("MTT", MTT_per_voxel)
@@ -2681,7 +2685,8 @@ def compute_and_plot_ctcs_median(
                                       affine=ref_affine,
                                       header=ref_header.copy())
             cth_img = annotate_cth_mtt_header(cth_img)
-            cth_path = os.path.join(analysis_directory, 'cth_map.nii.gz')
+            cth_filename = f"cth{method_suffix}_map.nii.gz"
+            cth_path = os.path.join(analysis_directory, cth_filename)
             nib.save(cth_img, cth_path)
             print(f"CTH map saved to {cth_path} (method={settings.CTH_MTT_METHOD})")
             log_median("CTH", CTH_per_voxel)
