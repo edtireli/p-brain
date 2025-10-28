@@ -11,23 +11,11 @@ from matplotlib.path import Path
 from collections import defaultdict
 from termcolor import colored
 from utils.mapping import *
-from utils.jumpfix import apply_jumpfix, should_apply_jumpfix
 import glob
 import shutil
 import utils.settings as settings
 
 turbo_mode = True  # When True, suppress interactive plotting
-
-
-def _fill_nans(values):
-    values = np.asarray(values, dtype=float)
-    if not np.isnan(values).any():
-        return values
-    idx = np.arange(values.size)
-    good = np.isfinite(values)
-    if not good.any():
-        return np.zeros_like(values)
-    return np.interp(idx, idx[good], values[good])
 
 
 def patlak_analysis_plotting(c_tissue, c_input, time):
@@ -313,31 +301,12 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         except ValueError:
             print("[!] Continuing with automatically selected point: " +str(baseline_point))
 
-    drop_indices = np.array([], dtype=int)
-    if should_apply_jumpfix(analysis_directory):
-        avg_C_t, _, drop_indices = apply_jumpfix(avg_C_t)
-        if drop_indices.size:
-            print(f"[!] apply_jumpfix: ignoring {drop_indices.size} samples in slice {slice_index + 1}")
-
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
-    smoothed_values = butter_lowpass_filter(_fill_nans(avg_C_t), cutoff, fs, order)
-
+    smoothed_values = butter_lowpass_filter(avg_C_t, cutoff, fs, order)
+    
     # Concentration-Time Curve
     axs[0].plot(time_points_s, smoothed_values, color='black')
-    finite = np.isfinite(avg_C_t)
-    if finite.any():
-        axs[0].scatter(time_points_s[finite], avg_C_t[finite], color='r', s=5)
-    if drop_indices.size:
-        valid_drop = drop_indices[(drop_indices < time_points_s.size) & np.isfinite(avg_C_t[drop_indices])]
-        if valid_drop.size:
-            axs[0].scatter(
-                time_points_s[valid_drop],
-                avg_C_t[valid_drop],
-                facecolors='none',
-                edgecolors='black',
-                s=40,
-                label='apply_jumpfix',
-            )
+    axs[0].scatter(time_points_s, avg_C_t, color='r', s=5)
     axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Average Concentration-Time Curve (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
