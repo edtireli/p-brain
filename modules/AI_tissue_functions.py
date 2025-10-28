@@ -26,7 +26,6 @@ from utils.loading import *
 from utils.plotting import *
 from utils.montage import generate_parametric_montages
 from utils.cli_logging import auto_logging_suppressed
-from utils.jumpfix import apply_jumpfix, identify_drop_points, should_apply_jumpfix
 from .kinetic_models import (
     extended_tofts_tikhonov,
     construct_convolution_matrix as km_construct_convolution_matrix,
@@ -67,7 +66,7 @@ def patlak_total(C_t, C_a, t):
     if C_t.size == 0:
         return (np.nan, np.nan, np.nan)          # Ki, λ, SD_Ki
     if correct_signal_jumps:
-        _, bad, _ = apply_jumpfix(C_t)        # <- same length as C_t
+        _, bad, _ = mask_problematic(C_t)        # <- same length as C_t
     else:
         bad = None
     Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a, t, bad_mask=bad)
@@ -325,6 +324,39 @@ def annotate_cth_mtt_header(img):
             pass
     return img
 
+def mask_problematic(ctc, *, tail_start: int = 100, thresh_factor: float = 0.5):
+    """
+    Replace “bad” (post-tail drop) samples in *ctc* with NaN and return
+    (ctc_masked, bad_mask, drop_idxs).
+
+    ── NEW: now **always** returns 3 values ──
+    """
+    ctc = np.asarray(ctc, dtype=float)
+
+    # ── EARLY EXIT ────────────────────────────────────────────────
+    if ctc.size <= tail_start + 1:
+        # too short to analyse — nothing is “bad”
+        return (
+            ctc.astype(float),                       # ctc_masked
+            np.zeros_like(ctc, dtype=bool),          # bad_mask
+            np.array([], dtype=int)                  # drop_idxs
+        )
+
+    # identify the drop points
+    drop_idxs, *_ = identify_drop_points(ctc, tail_start, thresh_factor)
+
+    # boolean mask of the dropped samples
+    bad_mask = np.zeros_like(ctc, dtype=bool)
+    if drop_idxs.size:
+        bad_mask[drop_idxs] = True
+
+    # masked copy of the curve
+    ctc_masked = ctc.copy()
+    ctc_masked[bad_mask] = np.nan
+
+    return ctc_masked, bad_mask, drop_idxs
+
+
 # -------------- patlak_analysis.py (new version) --------------
 def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
     """Patlak fit aligned with ``patlak_analysis_plotting`` semantics."""
@@ -374,6 +406,64 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
 
     return Ki_raw * 6000, lam_raw * 100, SD_raw * 6000, x, y, good
 
+
+def identify_drop_points(signal, tail_start: int = 100, threshold_factor: float = 0.5):
+    """
+    Detect “drop” samples occurring at/after *tail_start* where the curve
+    falls more than *threshold_factor*·σ below a fitted linear tail trend.
+
+    Parameters
+    ----------
+    signal : 1-D array-like
+        Concentration-time curve.
+    tail_start : int, default 100
+        Index that marks the beginning of the tail region.
+    threshold_factor : float, default 0.5
+        Multiplier for the residual standard deviation that sets the
+        drop threshold.
+
+    Returns
+    -------
+    drop_idxs : np.ndarray (int)
+        Indices judged to be ‘bad’ (empty if none).
+    trend : np.ndarray | None
+        The fitted linear trend across the *entire* signal,
+        or *None* when the curve is too short to fit.
+    thresh : float | None
+        The absolute drop threshold, or *None* when no fit is done.
+    """
+    signal = np.asarray(signal, dtype=float)
+    n = signal.size
+
+    # ── EARLY EXIT ────────────────────────────────────────────────
+    # need ≥2 points after tail_start to fit a line
+    if n <= tail_start + 1:
+        return np.array([], dtype=int), None, None
+    # also bail if everything is NaN
+    if np.all(np.isnan(signal)):
+        return np.array([], dtype=int), None, None
+
+    # standard path
+    x = np.arange(tail_start, n)
+    y = signal[tail_start:]
+
+    # handle NaNs in the tail region
+    good_tail = ~np.isnan(y)
+    if good_tail.sum() < 2:                     # not enough data to fit
+        return np.array([], dtype=int), None, None
+
+    # fit linear trend to *clean* tail samples
+    m, b = np.polyfit(x[good_tail], y[good_tail], 1)
+    trend = m * np.arange(n) + b
+
+    # residuals & threshold
+    resid = signal - trend
+    mu, sigma = np.nanmean(resid), np.nanstd(resid)
+    thresh = mu - threshold_factor * sigma
+
+    # flag all drops beyond threshold, only in tail
+    drop_idxs = np.where((resid < thresh) & (np.arange(n) >= tail_start))[0]
+    return drop_idxs.astype(int), trend, thresh
 
 # -- Helper functions for compute_Ki_from_atlas -----------------------------
 
@@ -2023,23 +2113,23 @@ def compute_and_plot_ctcs_median(
             else:
                 avg_boundary_ctc = np.array([])
 
-        if correct_signal_jumps:
-            avg_wm_ctc,               bad_wm,_               = apply_jumpfix(avg_wm_ctc)
-            avg_cortical_gm_ctc,      bad_cortical_gm,_      = apply_jumpfix(avg_cortical_gm_ctc)
-            avg_subcortical_gm_ctc,   bad_subcortical_gm,_   = apply_jumpfix(avg_subcortical_gm_ctc)
+            if correct_signal_jumps:
+                avg_wm_ctc,               bad_wm,_               = mask_problematic(avg_wm_ctc)
+                avg_cortical_gm_ctc,      bad_cortical_gm,_      = mask_problematic(avg_cortical_gm_ctc)
+                avg_subcortical_gm_ctc,   bad_subcortical_gm,_   = mask_problematic(avg_subcortical_gm_ctc)
 
-            avg_gm_brainstem_ctc,  bad_gm_brainstem,  _ = apply_jumpfix(avg_gm_brainstem_ctc)
-            avg_gm_cerebellum_ctc, bad_gm_cerebellum, _ = apply_jumpfix(avg_gm_cerebellum_ctc)
-            avg_wm_cerebellum_ctc, bad_wm_cerebellum, _ = apply_jumpfix(avg_wm_cerebellum_ctc)
-            avg_wm_cc_ctc,         bad_wm_cc,         _ = apply_jumpfix(avg_wm_cc_ctc)
-            if boundary and avg_boundary_ctc.size:
-                avg_boundary_ctc, bad_boundary,_ = apply_jumpfix(avg_boundary_ctc)
+                avg_gm_brainstem_ctc,  bad_gm_brainstem,  _ = mask_problematic(avg_gm_brainstem_ctc)
+                avg_gm_cerebellum_ctc, bad_gm_cerebellum, _ = mask_problematic(avg_gm_cerebellum_ctc)
+                avg_wm_cerebellum_ctc, bad_wm_cerebellum, _ = mask_problematic(avg_wm_cerebellum_ctc)
+                avg_wm_cc_ctc,         bad_wm_cc,         _ = mask_problematic(avg_wm_cc_ctc)
+                if boundary and avg_boundary_ctc.size:
+                    avg_boundary_ctc, bad_boundary,_ = mask_problematic(avg_boundary_ctc)
+                else:
+                    bad_boundary = None
             else:
-                bad_boundary = None
-        else:
-            bad_wm = bad_cortical_gm = bad_subcortical_gm = None
-            bad_gm_brainstem = bad_gm_cerebellum = bad_wm_cerebellum = None
-            bad_wm_cc = bad_boundary = None
+                bad_wm = bad_cortical_gm = bad_subcortical_gm = None
+                bad_gm_brainstem = bad_gm_cerebellum = bad_wm_cerebellum = None
+                bad_wm_cc = bad_boundary = None
             # Save the tissue concentration curves as .npy files
             save_dir_ctc = os.path.join(analysis_directory, 'CTC Data', 'Tissue', 'AI')
             os.makedirs(save_dir_ctc, exist_ok=True)
@@ -2775,7 +2865,7 @@ def compute_and_plot_ctcs_median(
         plt.close()
 
     # ----------------------------------------------------------------------------- 
-    # 2) Helper: run apply_jumpfix on the *trimmed* curve, then Patlak
+    # 2) Helper: run mask_problematic on the *trimmed* curve, then Patlak
     # -----------------------------------------------------------------------------
     def patlak_total(C_t):
         if not C_t.size:
@@ -2786,7 +2876,7 @@ def compute_and_plot_ctcs_median(
             )
             return Ki, lam, SD_Ki, fit_curve
         if correct_signal_jumps:
-            _, bad, _ = apply_jumpfix(C_t)
+            _, bad, _ = mask_problematic(C_t)
         else:
             bad = None
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
@@ -3176,7 +3266,8 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     # Automatically enable jump correction when requested via a JSON file
     global correct_signal_jumps
-    if should_apply_jumpfix(analysis_directory):
+    jumpfix_file = os.path.join(os.path.dirname(analysis_directory), 'apply_jumpfix.json')
+    if os.path.exists(jumpfix_file):
         print('[!] apply_jumpfix.json detected – enabling signal jump correction')
         correct_signal_jumps = True
 
