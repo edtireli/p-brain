@@ -2381,85 +2381,85 @@ def compute_and_plot_ctcs_median(
                 bad_boundary=bad_boundary                      
     )
 
-        # Collect data for JSON output
-        patlak_data = {
-            'slice': i + 1,
-            'cth_mtt_method': settings.CTH_MTT_METHOD,
-            'white_matter_median': {
-                'Ki': Ki_wm,
-                'SD_Ki': SD_Ki_wm,
-                'lambda': lambda_wm,
-                'CBF_tikhonov': CBF_wm,
-                'MTT_tikhonov': MTT_wm,
-                'CTH_tikhonov': CTH_wm,
-                'voxel_count': int(np.sum(wm_slice_dce))
-            },
-            'cortical_gray_matter_median': {
-                'Ki': Ki_cortical_gm,
-                'SD_Ki': SD_Ki_cortical_gm,
-                'lambda': lambda_cortical_gm,
-                'CBF_tikhonov': CBF_cortical_gm,
-                'MTT_tikhonov': MTT_cortical_gm,
-                'CTH_tikhonov': CTH_cortical_gm,
-                'voxel_count': int(np.sum(cortical_gm_slice_dce))
-            },
-            'subcortical_gray_matter_median': {
-                'Ki': Ki_subcortical_gm,
-                'SD_Ki': SD_Ki_subcortical_gm,
-                'lambda': lambda_subcortical_gm,
-                'CBF_tikhonov': CBF_subcortical_gm,
-                'MTT_tikhonov': MTT_subcortical_gm,
-                'CTH_tikhonov': CTH_subcortical_gm,
-                'voxel_count': int(np.sum(subcortical_gm_slice_dce))
-            },
-            'gm_brainstem_median': {
-                'Ki': Ki_gm_brainstem,
-                'SD_Ki': SD_Ki_gm_brainstem,
-                'lambda': lambda_gm_brainstem,
-                'CBF_tikhonov': CBF_gm_brainstem,
-                'MTT_tikhonov': MTT_gm_brainstem,
-                'CTH_tikhonov': CTH_gm_brainstem,
-                'voxel_count': int(np.sum(gm_brainstem_slice_dce))
-            },
-            'gm_cerebellum_median': {
-                'Ki': Ki_gm_cerebellum,
-                'SD_Ki': SD_Ki_gm_cerebellum,
-                'lambda': lambda_gm_cerebellum,
-                'CBF_tikhonov': CBF_gm_cerebellum,
-                'MTT_tikhonov': MTT_gm_cerebellum,
-                'CTH_tikhonov': CTH_gm_cerebellum,
-                'voxel_count': int(np.sum(gm_cerebellum_slice_dce))
-            },
-            'wm_cerebellum_median': {
-                'Ki': Ki_wm_cerebellum,
-                'SD_Ki': SD_Ki_wm_cerebellum,
-                'lambda': lambda_wm_cerebellum,
-                'CBF_tikhonov': CBF_wm_cerebellum,
-                'MTT_tikhonov': MTT_wm_cerebellum,
-                'CTH_tikhonov': CTH_wm_cerebellum,
-                'voxel_count': int(np.sum(wm_cerebellum_slice_dce))
-            },
-            'wm_cc_median': {
-                'Ki': Ki_wm_cc,
-                'SD_Ki': SD_Ki_wm_cc,
-                'lambda': lambda_wm_cc,
-                'CBF_tikhonov': CBF_wm_cc,
-                'MTT_tikhonov': MTT_wm_cc,
-                'CTH_tikhonov': CTH_wm_cc,
-                'voxel_count': int(np.sum(wm_cc_slice_dce))
+            # Collect data for JSON output
+            patlak_data = {
+                'slice': i + 1,
+                'cth_mtt_method': settings.CTH_MTT_METHOD,
+                'white_matter_median': {
+                    'Ki': Ki_wm,
+                    'SD_Ki': SD_Ki_wm,
+                    'lambda': lambda_wm,
+                    'CBF_tikhonov': CBF_wm,
+                    'MTT_tikhonov': MTT_wm,
+                    'CTH_tikhonov': CTH_wm,
+                    'voxel_count': int(np.sum(wm_slice_dce))
+                },
+                'cortical_gray_matter_median': {
+                    'Ki': Ki_cortical_gm,
+                    'SD_Ki': SD_Ki_cortical_gm,
+                    'lambda': lambda_cortical_gm,
+                    'CBF_tikhonov': CBF_cortical_gm,
+                    'MTT_tikhonov': MTT_cortical_gm,
+                    'CTH_tikhonov': CTH_cortical_gm,
+                    'voxel_count': int(np.sum(cortical_gm_slice_dce))
+                },
+                'subcortical_gray_matter_median': {
+                    'Ki': Ki_subcortical_gm,
+                    'SD_Ki': SD_Ki_subcortical_gm,
+                    'lambda': lambda_subcortical_gm,
+                    'CBF_tikhonov': CBF_subcortical_gm,
+                    'MTT_tikhonov': MTT_subcortical_gm,
+                    'CTH_tikhonov': CTH_subcortical_gm,
+                    'voxel_count': int(np.sum(subcortical_gm_slice_dce))
+                },
+                'gm_brainstem_median': {
+                    'Ki': Ki_gm_brainstem,
+                    'SD_Ki': SD_Ki_gm_brainstem,
+                    'lambda': lambda_gm_brainstem,
+                    'CBF_tikhonov': CBF_gm_brainstem,
+                    'MTT_tikhonov': MTT_gm_brainstem,
+                    'CTH_tikhonov': CTH_gm_brainstem,
+                    'voxel_count': int(np.sum(gm_brainstem_slice_dce))
+                },
+                'gm_cerebellum_median': {
+                    'Ki': Ki_gm_cerebellum,
+                    'SD_Ki': SD_Ki_gm_cerebellum,
+                    'lambda': lambda_gm_cerebellum,
+                    'CBF_tikhonov': CBF_gm_cerebellum,
+                    'MTT_tikhonov': MTT_gm_cerebellum,
+                    'CTH_tikhonov': CTH_gm_cerebellum,
+                    'voxel_count': int(np.sum(gm_cerebellum_slice_dce))
+                },
+                'wm_cerebellum_median': {
+                    'Ki': Ki_wm_cerebellum,
+                    'SD_Ki': SD_Ki_wm_cerebellum,
+                    'lambda': lambda_wm_cerebellum,
+                    'CBF_tikhonov': CBF_wm_cerebellum,
+                    'MTT_tikhonov': MTT_wm_cerebellum,
+                    'CTH_tikhonov': CTH_wm_cerebellum,
+                    'voxel_count': int(np.sum(wm_cerebellum_slice_dce))
+                },
+                'wm_cc_median': {
+                    'Ki': Ki_wm_cc,
+                    'SD_Ki': SD_Ki_wm_cc,
+                    'lambda': lambda_wm_cc,
+                    'CBF_tikhonov': CBF_wm_cc,
+                    'MTT_tikhonov': MTT_wm_cc,
+                    'CTH_tikhonov': CTH_wm_cc,
+                    'voxel_count': int(np.sum(wm_cc_slice_dce))
+                }
             }
-        }
 
-        patlak_data['white_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_wm))
-        patlak_data['cortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_cortical_gm))
-        patlak_data['subcortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_subcortical_gm))
-        patlak_data['gm_brainstem_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_brainstem))
-        patlak_data['gm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_cerebellum))
-        patlak_data['wm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cerebellum))
-        patlak_data['wm_cc_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cc))
+            patlak_data['white_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_wm))
+            patlak_data['cortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_cortical_gm))
+            patlak_data['subcortical_gray_matter_median'].update(extract_cth_mtt_sidecar_fields(extras_subcortical_gm))
+            patlak_data['gm_brainstem_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_brainstem))
+            patlak_data['gm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_gm_cerebellum))
+            patlak_data['wm_cerebellum_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cerebellum))
+            patlak_data['wm_cc_median'].update(extract_cth_mtt_sidecar_fields(extras_wm_cc))
 
-        if boundary and avg_boundary_ctc.size > 0:
-            patlak_data['boundary_median'] = {
+            if boundary and avg_boundary_ctc.size > 0:
+                patlak_data['boundary_median'] = {
                 'Ki': Ki_boundary,
                 'SD_Ki': SD_Ki_boundary,
                 'lambda': lambda_boundary,
@@ -2468,101 +2468,101 @@ def compute_and_plot_ctcs_median(
                 'CTH_tikhonov': CTH_boundary,
                 'voxel_count': int(np.sum(boundary_mask))
             }
-            patlak_data['boundary_median'].update(extract_cth_mtt_sidecar_fields(extras_boundary))
+                patlak_data['boundary_median'].update(extract_cth_mtt_sidecar_fields(extras_boundary))
 
-        all_patlak_data.append(patlak_data)
+            all_patlak_data.append(patlak_data)
 
-        # Compute K_i and/or CBF per voxel if enabled
-        if compute_per_voxel_Ki or compute_per_voxel_CBF:
-            if (compute_per_voxel_CBF and
-                    settings.CTH_MTT_METHOD.lower() in {"gamma", "hybrid"} and
-                    not settings.CTH_MTT_GAMMA_VOXELWISE and
-                    not getattr(logger, "_gamma_voxel_warning_emitted", False)):
-                logger.warning(
-                    "CTH/MTT method '%s' requested but voxelwise gamma fitting is disabled;"
-                    " using Tikhonov values for per-voxel maps.",
-                    settings.CTH_MTT_METHOD,
-                )
-                logger._gamma_voxel_warning_emitted = True
-            # Combine WM and GM masks for the current slice
-            gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
-            brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
-            brain_indices = np.argwhere(brain_mask_slice)
-
-            # Initialize per-voxel slice arrays
-            if compute_per_voxel_Ki:
-                Ki_slice = np.full(brain_mask_slice.shape, np.nan)
-                lam_slice = np.full(brain_mask_slice.shape, np.nan)
-                SD_slice = np.full(brain_mask_slice.shape, np.nan)
-            if compute_per_voxel_CBF:
-                CBF_slice = np.full(brain_mask_slice.shape, np.nan)
-                MTT_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_MTT else None
-                CTH_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_CTH else None
-
-            # For each voxel in the brain mask, compute K_i and/or CBF
-            for (x, y) in brain_indices:
-                voxel_time_course = data_4d[x, y, i, :]
-                T1 = T1_matrix[x, y, i]
-                M0 = M0_matrix[x, y, i]
-                C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
-                baseline_point = find_baseline_point_advanced(C_t_0)
-                C_t = custom_shifter(C_t_0, baseline_point)
-
-                # Exclude CTCs with NaNs or zeros
-                if np.isnan(C_t).any() or np.all(C_t == 0):
-                    continue
-
-                # Ensure C_t and C_a_full have the same length
-                min_length_voxel = min(len(C_t), len(C_a_full))
-                C_t_voxel = C_t[:min_length_voxel]
-                C_a_voxel = C_a_full[:min_length_voxel]
-                time_points_voxel = time_points_s[:min_length_voxel]
-
-                if min_length_voxel < 2:
-                    continue
-
-                Ki_value = None
-                if compute_per_voxel_Ki:
-                    # Perform Patlak analysis
-                    Ki_voxel, lam_voxel, SD_voxel, _, _, _ = patlak_analysis_plotting(
-                        C_t_voxel, C_a_voxel, time_points_voxel
-                    )
-                    Ki_slice[x, y] = Ki_voxel
-                    lam_slice[x, y] = lam_voxel
-                    SD_slice[x, y] = SD_voxel
-                    Ki_value = Ki_voxel
-
-                if compute_per_voxel_CBF:
-                    cbf_voxel, mtt_voxel, cth_voxel, _ = compute_mtt_cth(
+            # Compute K_i and/or CBF per voxel if enabled
+            if compute_per_voxel_Ki or compute_per_voxel_CBF:
+                if (compute_per_voxel_CBF and
+                        settings.CTH_MTT_METHOD.lower() in {"gamma", "hybrid"} and
+                        not settings.CTH_MTT_GAMMA_VOXELWISE and
+                        not getattr(logger, "_gamma_voxel_warning_emitted", False)):
+                    logger.warning(
+                        "CTH/MTT method '%s' requested but voxelwise gamma fitting is disabled;"
+                        " using Tikhonov values for per-voxel maps.",
                         settings.CTH_MTT_METHOD,
-                        C_t_voxel,
-                        C_a_voxel,
-                        time_points_voxel,
-                        Ki=Ki_value,
-                        allow_gamma=settings.CTH_MTT_GAMMA_VOXELWISE,
-                        logger=logger,
                     )
-                    if np.isfinite(cbf_voxel):
-                        CBF_slice[x, y] = cbf_voxel
-                    if settings.WRITE_MTT and MTT_slice is not None and np.isfinite(mtt_voxel):
-                        MTT_slice[x, y] = mtt_voxel
-                    if settings.WRITE_CTH and CTH_slice is not None and np.isfinite(cth_voxel):
-                        CTH_slice[x, y] = cth_voxel
+                    logger._gamma_voxel_warning_emitted = True
+                # Combine WM and GM masks for the current slice
+                gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
+                brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
+                brain_indices = np.argwhere(brain_mask_slice)
 
-            # Store the K_i and/or CBF slice in the 3D arrays
-            if compute_per_voxel_Ki:
-                Ki_per_voxel[:, :, i] = Ki_slice
-                lambda_per_voxel[:, :, i] = lam_slice
-                SD_per_voxel[:, :, i] = SD_slice
-            if compute_per_voxel_CBF:
-                CBF_per_voxel[:, :, i] = CBF_slice
-                if settings.WRITE_MTT and MTT_per_voxel is not None and MTT_slice is not None:
-                    MTT_per_voxel[:, :, i] = MTT_slice
-                if settings.WRITE_CTH and CTH_per_voxel is not None and CTH_slice is not None:
-                    CTH_per_voxel[:, :, i] = CTH_slice
+                # Initialize per-voxel slice arrays
+                if compute_per_voxel_Ki:
+                    Ki_slice = np.full(brain_mask_slice.shape, np.nan)
+                    lam_slice = np.full(brain_mask_slice.shape, np.nan)
+                    SD_slice = np.full(brain_mask_slice.shape, np.nan)
+                if compute_per_voxel_CBF:
+                    CBF_slice = np.full(brain_mask_slice.shape, np.nan)
+                    MTT_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_MTT else None
+                    CTH_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_CTH else None
 
-        if boundary:
-            boundary_mask_full[:, :, i] = boundary_mask if boundary_mask is not None else False
+                # For each voxel in the brain mask, compute K_i and/or CBF
+                for (x, y) in brain_indices:
+                    voxel_time_course = data_4d[x, y, i, :]
+                    T1 = T1_matrix[x, y, i]
+                    M0 = M0_matrix[x, y, i]
+                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
+                    baseline_point = find_baseline_point_advanced(C_t_0)
+                    C_t = custom_shifter(C_t_0, baseline_point)
+
+                    # Exclude CTCs with NaNs or zeros
+                    if np.isnan(C_t).any() or np.all(C_t == 0):
+                        continue
+
+                    # Ensure C_t and C_a_full have the same length
+                    min_length_voxel = min(len(C_t), len(C_a_full))
+                    C_t_voxel = C_t[:min_length_voxel]
+                    C_a_voxel = C_a_full[:min_length_voxel]
+                    time_points_voxel = time_points_s[:min_length_voxel]
+
+                    if min_length_voxel < 2:
+                        continue
+
+                    Ki_value = None
+                    if compute_per_voxel_Ki:
+                        # Perform Patlak analysis
+                        Ki_voxel, lam_voxel, SD_voxel, _, _, _ = patlak_analysis_plotting(
+                            C_t_voxel, C_a_voxel, time_points_voxel
+                        )
+                        Ki_slice[x, y] = Ki_voxel
+                        lam_slice[x, y] = lam_voxel
+                        SD_slice[x, y] = SD_voxel
+                        Ki_value = Ki_voxel
+
+                    if compute_per_voxel_CBF:
+                        cbf_voxel, mtt_voxel, cth_voxel, _ = compute_mtt_cth(
+                            settings.CTH_MTT_METHOD,
+                            C_t_voxel,
+                            C_a_voxel,
+                            time_points_voxel,
+                            Ki=Ki_value,
+                            allow_gamma=settings.CTH_MTT_GAMMA_VOXELWISE,
+                            logger=logger,
+                        )
+                        if np.isfinite(cbf_voxel):
+                            CBF_slice[x, y] = cbf_voxel
+                        if settings.WRITE_MTT and MTT_slice is not None and np.isfinite(mtt_voxel):
+                            MTT_slice[x, y] = mtt_voxel
+                        if settings.WRITE_CTH and CTH_slice is not None and np.isfinite(cth_voxel):
+                            CTH_slice[x, y] = cth_voxel
+
+                # Store the K_i and/or CBF slice in the 3D arrays
+                if compute_per_voxel_Ki:
+                    Ki_per_voxel[:, :, i] = Ki_slice
+                    lambda_per_voxel[:, :, i] = lam_slice
+                    SD_per_voxel[:, :, i] = SD_slice
+                if compute_per_voxel_CBF:
+                    CBF_per_voxel[:, :, i] = CBF_slice
+                    if settings.WRITE_MTT and MTT_per_voxel is not None and MTT_slice is not None:
+                        MTT_per_voxel[:, :, i] = MTT_slice
+                    if settings.WRITE_CTH and CTH_per_voxel is not None and CTH_slice is not None:
+                        CTH_per_voxel[:, :, i] = CTH_slice
+
+            if boundary:
+                boundary_mask_full[:, :, i] = boundary_mask if boundary_mask is not None else False
 
     # Save Ki images as NIfTI files
     affine = ref_affine
