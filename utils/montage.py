@@ -34,6 +34,9 @@ class MapJob:
     mask_zero: bool = False
     output_ext: str = ".png"
     patterns: Sequence[str] = field(default_factory=tuple)
+    lower_percentile: float = 2.0
+    upper_percentile: float = 98.0
+    force_zero_min: bool = False
 
     def candidate_patterns(self) -> Sequence[str]:
         if self.patterns:
@@ -47,16 +50,50 @@ class MapJob:
 
 
 MAP_JOBS: Sequence[MapJob] = (
-    MapJob("CBF_per_voxel_tikhonov", "cbf_montage", 0.0, 30.0),
-    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage", 0.0, 30.0),
-    MapJob("mtt_map", "mtt_montage", 0.0, 0.02),
-    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", 0.0, 0.02),
-    MapJob("cth_map", "cth_montage", 0.0, 3.0),
-    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", 0.0, 3.0),
+    MapJob("CBF_per_voxel_tikhonov", "cbf_montage", 0.0, 30.0, force_zero_min=True),
+    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage", 0.0, 30.0, force_zero_min=True),
+    MapJob(
+        "mtt_map",
+        "mtt_montage",
+        0.0,
+        0.02,
+        force_zero_min=True,
+        patterns=("mtt_*_map.nii.gz", "mtt_*_map.nii", "mtt_map.nii.gz", "mtt_map.nii"),
+    ),
+    MapJob(
+        "MTT_tikhonov_map_atlas",
+        "mtt_parcel_montage",
+        0.0,
+        0.02,
+        force_zero_min=True,
+    ),
+    MapJob(
+        "cth_map",
+        "cth_montage",
+        0.0,
+        3.0,
+        force_zero_min=True,
+        patterns=("cth_*_map.nii.gz", "cth_*_map.nii", "cth_map.nii.gz", "cth_map.nii"),
+    ),
+    MapJob(
+        "CTH_tikhonov_map_atlas",
+        "cth_parcel_montage",
+        0.0,
+        3.0,
+        force_zero_min=True,
+    ),
     MapJob("Ki_per_voxel", "ki_voxel_montage", -0.1, 0.15),
     MapJob("Ki_map_atlas", "ki_atlas_montage", -0.1, 0.15),
-    MapJob("vp_map_atlas", "vp_atlas_montage", 0.0, 3.0),
-    MapJob("vp_per_voxel", "vp_per_voxel", 0.0, 3.0, mask_zero=True, output_ext=".png"),
+    MapJob("vp_map_atlas", "vp_atlas_montage", 0.0, 3.0, force_zero_min=True),
+    MapJob(
+        "vp_per_voxel",
+        "vp_per_voxel",
+        0.0,
+        3.0,
+        mask_zero=True,
+        output_ext=".png",
+        force_zero_min=True,
+    ),
 )
 
 
@@ -108,7 +145,8 @@ def generate_parametric_montages(
     for job in MAP_JOBS:
         for suffix, map_path in _find_available_maps(job, analysis_directory).items():
             try:
-                output_name = job.output_base + suffix + job.output_ext
+                clean_suffix = suffix[:-4] if suffix.endswith("_map") else suffix
+                output_name = job.output_base + clean_suffix + job.output_ext
                 out_path = os.path.join(out_dir, output_name)
                 _render_montage(
                     map_path,
@@ -150,6 +188,85 @@ def _get_cmap(name: str) -> mpl.colors.Colormap:
     if name.lower() == "specthl":
         return _mk_specthl()
     return mpl.colormaps[name].copy()
+
+
+def _nice_limits(lo: float, hi: float) -> tuple[float, float]:
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return lo, hi
+    if lo > hi:
+        lo, hi = hi, lo
+    span = hi - lo
+    if span <= 0 or not np.isfinite(span):
+        bump = abs(hi if hi else 1.0) * 0.1 or 1.0
+        return lo - bump, hi + bump
+
+    magnitude = 10.0 ** np.floor(np.log10(span))
+    step_candidates = (1.0, 2.0, 5.0, 10.0)
+    step = magnitude
+    for factor in step_candidates:
+        step = magnitude * factor
+        if span / step <= 5:
+            break
+
+    nice_min = step * np.floor(lo / step)
+    nice_max = step * np.ceil(hi / step)
+    if nice_min == nice_max:
+        nice_max = nice_min + step
+    return nice_min, nice_max
+
+
+def _format_tick(value: float, span: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    abs_span = abs(span)
+    if abs_span >= 100:
+        return f"{value:.0f}"
+    if abs_span >= 10:
+        return f"{value:.0f}"
+    if abs_span >= 1:
+        return f"{value:.1f}"
+    if abs_span >= 0.1:
+        return f"{value:.2f}"
+    if abs_span >= 0.01:
+        return f"{value:.3f}"
+    return f"{value:.4f}"
+
+
+def _compute_color_scale(data: np.ndarray, job: MapJob) -> tuple[float, float]:
+    finite = data[np.isfinite(data)]
+    if job.mask_zero:
+        finite = finite[finite > EPS]
+    if finite.size == 0:
+        return job.vmin, job.vmax
+
+    lo = np.percentile(finite, job.lower_percentile)
+    hi = np.percentile(finite, job.upper_percentile)
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi - lo < EPS:
+        lo = float(np.nanmin(finite))
+        hi = float(np.nanmax(finite))
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi - lo < EPS:
+        return job.vmin, job.vmax
+
+    if job.force_zero_min and lo > 0:
+        lo = 0.0
+
+    lo, hi = _nice_limits(lo, hi)
+    if job.force_zero_min and lo < 0:
+        lo = min(0.0, lo)
+
+    if hi - lo < EPS:
+        hi = lo + 1.0
+
+    # Round limits to whole-number boundaries for easier interpretation.
+    lo = float(np.floor(lo))
+    hi = float(np.ceil(hi))
+
+    if hi - lo < EPS:
+        hi = lo + 1.0
+
+    return float(lo), float(hi)
 
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
@@ -222,6 +339,15 @@ def _spaced_unique_indices(zmin: int, zmax: int, k: int) -> np.ndarray:
     return idx
 
 
+def _rotated_shape(shape_xy: Sequence[int], rotate: int) -> tuple[int, int]:
+    """Return the (height, width) of a slice after ``np.rot90`` rotation."""
+
+    rotate = rotate % 4
+    if rotate % 2:
+        return int(shape_xy[1]), int(shape_xy[0])
+    return int(shape_xy[0]), int(shape_xy[1])
+
+
 def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> tuple[int, int, int, int]:
     hx, hy = shape_rot
     r0 = int(np.floor(ref_bbox["r0_frac"] * hx))
@@ -235,11 +361,29 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
     return r0, r1, c0, c1
 
 
-def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
+def _map_z_from_ref(z_fracs: np.ndarray, nz: int, tiles: int) -> np.ndarray:
     if nz <= 1:
-        return np.zeros_like(z_fracs, dtype=int)
-    z = np.rint(z_fracs * (nz - 1)).astype(int)
-    return np.clip(z, 0, nz - 1)
+        return np.zeros(tiles, dtype=int)
+
+    if z_fracs.size == 0:
+        return _spaced_unique_indices(0, nz - 1, tiles)
+
+    idx = np.rint(z_fracs * (nz - 1)).astype(int)
+    idx = np.clip(idx, 0, nz - 1)
+
+    if idx.size < tiles:
+        idx = np.pad(idx, (0, tiles - idx.size), mode="edge")
+    else:
+        idx = idx[:tiles]
+
+    for i in range(1, idx.size):
+        if idx[i] < idx[i - 1]:
+            idx[i] = idx[i - 1]
+
+    if np.unique(idx).size < tiles and nz > 1:
+        idx = np.rint(np.linspace(0, nz - 1, tiles)).astype(int)
+
+    return np.clip(idx, 0, nz - 1).astype(int, copy=False)
 
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
@@ -262,6 +406,10 @@ def _extract_suffix(path: str, base: str) -> str:
         return ""
     if name.startswith(base):
         return name[len(base) :]
+    if base.endswith("_map") and name.endswith("_map"):
+        prefix = base[: -4]
+        if name.startswith(prefix):
+            return name[len(prefix) :]
     return ""
 
 
@@ -280,20 +428,19 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
-    union_xy = np.any(valmask3d, axis=2)
-    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
-
-    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
-    if z_indices.size < rows * cols:
+    tiles = rows * cols
+    rot_shape = _rotated_shape(data.shape[:2], ref_info["rotate"])
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], rot_shape)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], tiles)
+    if z_indices.size < tiles:
         pad_value = z_indices[-1] if z_indices.size else 0
-        z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
+        z_indices = np.pad(z_indices, (0, tiles - z_indices.size), constant_values=pad_value)
     else:
-        z_indices = z_indices[: rows * cols]
+        z_indices = z_indices[:tiles]
 
     cmap = _get_cmap(job.cmap_name)
-    norm = mpl.colors.Normalize(vmin=job.vmin, vmax=job.vmax, clip=False)
+    vmin, vmax = _compute_color_scale(data, job)
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="none")
@@ -311,7 +458,6 @@ def _render_montage(
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
 
-        union_crop = union_xy_r[r0:r1, c0:c1]
         if job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
@@ -323,7 +469,7 @@ def _render_montage(
         else:
             mask_slice = np.isfinite(slc)
 
-        arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
+        arr = np.ma.array(slc, mask=~mask_slice)
         ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
 
     # Hide any unused axes when there are fewer slices than tiles
@@ -333,8 +479,10 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
-    cb.set_ticks([job.vmin, job.vmax])
-    cb.set_ticklabels([f"{job.vmin:g}", f"{job.vmax:g}"])
+    span = vmax - vmin
+    ticks = np.linspace(vmin, vmax, num=5)
+    cb.set_ticks(ticks)
+    cb.set_ticklabels([_format_tick(t, span) for t in ticks])
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
