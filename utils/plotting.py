@@ -707,15 +707,21 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
 
     # Load existing concentration-time curve and Butterworth low-pass filter
-    avg_C_t = curve_path
+    avg_C_t = np.asarray(curve_path, dtype=float)
     fs = 15
     cutoff = 4.0
     order = 3
-    smoothed_values = butter_lowpass_filter(avg_C_t, cutoff, fs, order)
+    valid = np.isfinite(avg_C_t)
+    if valid.any():
+        filled = np.interp(np.arange(avg_C_t.size), np.flatnonzero(valid), avg_C_t[valid])
+    else:
+        filled = np.zeros_like(avg_C_t)
+    smoothed_values = butter_lowpass_filter(filled, cutoff, fs, order)
 
     # Concentration-Time Curve
     axs[0].plot(time_points_s, smoothed_values, color='black')
-    axs[0].scatter(time_points_s, avg_C_t, color='r', s=5)
+    if valid.any():
+        axs[0].scatter(time_points_s[valid], avg_C_t[valid], color='r', s=5)
     axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Average Concentration-Time Curve (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
