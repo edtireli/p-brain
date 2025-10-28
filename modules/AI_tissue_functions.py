@@ -2169,128 +2169,128 @@ def compute_and_plot_ctcs_median(
                 },
             }
 
-      # Collect Ki values for plotting
-      Ki_wm_list.append(Ki_wm)
-      Ki_cortical_gm_list.append(Ki_cortical_gm)
-      Ki_subcortical_gm_list.append(Ki_subcortical_gm)
-      Ki_gm_brainstem_list.append(Ki_gm_brainstem)
-      Ki_gm_cerebellum_list.append(Ki_gm_cerebellum)
-      Ki_wm_cerebellum_list.append(Ki_wm_cerebellum)
-      Ki_wm_cc_list.append(Ki_wm_cc)
-      if boundary:
-          Ki_boundary_list.append(Ki_boundary)
+        # Collect Ki values for plotting
+        Ki_wm_list.append(Ki_wm)
+        Ki_cortical_gm_list.append(Ki_cortical_gm)
+        Ki_subcortical_gm_list.append(Ki_subcortical_gm)
+        Ki_gm_brainstem_list.append(Ki_gm_brainstem)
+        Ki_gm_cerebellum_list.append(Ki_gm_cerebellum)
+        Ki_wm_cerebellum_list.append(Ki_wm_cerebellum)
+        Ki_wm_cc_list.append(Ki_wm_cc)
+        if boundary:
+            Ki_boundary_list.append(Ki_boundary)
 
-      # Assign Ki values to the masks in the current slice
-      Ki_wm_image[:, :, i][wm_slice_dce] = Ki_wm
-      Ki_cortical_gm_image[:, :, i][cortical_gm_slice_dce] = Ki_cortical_gm
-      Ki_subcortical_gm_image[:, :, i][subcortical_gm_slice_dce] = Ki_subcortical_gm
-      Ki_gm_brainstem_image[:, :, i][gm_brainstem_slice_dce] = Ki_gm_brainstem
-      Ki_gm_cerebellum_image[:, :, i][gm_cerebellum_slice_dce] = Ki_gm_cerebellum
-      Ki_wm_cerebellum_image[:, :, i][wm_cerebellum_slice_dce] = Ki_wm_cerebellum
-      Ki_wm_cc_image[:, :, i][wm_cc_slice_dce] = Ki_wm_cc
-      if boundary:
-          Ki_boundary_image[:, :, i][boundary_mask] = Ki_boundary
+        # Assign Ki values to the masks in the current slice
+        Ki_wm_image[:, :, i][wm_slice_dce] = Ki_wm
+        Ki_cortical_gm_image[:, :, i][cortical_gm_slice_dce] = Ki_cortical_gm
+        Ki_subcortical_gm_image[:, :, i][subcortical_gm_slice_dce] = Ki_subcortical_gm
+        Ki_gm_brainstem_image[:, :, i][gm_brainstem_slice_dce] = Ki_gm_brainstem
+        Ki_gm_cerebellum_image[:, :, i][gm_cerebellum_slice_dce] = Ki_gm_cerebellum
+        Ki_wm_cerebellum_image[:, :, i][wm_cerebellum_slice_dce] = Ki_wm_cerebellum
+        Ki_wm_cc_image[:, :, i][wm_cc_slice_dce] = Ki_wm_cc
+        if boundary:
+            Ki_boundary_image[:, :, i][boundary_mask] = Ki_boundary
 
-      # Plot the results for the current slice. Images are always written
-      # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
-      # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
-      # the model run completes.
-      fit_curves = {
-          'wm': curve_wm,
-          'cortical_gm': curve_cortical_gm,
-          'subcortical_gm': curve_subcortical_gm,
-          'gm_brainstem': curve_gm_brainstem,
-          'gm_cerebellum': curve_gm_cerebellum,
-          'wm_cerebellum': curve_wm_cerebellum,
-          'wm_cc': curve_wm_cc,
-          'boundary': curve_boundary
-      }
+        # Plot the results for the current slice. Images are always written
+        # under ``AI/Tissue functions`` so that ``_rename_model_outputs`` can
+        # move the entire directory to ``AI_patlak`` or ``AI_tikhonov`` after
+        # the model run completes.
+        fit_curves = {
+            'wm': curve_wm,
+            'cortical_gm': curve_cortical_gm,
+            'subcortical_gm': curve_subcortical_gm,
+            'gm_brainstem': curve_gm_brainstem,
+            'gm_cerebellum': curve_gm_cerebellum,
+            'wm_cerebellum': curve_wm_cerebellum,
+            'wm_cc': curve_wm_cc,
+            'boundary': curve_boundary
+        }
 
-            if settings.KINETIC_MODEL.lower() == 'patlak':
-                def unpack(curve):
-                    if curve is None:
-                        return np.array([]), np.array([])
-                    return curve
+        if settings.KINETIC_MODEL.lower() == 'patlak':
+            def unpack(curve):
+                if curve is None:
+                    return np.array([]), np.array([])
+                return curve
 
-                x_wm, y_wm = unpack(curve_wm)
-                x_cgm, y_cgm = unpack(curve_cortical_gm)
-                x_sgm, y_sgm = unpack(curve_subcortical_gm)
-                x_bs, y_bs = unpack(curve_gm_brainstem)
-                x_gc, y_gc = unpack(curve_gm_cerebellum)
-                x_wc, y_wc = unpack(curve_wm_cerebellum)
-                x_cc, y_cc = unpack(curve_wm_cc)
-                x_bnd, y_bnd = unpack(curve_boundary)
-            else:
-                x_wm = y_wm = np.array([])
-                x_cgm = y_cgm = np.array([])
-                x_sgm = y_sgm = np.array([])
-                x_bs = y_bs = np.array([])
-                x_gc = y_gc = np.array([])
-                x_wc = y_wc = np.array([])
-                x_cc = y_cc = np.array([])
-                x_bnd = y_bnd = np.array([])
+            x_wm, y_wm = unpack(curve_wm)
+            x_cgm, y_cgm = unpack(curve_cortical_gm)
+            x_sgm, y_sgm = unpack(curve_subcortical_gm)
+            x_bs, y_bs = unpack(curve_gm_brainstem)
+            x_gc, y_gc = unpack(curve_gm_cerebellum)
+            x_wc, y_wc = unpack(curve_wm_cerebellum)
+            x_cc, y_cc = unpack(curve_wm_cc)
+            x_bnd, y_bnd = unpack(curve_boundary)
+        else:
+            x_wm = y_wm = np.array([])
+            x_cgm = y_cgm = np.array([])
+            x_sgm = y_sgm = np.array([])
+            x_bs = y_bs = np.array([])
+            x_gc = y_gc = np.array([])
+            x_wc = y_wc = np.array([])
+            x_cc = y_cc = np.array([])
+            x_bnd = y_bnd = np.array([])
 
-            plot_ctcs_and_patlak(
-                t2_img[:, :, i], data_4d[:, :, i, 20],
-                wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
-                wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,
-                C_t_wm, C_t_cortical_gm, C_t_subcortical_gm,
-                time_points, C_a_slice,
-                x_wm, y_wm, Ki_wm, lambda_wm,
-                x_cgm, y_cgm, Ki_cortical_gm, lambda_cortical_gm,
-                x_sgm, y_sgm, Ki_subcortical_gm, lambda_subcortical_gm,
-                slice_idx=i+1,
-                save_path=os.path.join(image_directory, 'AI', 'Tissue functions', f"AI_Tissue_slice_{i+1}_segmented_median.png"),
-                boundary_mask=boundary_mask,
-                boundary_ctc=C_t_boundary,
-                x_patlak_boundary=x_bnd, y_patlak_boundary=y_bnd,
-                Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary,
-                included_wm=included_wm,
-                included_cortical_gm=included_cortical_gm,
-                included_subcortical_gm=included_subcortical_gm,
-                included_boundary=included_boundary,
-                gm_brainstem_ctc=C_t_gm_brainstem,
-                x_patlak_gm_brainstem=x_bs,
-                y_patlak_gm_brainstem=y_bs,
-                Ki_gm_brainstem=Ki_gm_brainstem,
-                lambda_gm_brainstem=lambda_gm_brainstem,
-                included_gm_brainstem=included_gm_brainstem,
-                gm_cerebellum_ctc=C_t_gm_cerebellum,
-                x_patlak_gm_cerebellum=x_gc,
-                y_patlak_gm_cerebellum=y_gc,
-                Ki_gm_cerebellum=Ki_gm_cerebellum,
-                lambda_gm_cerebellum=lambda_gm_cerebellum,
-                included_gm_cerebellum=included_gm_cerebellum,
-                wm_cerebellum_ctc=C_t_wm_cerebellum,
-                x_patlak_wm_cerebellum=x_wc,
-                y_patlak_wm_cerebellum=y_wc,
-                Ki_wm_cerebellum=Ki_wm_cerebellum,
-                lambda_wm_cerebellum=lambda_wm_cerebellum,
-                included_wm_cerebellum=included_wm_cerebellum,
-                wm_cc_ctc=C_t_wm_cc,
-                x_patlak_wm_cc=x_cc,
-                y_patlak_wm_cc=y_cc,
-                Ki_wm_cc=Ki_wm_cc,
-                lambda_wm_cc=lambda_wm_cc,
-                included_wm_cc=included_wm_cc,
-                model_fits=fit_curves,
-                gm_brainstem_mask_t2=gm_brainstem_slice_t2,
-                gm_brainstem_mask_dce=gm_brainstem_slice_dce,
-                gm_cerebellum_mask_t2=gm_cerebellum_slice_t2,
-                gm_cerebellum_mask_dce=gm_cerebellum_slice_dce,
-                wm_cerebellum_mask_t2=wm_cerebellum_slice_t2,          
-                wm_cerebellum_mask_dce=wm_cerebellum_slice_dce,        
-                wm_cc_mask_t2=wm_cc_slice_t2,                          
-                wm_cc_mask_dce=wm_cc_slice_dce,
-                bad_wm=bad_wm,
-                bad_cortical_gm=bad_cortical_gm,
-                bad_subcortical_gm=bad_subcortical_gm,
-                bad_gm_brainstem=bad_gm_brainstem,
-                bad_gm_cerebellum=bad_gm_cerebellum,
-                bad_wm_cerebellum=bad_wm_cerebellum,
-                bad_wm_cc=bad_wm_cc,
-                bad_boundary=bad_boundary                      
-    )
+        plot_ctcs_and_patlak(
+            t2_img[:, :, i], data_4d[:, :, i, 20],
+            wm_slice_t2, cortical_gm_slice_t2, subcortical_gm_slice_t2,
+            wm_slice_dce, cortical_gm_slice_dce, subcortical_gm_slice_dce,
+            C_t_wm, C_t_cortical_gm, C_t_subcortical_gm,
+            time_points, C_a_slice,
+            x_wm, y_wm, Ki_wm, lambda_wm,
+            x_cgm, y_cgm, Ki_cortical_gm, lambda_cortical_gm,
+            x_sgm, y_sgm, Ki_subcortical_gm, lambda_subcortical_gm,
+            slice_idx=i+1,
+            save_path=os.path.join(image_directory, 'AI', 'Tissue functions', f"AI_Tissue_slice_{i+1}_segmented_median.png"),
+            boundary_mask=boundary_mask,
+            boundary_ctc=C_t_boundary,
+            x_patlak_boundary=x_bnd, y_patlak_boundary=y_bnd,
+            Ki_boundary=Ki_boundary, lambda_boundary=lambda_boundary,
+            included_wm=included_wm,
+            included_cortical_gm=included_cortical_gm,
+            included_subcortical_gm=included_subcortical_gm,
+            included_boundary=included_boundary,
+            gm_brainstem_ctc=C_t_gm_brainstem,
+            x_patlak_gm_brainstem=x_bs,
+            y_patlak_gm_brainstem=y_bs,
+            Ki_gm_brainstem=Ki_gm_brainstem,
+            lambda_gm_brainstem=lambda_gm_brainstem,
+            included_gm_brainstem=included_gm_brainstem,
+            gm_cerebellum_ctc=C_t_gm_cerebellum,
+            x_patlak_gm_cerebellum=x_gc,
+            y_patlak_gm_cerebellum=y_gc,
+            Ki_gm_cerebellum=Ki_gm_cerebellum,
+            lambda_gm_cerebellum=lambda_gm_cerebellum,
+            included_gm_cerebellum=included_gm_cerebellum,
+            wm_cerebellum_ctc=C_t_wm_cerebellum,
+            x_patlak_wm_cerebellum=x_wc,
+            y_patlak_wm_cerebellum=y_wc,
+            Ki_wm_cerebellum=Ki_wm_cerebellum,
+            lambda_wm_cerebellum=lambda_wm_cerebellum,
+            included_wm_cerebellum=included_wm_cerebellum,
+            wm_cc_ctc=C_t_wm_cc,
+            x_patlak_wm_cc=x_cc,
+            y_patlak_wm_cc=y_cc,
+            Ki_wm_cc=Ki_wm_cc,
+            lambda_wm_cc=lambda_wm_cc,
+            included_wm_cc=included_wm_cc,
+            model_fits=fit_curves,
+            gm_brainstem_mask_t2=gm_brainstem_slice_t2,
+            gm_brainstem_mask_dce=gm_brainstem_slice_dce,
+            gm_cerebellum_mask_t2=gm_cerebellum_slice_t2,
+            gm_cerebellum_mask_dce=gm_cerebellum_slice_dce,
+            wm_cerebellum_mask_t2=wm_cerebellum_slice_t2,
+            wm_cerebellum_mask_dce=wm_cerebellum_slice_dce,
+            wm_cc_mask_t2=wm_cc_slice_t2,
+            wm_cc_mask_dce=wm_cc_slice_dce,
+            bad_wm=bad_wm,
+            bad_cortical_gm=bad_cortical_gm,
+            bad_subcortical_gm=bad_subcortical_gm,
+            bad_gm_brainstem=bad_gm_brainstem,
+            bad_gm_cerebellum=bad_gm_cerebellum,
+            bad_wm_cerebellum=bad_wm_cerebellum,
+            bad_wm_cc=bad_wm_cc,
+            bad_boundary=bad_boundary
+        )
 
         # Collect data for JSON output
         patlak_data = {
