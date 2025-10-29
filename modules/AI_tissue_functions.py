@@ -1974,7 +1974,14 @@ def compute_and_plot_ctcs_median(
         MTT_per_voxel = np.full(data_4d.shape[:3], np.nan) if settings.WRITE_MTT else None
         CTH_per_voxel = np.full(data_4d.shape[:3], np.nan) if settings.WRITE_CTH else None
 
-    gm_mask_dce_full = np.logical_or(cortical_gm_mask_dce, subcortical_gm_mask_dce)
+    gm_mask_dce_full = np.logical_or.reduce(
+        (
+            cortical_gm_mask_dce,
+            subcortical_gm_mask_dce,
+            gm_brainstem_mask_dce,
+            gm_cerebellum_mask_dce,
+        )
+    )
 
     if boundary:
         boundary_mask_full = np.zeros(data_4d.shape[:3], dtype=bool)
@@ -2485,8 +2492,16 @@ def compute_and_plot_ctcs_median(
                     )
                     logger._gamma_voxel_warning_emitted = True
                 # Combine WM and GM masks for the current slice
-                gm_slice_dce = np.logical_or(cortical_gm_slice_dce, subcortical_gm_slice_dce)
-                brain_mask_slice = np.logical_or(wm_slice_dce, gm_slice_dce)
+                gm_slice_dce = np.logical_or.reduce(
+                    (
+                        cortical_gm_slice_dce,
+                        subcortical_gm_slice_dce,
+                        gm_brainstem_slice_dce,
+                        gm_cerebellum_slice_dce,
+                    )
+                )
+                wm_slice_with_cerebellum = np.logical_or(wm_slice_dce, wm_cerebellum_slice_dce)
+                brain_mask_slice = np.logical_or(wm_slice_with_cerebellum, gm_slice_dce)
                 brain_indices = np.argwhere(brain_mask_slice)
 
                 # Initialize per-voxel slice arrays
