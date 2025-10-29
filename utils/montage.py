@@ -352,49 +352,25 @@ def _render_montage(
 def _build_normalizer(
     data: np.ndarray, job: MapJob
 ) -> tuple[mpl.colors.Normalize, list[float]]:
-    mask = np.isfinite(data)
-    if job.mask_zero:
-        mask &= data > EPS
-    finite_vals = data[mask]
-    if finite_vals.size == 0:
-        norm = mpl.colors.Normalize(vmin=job.vmin, vmax=job.vmax, clip=False)
-        return norm, [job.vmin, job.vmax]
+    vmin = float(job.vmin)
+    vmax = float(job.vmax)
 
-    finite_vals = np.asarray(finite_vals, dtype=np.float64)
-    percentiles = np.linspace(0.0, 100.0, 512)
-    values = np.percentile(finite_vals, percentiles)
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        mask = np.isfinite(data)
+        if job.mask_zero:
+            mask &= data > EPS
+        finite_vals = data[mask]
+        if finite_vals.size:
+            vmin = float(np.nanmin(finite_vals))
+            vmax = float(np.nanmax(finite_vals))
+        else:
+            vmin, vmax = 0.0, 1.0
 
-    # Drop duplicate percentile values to ensure a strictly increasing mapping.
-    keep = np.ones(values.shape, dtype=bool)
-    keep[1:] = np.abs(np.diff(values)) > np.finfo(np.float64).eps
-    if keep.sum() < 2:
-        lo = float(np.nanmin(finite_vals))
-        hi = float(np.nanmax(finite_vals))
-        if not np.isfinite(lo) or not np.isfinite(hi):
-            lo, hi = float(job.vmin), float(job.vmax)
-        if hi <= lo:
-            hi = lo + (abs(lo) if lo != 0 else 1.0)
-        lo, hi = _round_bounds(lo, hi)
-        norm = mpl.colors.Normalize(vmin=lo, vmax=hi, clip=False)
-        return norm, _default_ticks(lo, hi)
+    if vmax <= vmin:
+        vmax = vmin + (abs(vmin) if vmin != 0 else 1.0)
 
-    percentiles = percentiles[keep]
-    values = values[keep]
-
-    # Ensure the mapping spans the full percentile range.
-    percentiles[0] = 0.0
-    percentiles[-1] = 100.0
-
-    norm = _PercentileNormalize(percentiles, values, clip=False)
-
-    tick_perc = np.array([5.0, 25.0, 50.0, 75.0, 95.0])
-    tick_values = np.percentile(finite_vals, tick_perc)
-    tick_values = [float(val) for val in tick_values]
-    tick_values = list(dict.fromkeys(tick_values))
-    if len(tick_values) < 2:
-        tick_values = _default_ticks(float(values[0]), float(values[-1]))
-
-    return norm, tick_values
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
+    return norm, _default_ticks(vmin, vmax)
 
 
 def _round_bounds(lo: float, hi: float) -> tuple[float, float]:
@@ -424,47 +400,3 @@ def _default_ticks(lo: float, hi: float) -> list[float]:
         return [lo_r]
     steps = np.linspace(lo_r, hi_r, 5)
     return [float(x) for x in steps]
-
-
-class _PercentileNormalize(mpl.colors.Normalize):
-    def __init__(
-        self, percentiles: np.ndarray, values: np.ndarray, *, clip: bool = False
-    ) -> None:
-        if percentiles.ndim != 1 or values.ndim != 1:
-            raise ValueError("percentiles and values must be 1D arrays")
-        if percentiles.size != values.size:
-            raise ValueError("percentiles and values must have the same length")
-        if percentiles[0] != 0.0 or percentiles[-1] != 100.0:
-            raise ValueError("percentiles must span [0, 100]")
-
-        values = np.asarray(values, dtype=np.float64)
-        percentiles = np.asarray(percentiles, dtype=np.float64)
-
-        super().__init__(vmin=float(values[0]), vmax=float(values[-1]), clip=clip)
-        self._percentiles = percentiles
-        self._values = values
-        self._scaled_percentiles = self._percentiles / 100.0
-
-    def __call__(self, value, clip=None):  # type: ignore[override]
-        result, is_scalar = self.process_value(value)
-        data = result.data
-        if clip is None:
-            clip = self.clip
-
-        scaled = np.interp(data, self._values, self._scaled_percentiles)
-        if clip:
-            scaled = np.clip(scaled, 0.0, 1.0)
-
-        masked = np.ma.array(scaled, mask=result.mask, copy=False)
-        if is_scalar:
-            return float(masked)
-        return masked
-
-    def inverse(self, value):  # type: ignore[override]
-        result, is_scalar = self.process_value(value)
-        data = result.data
-        values = np.interp(data, self._scaled_percentiles, self._values)
-        masked = np.ma.array(values, mask=result.mask, copy=False)
-        if is_scalar:
-            return float(masked)
-        return masked
