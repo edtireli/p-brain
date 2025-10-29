@@ -297,8 +297,7 @@ def _render_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
-    vmin, vmax = _compute_display_range(data, job)
-    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
+    norm, tick_values = _build_normalizer(data, job)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="none")
@@ -338,8 +337,9 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax)
-    cb.set_ticks([vmin, vmax])
-    cb.set_ticklabels([f"{vmin:g}", f"{vmax:g}"])
+    if tick_values:
+        cb.set_ticks(tick_values)
+        cb.set_ticklabels([f"{val:g}" for val in tick_values])
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
@@ -349,31 +349,52 @@ def _render_montage(
     plt.close(fig)
 
 
-def _compute_display_range(data: np.ndarray, job: MapJob) -> tuple[float, float]:
+def _build_normalizer(
+    data: np.ndarray, job: MapJob
+) -> tuple[mpl.colors.Normalize, list[float]]:
     mask = np.isfinite(data)
     if job.mask_zero:
         mask &= data > EPS
     finite_vals = data[mask]
     if finite_vals.size == 0:
-        return job.vmin, job.vmax
+        norm = mpl.colors.Normalize(vmin=job.vmin, vmax=job.vmax, clip=False)
+        return norm, [job.vmin, job.vmax]
 
-    lo, hi = np.percentile(finite_vals, [2.0, 98.0])
-    if not np.isfinite(lo) or not np.isfinite(hi):
+    finite_vals = np.asarray(finite_vals, dtype=np.float64)
+    percentiles = np.linspace(0.0, 100.0, 512)
+    values = np.percentile(finite_vals, percentiles)
+
+    # Drop duplicate percentile values to ensure a strictly increasing mapping.
+    keep = np.ones(values.shape, dtype=bool)
+    keep[1:] = np.abs(np.diff(values)) > np.finfo(np.float64).eps
+    if keep.sum() < 2:
         lo = float(np.nanmin(finite_vals))
         hi = float(np.nanmax(finite_vals))
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            lo, hi = float(job.vmin), float(job.vmax)
+        if hi <= lo:
+            hi = lo + (abs(lo) if lo != 0 else 1.0)
+        lo, hi = _round_bounds(lo, hi)
+        norm = mpl.colors.Normalize(vmin=lo, vmax=hi, clip=False)
+        return norm, _default_ticks(lo, hi)
 
-    lo = float(lo)
-    hi = float(hi)
-    if hi <= lo:
-        lo = float(np.min(finite_vals))
-        hi = float(np.max(finite_vals))
+    percentiles = percentiles[keep]
+    values = values[keep]
 
-    if hi <= lo:
-        span = abs(lo) if lo != 0 else 1.0
-        lo = lo - 0.1 * span
-        hi = lo + 0.2 * span
+    # Ensure the mapping spans the full percentile range.
+    percentiles[0] = 0.0
+    percentiles[-1] = 100.0
 
-    return _round_bounds(lo, hi)
+    norm = _PercentileNormalize(percentiles, values, clip=False)
+
+    tick_perc = np.array([5.0, 25.0, 50.0, 75.0, 95.0])
+    tick_values = np.percentile(finite_vals, tick_perc)
+    tick_values = [float(val) for val in tick_values]
+    tick_values = list(dict.fromkeys(tick_values))
+    if len(tick_values) < 2:
+        tick_values = _default_ticks(float(values[0]), float(values[-1]))
+
+    return norm, tick_values
 
 
 def _round_bounds(lo: float, hi: float) -> tuple[float, float]:
@@ -395,3 +416,55 @@ def _round_bounds(lo: float, hi: float) -> tuple[float, float]:
     if lo_r == hi_r:
         hi_r = lo_r + 1.0 / factor
     return float(lo_r), float(hi_r)
+
+
+def _default_ticks(lo: float, hi: float) -> list[float]:
+    lo_r, hi_r = _round_bounds(lo, hi)
+    if hi_r <= lo_r:
+        return [lo_r]
+    steps = np.linspace(lo_r, hi_r, 5)
+    return [float(x) for x in steps]
+
+
+class _PercentileNormalize(mpl.colors.Normalize):
+    def __init__(
+        self, percentiles: np.ndarray, values: np.ndarray, *, clip: bool = False
+    ) -> None:
+        if percentiles.ndim != 1 or values.ndim != 1:
+            raise ValueError("percentiles and values must be 1D arrays")
+        if percentiles.size != values.size:
+            raise ValueError("percentiles and values must have the same length")
+        if percentiles[0] != 0.0 or percentiles[-1] != 100.0:
+            raise ValueError("percentiles must span [0, 100]")
+
+        values = np.asarray(values, dtype=np.float64)
+        percentiles = np.asarray(percentiles, dtype=np.float64)
+
+        super().__init__(vmin=float(values[0]), vmax=float(values[-1]), clip=clip)
+        self._percentiles = percentiles
+        self._values = values
+        self._scaled_percentiles = self._percentiles / 100.0
+
+    def __call__(self, value, clip=None):  # type: ignore[override]
+        result, is_scalar = self.process_value(value)
+        data = result.data
+        if clip is None:
+            clip = self.clip
+
+        scaled = np.interp(data, self._values, self._scaled_percentiles)
+        if clip:
+            scaled = np.clip(scaled, 0.0, 1.0)
+
+        masked = np.ma.array(scaled, mask=result.mask, copy=False)
+        if is_scalar:
+            return float(masked)
+        return masked
+
+    def inverse(self, value):  # type: ignore[override]
+        result, is_scalar = self.process_value(value)
+        data = result.data
+        values = np.interp(data, self._scaled_percentiles, self._values)
+        masked = np.ma.array(values, mask=result.mask, copy=False)
+        if is_scalar:
+            return float(masked)
+        return masked
