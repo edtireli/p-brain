@@ -307,7 +307,7 @@ def _render_montage(
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
-        ax.set_facecolor("none")
+        ax.set_facecolor((0.9, 0.9, 0.9, 0.6))
         for spine in ax.spines.values():
             spine.set_visible(False)
 
