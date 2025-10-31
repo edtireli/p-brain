@@ -205,6 +205,46 @@ def _tight_bbox_from_mask(mask2d: np.ndarray, pad: int = 3) -> tuple[int, int, i
     c0 = max(0, c0 - pad)
     r1 = min(mask2d.shape[0], r1 + pad)
     c1 = min(mask2d.shape[1], c1 + pad)
+
+    height = r1 - r0
+    width = c1 - c0
+    if height <= 0 or width <= 0:
+        return r0, r1, c0, c1
+
+    if height < width:
+        # Expand the vertical bounds so the background extent matches the
+        # horizontal padding when rendering montages. This keeps the montage
+        # tiles the same size while balancing the surrounding background.
+        diff = width - height
+        extra_top = diff // 2
+        extra_bottom = diff - extra_top
+        r0 = max(0, r0 - extra_top)
+        r1 = min(mask2d.shape[0], r1 + extra_bottom)
+        # If we were clipped by the image boundaries, compensate on the
+        # opposite side to preserve the requested padding.
+        shortfall = width - (r1 - r0)
+        if shortfall > 0:
+            if r0 > 0:
+                shift = min(shortfall, r0)
+                r0 -= shift
+                shortfall -= shift
+            if shortfall > 0 and r1 < mask2d.shape[0]:
+                r1 = min(mask2d.shape[0], r1 + shortfall)
+    elif width < height:
+        diff = height - width
+        extra_left = diff // 2
+        extra_right = diff - extra_left
+        c0 = max(0, c0 - extra_left)
+        c1 = min(mask2d.shape[1], c1 + extra_right)
+        shortfall = height - (c1 - c0)
+        if shortfall > 0:
+            if c0 > 0:
+                shift = min(shortfall, c0)
+                c0 -= shift
+                shortfall -= shift
+            if shortfall > 0 and c1 < mask2d.shape[1]:
+                c1 = min(mask2d.shape[1], c1 + shortfall)
+
     return r0, r1, c0, c1
 
 
