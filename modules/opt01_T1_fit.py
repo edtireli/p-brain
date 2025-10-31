@@ -96,14 +96,15 @@ def model_residuals_VFA(params, voxel_values, alfas, TRs):
     R1 = 1 / T1
     return model_function_VFA(alfas, TRs, M0, R1) - voxel_values
 
-# 90 deg flip angle + inversion recovery
-def model_function(TIs, M0, T1):
-    TIs_array = np.array(TIs)
-    return M0 * np.sin(np.pi / 2) * (1 - np.exp(-TIs_array / T1))
+# Inversion recovery model following A - B * exp(-TI / T1)
+def model_function_ir(TIs, A, B, T1):
+    TIs_array = np.asarray(TIs, dtype=float)
+    return A - B * np.exp(-TIs_array / T1)
 
-def model_residuals(params, TIs, voxel_values):
-    M0, T1 = params
-    return model_function(TIs, M0, T1) - voxel_values
+
+def model_residuals_ir(params, TIs, voxel_values):
+    A, B, T1 = params
+    return model_function_ir(TIs, A, B, T1) - voxel_values
 
 
 def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
@@ -123,18 +124,23 @@ def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
             method="trf",
         )
     else:
-        initial_M0 = max(voxel_values) / np.sin(np.pi / 2)
-        max_signal = max(voxel_values)
+        max_signal = float(np.max(voxel_values))
+        if max_signal <= 0:
+            return (0.0, 0.0)
+        initial_A = max_signal
+        initial_B = 2 * max_signal
         initial_T1 = 750
-        bounds = ([1e-3, 500], [max_signal, 5000])
+        bounds = ([1e-6, 1e-6, 100], [np.inf, np.inf, 6000])
         result = least_squares(
-            model_residuals,
-            [initial_M0, initial_T1],
+            model_residuals_ir,
+            [initial_A, initial_B, initial_T1],
             args=(TI_values, voxel_values),
             bounds=bounds,
             method="trf",
         )
-    return result.x[0], result.x[1]
+    if IsVFA:
+        return result.x[0], result.x[1]
+    return result.x[0], result.x[2]
 
 def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     shape_x, shape_y, shape_z = voxel_matrix.shape[1:]
