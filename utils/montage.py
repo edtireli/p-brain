@@ -731,7 +731,7 @@ def _render_projection_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
-    norm, tick_values = _build_normalizer(data, job)
+    norm, tick_values = _build_projection_normalizer(data, job)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
     fig, axes = plt.subplots(
@@ -804,6 +804,29 @@ def _build_normalizer(
 
     if vmax <= vmin:
         vmax = vmin + (abs(vmin) if vmin != 0 else 1.0)
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
+    return norm, _default_ticks(vmin, vmax)
+
+
+def _build_projection_normalizer(
+    data: np.ndarray, job: MapJob
+) -> tuple[mpl.colors.Normalize, list[float]]:
+    mask = np.isfinite(data)
+    if job.mask_zero:
+        mask &= np.abs(data) > EPS
+
+    finite_vals = data[mask]
+    if finite_vals.size == 0:
+        raise ValueError("Projection map contains no finite values for colour scaling")
+
+    vmin = float(np.nanmin(finite_vals))
+    vmax = float(np.nanmax(finite_vals))
+
+    if np.isclose(vmin, vmax):
+        padding = abs(vmin) if vmin != 0 else 1.0
+        vmin -= padding * 0.5
+        vmax += padding * 0.5
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
