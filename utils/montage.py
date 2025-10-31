@@ -690,7 +690,7 @@ def _render_montage(
     cb = fig.colorbar(sm, cax=cax)
     if tick_values:
         cb.set_ticks(tick_values)
-        cb.set_ticklabels([f"{val:g}" for val in tick_values])
+        cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
@@ -775,7 +775,7 @@ def _render_projection_montage(
     cb = fig.colorbar(sm, cax=cax)
     if tick_values:
         cb.set_ticks(tick_values)
-        cb.set_ticklabels([f"{val:g}" for val in tick_values])
+        cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
