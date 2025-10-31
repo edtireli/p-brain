@@ -12,10 +12,16 @@ def _load_montage_dependencies():
     from utils.montage import (
         generate_parametric_montages,
         generate_projection_montages,
+        build_population_projection_stats,
     )
     from utils import parameters
 
-    return generate_parametric_montages, generate_projection_montages, parameters
+    return (
+        generate_parametric_montages,
+        generate_projection_montages,
+        parameters,
+        build_population_projection_stats,
+    )
 
 
 def _resolve_dataset_root(data_root, dataset_id, is_control):
@@ -32,7 +38,14 @@ def _resolve_dataset_root(data_root, dataset_id, is_control):
     return candidates[0]
 
 
-def _run_montage_for_dataset(data_root, dataset_id, is_control, *, use_projection=False):
+def _run_montage_for_dataset(
+    data_root,
+    dataset_id,
+    is_control,
+    *,
+    use_projection=False,
+    projection_stats=None,
+):
     """Render parametric montages for ``dataset_id`` if possible."""
 
     dataset_root = _resolve_dataset_root(data_root, dataset_id, is_control)
@@ -55,14 +68,23 @@ def _run_montage_for_dataset(data_root, dataset_id, is_control, *, use_projectio
             return False
 
     try:
+        deps = _load_montage_dependencies()
+    except ImportError as exc:
+        print(f"[montage] Unable to import montage dependencies: {exc}")
+        return False
+
+    if len(deps) == 2:
+        generate_parametric_montages, parameters = deps
+        generate_projection_montages = None
+    elif len(deps) == 3:
+        generate_parametric_montages, generate_projection_montages, parameters = deps
+    else:
         (
             generate_parametric_montages,
             generate_projection_montages,
             parameters,
-        ) = _load_montage_dependencies()
-    except ImportError as exc:
-        print(f"[montage] Unable to import montage dependencies: {exc}")
-        return False
+            *_
+        ) = deps
 
     try:
         if bool(is_control or settings.CONTROLS):
@@ -92,12 +114,16 @@ def _run_montage_for_dataset(data_root, dataset_id, is_control, *, use_projectio
         overall_success = False
 
     if use_projection:
+        if generate_projection_montages is None:
+            print("[projection] Projection rendering unavailable – skipping.")
+            return overall_success
         try:
             projection_ok = generate_projection_montages(
                 analysis_directory,
                 image_directory,
                 nifti_directory,
                 dce_path,
+                population_stats=projection_stats,
             )
             overall_success &= projection_ok
         except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
@@ -261,6 +287,26 @@ def main():
         sys.exit(0)
 
     if args.montage:
+        projection_stats = None
+        if args.projection:
+            try:
+                deps = _load_montage_dependencies()
+            except ImportError as exc:
+                print(f"[projection] Unable to import montage dependencies: {exc}")
+                sys.exit(1)
+
+            build_population_projection_stats = None
+            if len(deps) >= 4:
+                build_population_projection_stats = deps[3]
+
+            if build_population_projection_stats is not None:
+                projection_stats = build_population_projection_stats(
+                    data_directory,
+                    include_controls=bool(settings.CONTROLS),
+                )
+            else:
+                projection_stats = None
+
         exit_code = 0
         for dataset_id, is_control in datasets:
             success = _run_montage_for_dataset(
@@ -268,6 +314,7 @@ def main():
                 dataset_id,
                 is_control,
                 use_projection=args.projection,
+                projection_stats=projection_stats,
             )
             if not success:
                 exit_code = 1

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import glob
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, Sequence
+from typing import Dict, Mapping, Sequence, Tuple
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -68,6 +69,37 @@ PROJECTION_TARGETS: Dict[str, str] = {
     "CTH_tikhonov_map_atlas": "cth_projection_parcel",
     "MTT_tikhonov_map_atlas": "mtt_projection_parcel",
 }
+
+ParcelStatistics = Dict[Tuple[str, str], Dict[int, float]]
+
+_ATLAS_SEGMENTATION_PATH = (
+    "segmentation",
+    "segmentation",
+    "mri",
+    "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+)
+
+
+def _atlas_segmentation_path(nifti_directory: str) -> str:
+    return os.path.join(nifti_directory, *_ATLAS_SEGMENTATION_PATH)
+
+
+def _load_atlas_segmentation(nifti_directory: str) -> tuple[np.ndarray, np.ndarray]:
+    atlas_path = _atlas_segmentation_path(nifti_directory)
+    if not os.path.isfile(atlas_path):
+        raise FileNotFoundError(atlas_path)
+
+    atlas_img = nib.load(atlas_path)
+    atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.int32)
+    if atlas_data.ndim != 3:
+        raise ValueError("Atlas segmentation is not 3D")
+
+    atlas_labels = np.unique(atlas_data)
+    atlas_labels = atlas_labels[atlas_labels != 0]
+    if atlas_labels.size == 0:
+        raise ValueError("Atlas segmentation contains no labelled parcels")
+
+    return atlas_data, atlas_labels
 
 
 def generate_parametric_montages(
@@ -147,6 +179,7 @@ def generate_projection_montages(
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
+    population_stats: ParcelStatistics | None = None,
 ) -> bool:
     """Render parcel-level projection montages for atlas-based metrics."""
 
@@ -159,15 +192,13 @@ def generate_projection_montages(
         print(f"[projection] DCE reference not found – skipping projection rendering: {dce_path}")
         return False
 
-    atlas_path = os.path.join(
-        nifti_directory,
-        "segmentation",
-        "segmentation",
-        "mri",
-        "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
-    )
-    if not os.path.isfile(atlas_path):
-        print(f"[projection] Atlas segmentation missing – skipping: {atlas_path}")
+    try:
+        atlas_data, atlas_labels = _load_atlas_segmentation(nifti_directory)
+    except FileNotFoundError as exc:
+        print(f"[projection] Atlas segmentation missing – skipping: {exc}")
+        return False
+    except ValueError as exc:
+        print(f"[projection] {exc} – skipping: {_atlas_segmentation_path(nifti_directory)}")
         return False
 
     reference = _load_reference_volume(dce_path)
@@ -180,31 +211,36 @@ def generate_projection_montages(
         print("[projection] Reference volume contained no finite voxels – skipping projections.")
         return False
 
-    atlas_img = nib.load(atlas_path)
-    atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.int32)
-    if atlas_data.ndim != 3:
-        print(f"[projection] Atlas segmentation is not 3D – skipping: {atlas_path}")
-        return False
-
-    atlas_labels = np.unique(atlas_data)
-    atlas_labels = atlas_labels[atlas_labels != 0]
-    if atlas_labels.size == 0:
-        print("[projection] Atlas segmentation contains no labelled parcels – skipping projections.")
-        return False
-
     out_dir = os.path.join(image_directory, "AI", "Montages")
     os.makedirs(out_dir, exist_ok=True)
 
     generated_any = False
+    stats_lookup: Mapping[Tuple[str, str], Dict[int, float]] = population_stats or {}
+
     for base, output_base in PROJECTION_TARGETS.items():
         job = MAP_JOB_LOOKUP.get(base)
         if job is None:
             continue
-        for suffix, map_path in _find_available_maps(job, analysis_directory).items():
+        available_maps = _find_available_maps(job, analysis_directory)
+        suffixes = set(available_maps)
+        if stats_lookup:
+            suffixes.update(suffix for stat_base, suffix in stats_lookup if stat_base == base)
+
+        for suffix in sorted(suffixes):
+            map_path = available_maps.get(suffix)
+            projected = None
+            label_means = stats_lookup.get((base, suffix)) if stats_lookup else None
+            if label_means is None and suffix and stats_lookup:
+                label_means = stats_lookup.get((base, ""))
+
             try:
-                projected = _parcel_mean_projection(map_path, atlas_data, atlas_labels)
+                if label_means:
+                    projected = _projection_from_label_means(atlas_data, label_means)
+                if projected is None and map_path:
+                    projected = _parcel_mean_projection(map_path, atlas_data, atlas_labels)
                 if projected is None:
                     continue
+
                 output_name = output_base + suffix + job.output_ext
                 out_path = os.path.join(out_dir, output_name)
                 _render_projection_montage(
@@ -219,12 +255,159 @@ def generate_projection_montages(
                 generated_any = True
                 print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
             except Exception as exc:
-                print(f"[projection] Failed to render {map_path}: {exc}")
+                target = map_path if map_path else f"population statistics for {base}{suffix}"
+                print(f"[projection] Failed to render {target}: {exc}")
 
     if not generated_any:
         print("[projection] No atlas maps found for projection rendering.")
 
     return generated_any
+
+
+def _projection_from_label_means(
+    atlas_data: np.ndarray, label_means: Mapping[int, float]
+) -> np.ndarray | None:
+    projected = np.full(atlas_data.shape, np.nan, dtype=np.float32)
+    filled_any = False
+
+    for label, value in label_means.items():
+        mask = atlas_data == int(label)
+        if not np.any(mask):
+            continue
+        projected[mask] = np.float32(value)
+        filled_any = True
+
+    if not filled_any:
+        return None
+    return projected
+
+
+def _parcel_label_means(
+    map_path: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+) -> Dict[int, float]:
+    img = nib.load(map_path)
+    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+    if data.shape != atlas_data.shape:
+        raise ValueError("Atlas segmentation and parametric map shapes do not match")
+
+    label_means: Dict[int, float] = {}
+    for label in atlas_labels:
+        mask = atlas_data == int(label)
+        if not np.any(mask):
+            continue
+        values = data[mask]
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+        label_means[int(label)] = float(np.mean(values, dtype=np.float32))
+
+    return label_means
+
+
+def _collect_dataset_parcel_means(
+    analysis_directory: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+) -> Dict[Tuple[str, str], Dict[int, float]]:
+    dataset_means: Dict[Tuple[str, str], Dict[int, float]] = {}
+
+    for base in PROJECTION_TARGETS:
+        job = MAP_JOB_LOOKUP.get(base)
+        if job is None:
+            continue
+        for suffix, map_path in _find_available_maps(job, analysis_directory).items():
+            label_means = _parcel_label_means(map_path, atlas_data, atlas_labels)
+            if label_means:
+                dataset_means[(base, suffix)] = label_means
+
+    return dataset_means
+
+
+def _iter_population_dataset_dirs(
+    data_root: str, include_controls: bool
+) -> Sequence[str]:
+    if not os.path.isdir(data_root):
+        return []
+
+    dataset_dirs = []
+    for name in sorted(os.listdir(data_root)):
+        path = os.path.join(data_root, name)
+        if not os.path.isdir(path):
+            continue
+        if name == "controls":
+            continue
+        dataset_dirs.append(path)
+
+    if include_controls:
+        controls_root = os.path.join(data_root, "controls")
+        if os.path.isdir(controls_root):
+            for name in sorted(os.listdir(controls_root)):
+                path = os.path.join(controls_root, name)
+                if os.path.isdir(path):
+                    dataset_dirs.append(path)
+
+    return dataset_dirs
+
+
+def build_population_projection_stats(
+    data_root: str, *, include_controls: bool = False
+) -> ParcelStatistics:
+    dataset_dirs = _iter_population_dataset_dirs(data_root, include_controls)
+    if not dataset_dirs:
+        print("[projection] No datasets available for population aggregation.")
+        return {}
+
+    aggregates: defaultdict[Tuple[str, str], defaultdict[int, list[float]]] = defaultdict(
+        lambda: defaultdict(lambda: [0.0, 0])
+    )
+
+    contributing_datasets = 0
+    for dataset_dir in dataset_dirs:
+        analysis_directory = os.path.join(dataset_dir, "Analysis")
+        nifti_directory = os.path.join(dataset_dir, "NIfTI")
+        if not os.path.isdir(analysis_directory) or not os.path.isdir(nifti_directory):
+            continue
+
+        try:
+            atlas_data, atlas_labels = _load_atlas_segmentation(nifti_directory)
+        except (FileNotFoundError, ValueError):
+            continue
+
+        try:
+            dataset_means = _collect_dataset_parcel_means(
+                analysis_directory, atlas_data, atlas_labels
+            )
+        except Exception as exc:  # noqa: BLE001 - surface helpful context
+            print(f"[projection] Failed to collect parcel means for {dataset_dir}: {exc}")
+            continue
+
+        if not dataset_means:
+            continue
+
+        contributing_datasets += 1
+        for key, label_means in dataset_means.items():
+            stats_for_key = aggregates[key]
+            for label, value in label_means.items():
+                bucket = stats_for_key[label]
+                bucket[0] += float(value)
+                bucket[1] += 1
+
+    population_stats: ParcelStatistics = {}
+    for key, label_summaries in aggregates.items():
+        means = {
+            label: total / count for label, (total, count) in label_summaries.items() if count
+        }
+        if means:
+            population_stats[key] = means
+
+    if population_stats:
+        print(
+            f"[projection] Aggregated parcel means from {contributing_datasets} dataset(s)."
+        )
+    else:
+        print("[projection] No parcel statistics available for population aggregation.")
+
+    return population_stats
 
 
 def _mk_specthl() -> LinearSegmentedColormap:
@@ -548,7 +731,7 @@ def _render_projection_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
-    norm, tick_values = _build_normalizer(data, job)
+    norm, tick_values = _build_projection_normalizer(data, job)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
     fig, axes = plt.subplots(
@@ -621,6 +804,29 @@ def _build_normalizer(
 
     if vmax <= vmin:
         vmax = vmin + (abs(vmin) if vmin != 0 else 1.0)
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
+    return norm, _default_ticks(vmin, vmax)
+
+
+def _build_projection_normalizer(
+    data: np.ndarray, job: MapJob
+) -> tuple[mpl.colors.Normalize, list[float]]:
+    mask = np.isfinite(data)
+    if job.mask_zero:
+        mask &= np.abs(data) > EPS
+
+    finite_vals = data[mask]
+    if finite_vals.size == 0:
+        raise ValueError("Projection map contains no finite values for colour scaling")
+
+    vmin = float(np.nanmin(finite_vals))
+    vmax = float(np.nanmax(finite_vals))
+
+    if np.isclose(vmin, vmax):
+        padding = abs(vmin) if vmin != 0 else 1.0
+        vmin -= padding * 0.5
+        vmax += padding * 0.5
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
