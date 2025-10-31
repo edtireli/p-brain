@@ -300,14 +300,17 @@ def _render_montage(
     norm, tick_values = _build_normalizer(data, job)
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
 
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="none")
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
+    )
+    fig.patch.set_alpha(0.0)
     axes = axes.ravel()
 
     for ax, z in zip(axes, z_indices):
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
-        ax.set_facecolor("none")
+        ax.set_facecolor("#e0e0e0")
         for spine in ax.spines.values():
             spine.set_visible(False)
 
@@ -345,7 +348,7 @@ def _render_montage(
         spine.set_edgecolor("black")
 
     plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
-    plt.savefig(out_path, dpi=dpi, facecolor="none", transparent=True)
+    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
 
 
