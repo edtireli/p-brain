@@ -9,10 +9,13 @@ import utils.settings as settings
 def _load_montage_dependencies():
     """Import heavy montage modules lazily."""
 
-    from utils.montage import generate_parametric_montages
+    from utils.montage import (
+        generate_parametric_montages,
+        generate_projection_montages,
+    )
     from utils import parameters
 
-    return generate_parametric_montages, parameters
+    return generate_parametric_montages, generate_projection_montages, parameters
 
 
 def _resolve_dataset_root(data_root, dataset_id, is_control):
@@ -29,7 +32,7 @@ def _resolve_dataset_root(data_root, dataset_id, is_control):
     return candidates[0]
 
 
-def _run_montage_for_dataset(data_root, dataset_id, is_control):
+def _run_montage_for_dataset(data_root, dataset_id, is_control, *, use_projection=False):
     """Render parametric montages for ``dataset_id`` if possible."""
 
     dataset_root = _resolve_dataset_root(data_root, dataset_id, is_control)
@@ -52,7 +55,11 @@ def _run_montage_for_dataset(data_root, dataset_id, is_control):
             return False
 
     try:
-        generate_parametric_montages, parameters = _load_montage_dependencies()
+        (
+            generate_parametric_montages,
+            generate_projection_montages,
+            parameters,
+        ) = _load_montage_dependencies()
     except ImportError as exc:
         print(f"[montage] Unable to import montage dependencies: {exc}")
         return False
@@ -77,13 +84,29 @@ def _run_montage_for_dataset(data_root, dataset_id, is_control):
         return False
 
     print(f"[montage] Generating montages for {dataset_id}")
+    overall_success = True
     try:
         generate_parametric_montages(analysis_directory, image_directory, dce_path)
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")
-        return False
+        overall_success = False
 
-    return True
+    if use_projection:
+        try:
+            projection_ok = generate_projection_montages(
+                analysis_directory,
+                image_directory,
+                nifti_directory,
+                dce_path,
+            )
+            overall_success &= projection_ok
+        except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
+            print(
+                f"[projection] Failed to generate projection montages for {dataset_id}: {exc}"
+            )
+            overall_success = False
+
+    return overall_success
 
 
 def parse_args():
@@ -110,6 +133,13 @@ def parse_args():
         "--montage",
         action="store_true",
         help="Only generate montage images for the selected datasets",
+    )
+    parser.add_argument(
+        "--projection",
+        action="store_true",
+        help=(
+            "When used with --montage, also render parcel projection montages for atlas metrics"
+        ),
     )
     return parser.parse_args()
 
@@ -233,7 +263,12 @@ def main():
     if args.montage:
         exit_code = 0
         for dataset_id, is_control in datasets:
-            success = _run_montage_for_dataset(data_directory, dataset_id, is_control)
+            success = _run_montage_for_dataset(
+                data_directory,
+                dataset_id,
+                is_control,
+                use_projection=args.projection,
+            )
             if not success:
                 exit_code = 1
         sys.exit(exit_code)

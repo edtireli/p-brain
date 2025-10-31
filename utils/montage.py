@@ -59,6 +59,16 @@ MAP_JOBS: Sequence[MapJob] = (
     MapJob("vp_per_voxel", "vp_per_voxel", 0.0, 3.0, mask_zero=True, output_ext=".png"),
 )
 
+MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
+
+PROJECTION_TARGETS: Dict[str, str] = {
+    "Ki_map_atlas": "ki_projection_parcel",
+    "vp_map_atlas": "vp_projection_parcel",
+    "CBF_tikhonov_map_atlas": "cbf_projection_parcel",
+    "CTH_tikhonov_map_atlas": "cth_projection_parcel",
+    "MTT_tikhonov_map_atlas": "mtt_projection_parcel",
+}
+
 
 def generate_parametric_montages(
     analysis_directory: str,
@@ -126,6 +136,95 @@ def generate_parametric_montages(
 
     if not generated_any:
         print("[montage] No parametric maps found for montage rendering.")
+
+
+def generate_projection_montages(
+    analysis_directory: str,
+    image_directory: str,
+    nifti_directory: str,
+    dce_path: str,
+    *,
+    rows: int = ROWS,
+    cols: int = COLS,
+    dpi: int = DPI,
+) -> bool:
+    """Render parcel-level projection montages for atlas-based metrics."""
+
+    if not os.path.isdir(analysis_directory):
+        return False
+    if not os.path.isdir(nifti_directory):
+        print(f"[projection] NIfTI directory missing – skipping: {nifti_directory}")
+        return False
+    if not os.path.isfile(dce_path):
+        print(f"[projection] DCE reference not found – skipping projection rendering: {dce_path}")
+        return False
+
+    atlas_path = os.path.join(
+        nifti_directory,
+        "segmentation",
+        "segmentation",
+        "mri",
+        "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+    )
+    if not os.path.isfile(atlas_path):
+        print(f"[projection] Atlas segmentation missing – skipping: {atlas_path}")
+        return False
+
+    reference = _load_reference_volume(dce_path)
+    if reference is None:
+        print("[projection] Unable to load DCE reference volume – skipping projections.")
+        return False
+
+    ref_info = _build_reference(reference, rows * cols)
+    if ref_info is None:
+        print("[projection] Reference volume contained no finite voxels – skipping projections.")
+        return False
+
+    atlas_img = nib.load(atlas_path)
+    atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.int32)
+    if atlas_data.ndim != 3:
+        print(f"[projection] Atlas segmentation is not 3D – skipping: {atlas_path}")
+        return False
+
+    atlas_labels = np.unique(atlas_data)
+    atlas_labels = atlas_labels[atlas_labels != 0]
+    if atlas_labels.size == 0:
+        print("[projection] Atlas segmentation contains no labelled parcels – skipping projections.")
+        return False
+
+    out_dir = os.path.join(image_directory, "AI", "Montages")
+    os.makedirs(out_dir, exist_ok=True)
+
+    generated_any = False
+    for base, output_base in PROJECTION_TARGETS.items():
+        job = MAP_JOB_LOOKUP.get(base)
+        if job is None:
+            continue
+        for suffix, map_path in _find_available_maps(job, analysis_directory).items():
+            try:
+                projected = _parcel_mean_projection(map_path, atlas_data, atlas_labels)
+                if projected is None:
+                    continue
+                output_name = output_base + suffix + job.output_ext
+                out_path = os.path.join(out_dir, output_name)
+                _render_projection_montage(
+                    projected,
+                    ref_info,
+                    job,
+                    out_path,
+                    rows=rows,
+                    cols=cols,
+                    dpi=dpi,
+                )
+                generated_any = True
+                print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
+            except Exception as exc:
+                print(f"[projection] Failed to render {map_path}: {exc}")
+
+    if not generated_any:
+        print("[projection] No atlas maps found for projection rendering.")
+
+    return generated_any
 
 
 def _mk_specthl() -> LinearSegmentedColormap:
@@ -296,6 +395,32 @@ def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]
     return found
 
 
+def _parcel_mean_projection(
+    map_path: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+) -> np.ndarray | None:
+    img = nib.load(map_path)
+    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+    if data.shape != atlas_data.shape:
+        raise ValueError("Atlas segmentation and parametric map shapes do not match")
+
+    projected = np.full_like(data, np.nan, dtype=np.float32)
+    for label in atlas_labels:
+        mask = atlas_data == label
+        if not np.any(mask):
+            continue
+        values = data[mask]
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+        projected[mask] = np.mean(values, dtype=np.float32)
+
+    if not np.isfinite(projected).any():
+        return None
+    return projected
+
+
 def _extract_suffix(path: str, base: str) -> str:
     name = os.path.basename(path)
     if name.endswith(".nii.gz"):
@@ -374,6 +499,91 @@ def _render_montage(
         ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
 
     # Hide any unused axes when there are fewer slices than tiles
+    for ax in axes[len(z_indices) :]:
+        ax.axis("off")
+
+    cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cb = fig.colorbar(sm, cax=cax)
+    if tick_values:
+        cb.set_ticks(tick_values)
+        cb.set_ticklabels([f"{val:g}" for val in tick_values])
+    cb.ax.tick_params(labelsize=8, colors="black")
+    for spine in cb.ax.spines.values():
+        spine.set_edgecolor("black")
+
+    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
+    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.close(fig)
+
+
+def _render_projection_montage(
+    data: np.ndarray,
+    ref_info: Dict[str, np.ndarray],
+    job: MapJob,
+    out_path: str,
+    *,
+    rows: int,
+    cols: int,
+    dpi: int,
+) -> None:
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+
+    finite_mask = np.isfinite(data)
+    if job.mask_zero:
+        finite_mask &= np.abs(data) > EPS
+    if not finite_mask.any():
+        raise ValueError("Projection map contains no finite values")
+
+    union_xy = np.any(finite_mask, axis=2)
+    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
+
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
+    if z_indices.size < rows * cols:
+        pad_value = z_indices[-1] if z_indices.size else 0
+        z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
+    else:
+        z_indices = z_indices[: rows * cols]
+
+    cmap = _get_cmap(job.cmap_name)
+    norm, tick_values = _build_normalizer(data, job)
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
+
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
+    )
+    fig.patch.set_alpha(0.0)
+    axes = axes.ravel()
+
+    for ax, z in zip(axes, z_indices):
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_aspect("equal")
+        ax.set_facecolor("#e0e0e0")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        sl = data[:, :, int(z)]
+        slr = np.rot90(sl, ref_info["rotate"])
+        slc = slr[r0:r1, c0:c1]
+
+        union_crop = union_xy_r[r0:r1, c0:c1]
+        if job.mask_zero:
+            finite_vals = slc[np.isfinite(slc) & (slc > 0)]
+            if finite_vals.size:
+                cutoff = np.percentile(finite_vals, 0.1)
+                eps_dyn = max(cutoff, 1e-6)
+            else:
+                eps_dyn = 1e-6
+            mask_slice = np.isfinite(slc) & (slc > eps_dyn)
+        else:
+            mask_slice = np.isfinite(slc)
+
+        arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
+        ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
+
     for ax in axes[len(z_indices) :]:
         ax.axis("off")
 
