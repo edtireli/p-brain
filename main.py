@@ -231,6 +231,13 @@ def main():
             log_process_start("Tissue kinetic modelling")
             tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
             log_process_end("Tissue kinetic modelling")
+            log_process_start("Segmented M0/T1 rendering")
+            opt01_T1_fit.generate_segmented_m0_t1_maps(
+                analysis_directory,
+                image_directory,
+                nifti_directory,
+            )
+            log_process_end("Segmented M0/T1 rendering")
             log_auto("Fully automatic analysis pipeline completed.", level="success")
         elif mode == 'pseudo':
             set_turbo_mode(False)

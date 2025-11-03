@@ -389,11 +389,17 @@ def plot_histograms(M0_matrix, T1_matrix, image_directory):
         plt.show()
 
 
-def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
+def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory, mask=None, output_name='M0+T1_Maps.png'):
     def on_esc(event):
         if event.key == 'escape':
             plt.close(event.canvas.figure)
-             
+
+    ensured_mask = None
+    if mask is not None:
+        ensured_mask = _ensure_mask_matches_shape(mask, M0_matrix.shape)
+        if ensured_mask is None:
+            print("Warning: Provided segmentation mask does not match map dimensions; skipping mask.")
+
     slices = M0_matrix.shape[2]
     grid_size = slices
 
@@ -401,6 +407,9 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     for i in range(slices):
         ax = axes[0, i]
         slice_data = np.ma.masked_invalid(T1_matrix[:, :, i])
+        if ensured_mask is not None:
+            slice_mask = ensured_mask[:, :, i]
+            slice_data = np.ma.masked_where(~slice_mask, slice_data)
         im_t1 = ax.imshow(slice_data.T, cmap='viridis', origin='lower')
         ax.axis('off')
         ax.set_title(f'Slice {i+1}')
@@ -410,6 +419,9 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     for i in range(slices):
         ax = axes[1, i]
         slice_data = np.ma.masked_invalid(M0_matrix[:, :, i])
+        if ensured_mask is not None:
+            slice_mask = ensured_mask[:, :, i]
+            slice_data = np.ma.masked_where(~slice_mask, slice_data)
         im_m0 = ax.imshow(slice_data.T, cmap='plasma', origin='lower')
         ax.axis('off')
     cbar_ax_m0 = fig.add_axes([0.92, 0.15, 0.01, 0.3])
@@ -417,8 +429,8 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     cbar_m0.set_label('Equilibrium Magnetization [M0]', fontproperties=prop, fontsize=9)
 
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    plt.savefig(os.path.join(image_directory, 'Fit', 'M0+T1_Maps.png'), dpi=200)
-    plt.gcf().canvas.mpl_connect('key_press_event', on_esc) 
+    plt.savefig(os.path.join(image_directory, 'Fit', output_name), dpi=200)
+    plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     if not turbo_mode:
         close_plot_after_delay(3, fig)
         plt.show()
@@ -501,3 +513,66 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
 
     plot_histograms(M0_matrix, T1_matrix, image_directory)
     plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory)
+
+
+def _segmentation_mask_path(nifti_directory):
+    return os.path.join(
+        nifti_directory,
+        'segmentation',
+        'segmentation',
+        'mri',
+        'aparc.DKTatlas+aseg.deep_in_DCE.nii.gz'
+    )
+
+
+def _load_segmentation_mask(nifti_directory):
+    mask_path = _segmentation_mask_path(nifti_directory)
+    if not os.path.exists(mask_path):
+        return None
+
+    try:
+        mask_img = nib.load(mask_path)
+    except Exception as exc:
+        print(f"Warning: Unable to load segmentation mask ({exc}).")
+        return None
+
+    mask_data = mask_img.get_fdata()
+    mask_data = np.squeeze(mask_data)
+    if mask_data.ndim != 3:
+        print("Warning: Segmentation mask is not 3-D; skipping segmented map generation.")
+        return None
+
+    return mask_data > 0
+
+
+def generate_segmented_m0_t1_maps(analysis_directory, image_directory, nifti_directory):
+    M0_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')
+    T1_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')
+
+    if not (os.path.exists(M0_matrix_path) and os.path.exists(T1_matrix_path)):
+        print("Warning: Unable to locate cached M0/T1 matrices; skipping segmented map rendering.")
+        return False
+
+    M0_matrix = load_from_pickle(M0_matrix_path)
+    T1_matrix = load_from_pickle(T1_matrix_path)
+
+    segmentation_mask = _load_segmentation_mask(nifti_directory)
+    if segmentation_mask is None:
+        print("Info: Segmentation mask not available; skipping segmented M0/T1 map rendering.")
+        return False
+
+    ensured_mask = _ensure_mask_matches_shape(segmentation_mask, M0_matrix.shape)
+    if ensured_mask is None:
+        print("Warning: Segmentation mask shape mismatch; skipping segmented map rendering.")
+        return False
+
+    os.makedirs(os.path.join(image_directory, 'Fit'), exist_ok=True)
+    plot_brain_slices_grid(
+        M0_matrix,
+        T1_matrix,
+        image_directory,
+        mask=ensured_mask,
+        output_name='M0+T1_Maps_segmented.png'
+    )
+
+    return True
