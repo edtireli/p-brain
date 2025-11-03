@@ -16,6 +16,7 @@ from termcolor import colored
 turbo_mode = True  # When True, suppress interactive plotting
 
 def permeability_user_interface(analysis_directory):
+    input_source = settings.INPUT_FUNCTION_SOURCE
     subtype_mapping_artery = {
         "lica": "Left Interior Carotid",
         "rica": "Right Interior Carotid",
@@ -24,6 +25,11 @@ def permeability_user_interface(analysis_directory):
         "rmca": "Right Middle Cerebral",
         "max": "Max"
     }
+    if input_source == 'RICA':
+        subtype_mapping_artery = {
+            "rica": "Right Interior Carotid",
+            "max": "Max"
+        }
     
     subtype_mapping_tissue = {
         "w": "White Matter",
@@ -35,19 +41,42 @@ def permeability_user_interface(analysis_directory):
     
     for type_choice in ['artery', 'tissue']:
         subtype_mapping = subtype_mapping_artery if type_choice == 'artery' else subtype_mapping_tissue
-        data_folder = 'TSCC Data' if type_choice == 'artery' else 'CTC Data'
-        tissue_subfolder = 'Tissue' if type_choice != 'artery' else ''
-        
+
+        if type_choice == 'artery':
+            if input_source == 'RICA':
+                base_path = os.path.join(analysis_directory, 'CTC Data', 'Artery')
+            else:
+                base_path = os.path.join(analysis_directory, 'TSCC Data')
+        else:
+            base_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue')
+
         available_subtypes = {}
-        for subtype in os.listdir(os.path.join(analysis_directory, data_folder, tissue_subfolder)):
-            subtype_path = os.path.join(analysis_directory, data_folder, tissue_subfolder, subtype)
-            if os.path.isdir(subtype_path):
+        if os.path.isdir(base_path):
+            for subtype in os.listdir(base_path):
+                subtype_path = os.path.join(base_path, subtype)
+                if not os.path.isdir(subtype_path):
+                    continue
                 npy_files = [s for s in os.listdir(subtype_path) if s.endswith('.npy')]
-                if npy_files:
+                if not npy_files:
+                    continue
+                if type_choice == 'artery' and input_source == 'RICA':
+                    slices = [
+                        s.split('_')[-1].split('.')[0]
+                        for s in npy_files
+                        if s.lower().startswith('ctc_slice_')
+                    ]
+                    if slices:
+                        available_subtypes[subtype] = sorted(set(slices), key=int)
+                else:
                     slices = [s.split('_')[-1].split('.')[0] for s in npy_files]
                     available_subtypes[subtype] = slices
-        
-        available_subtypes = {k: v for k, v in available_subtypes.items() if k in subtype_mapping.values()}
+
+        if type_choice == 'artery' and input_source == 'RICA' and available_subtypes:
+            available_subtypes['Max'] = ['auto']
+
+        available_subtypes = {
+            k: v for k, v in available_subtypes.items() if k in subtype_mapping.values()
+        }
         
         print('=-=-==-=-==-=-==-=-==-=-==-=-=-==-=-==-=--=-==-=-==-=-==-=-==-=-==-=-=')
         print(f'Please identify {type_choice}:')
@@ -60,28 +89,43 @@ def permeability_user_interface(analysis_directory):
         chosen_subtype = subtype_mapping.get(choice_str.lower())
         
         if type_choice == 'artery':
-            if chosen_subtype == "Max":
-                max_dir = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-                npy_files = [f for f in os.listdir(max_dir) if f.endswith('.npy') and not f.startswith('.')]
-                if not npy_files:
-                    raise FileNotFoundError(f"No .npy files found in {max_dir}.")
-                max_file = npy_files[0]
-                chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
-                chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
+            if input_source == 'RICA':
+                if chosen_subtype == "Max":
+                    chosen_venous_slice = None
+                    chosen_arterial_slice = 'auto'
+                    print('[!] Automatically selecting the pure arterial curve with the highest peak.')
+                else:
+                    arterial_slices = available_subtypes.get(chosen_subtype, [])
+                    if len(arterial_slices) == 1:
+                        chosen_arterial_slice = arterial_slices[0]
+                        print(f'[!] Automatically picking only available arterial slice: {chosen_arterial_slice}')
+                    else:
+                        print(f'[!] Available arterial slices: {", ".join(arterial_slices)}')
+                        chosen_arterial_slice = input('[!] Enter the arterial slice index: ')
+                    chosen_venous_slice = None
             else:
-                venous_slices = set()
-                arterial_slices = set()
-                for filename in os.listdir(os.path.join(analysis_directory, 'TSCC Data', chosen_subtype)):
-                    if filename.startswith("TSCC_slice_"):
-                        venous, arterial = filename.split("_")[2:4]
-                        venous_slices.add(venous)
-                        arterial_slices.add(arterial.split('.')[0])
+                if chosen_subtype == "Max":
+                    max_dir = os.path.join(analysis_directory, 'TSCC Data', 'Max')
+                    npy_files = [f for f in os.listdir(max_dir) if f.endswith('.npy') and not f.startswith('.')]
+                    if not npy_files:
+                        raise FileNotFoundError(f"No .npy files found in {max_dir}.")
+                    max_file = npy_files[0]
+                    chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
+                    chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
+                else:
+                    venous_slices = set()
+                    arterial_slices = set()
+                    for filename in os.listdir(os.path.join(analysis_directory, 'TSCC Data', chosen_subtype)):
+                        if filename.startswith("TSCC_slice_"):
+                            venous, arterial = filename.split("_")[2:4]
+                            venous_slices.add(venous)
+                            arterial_slices.add(arterial.split('.')[0])
 
-                print(f'[!] Available venous slices: {", ".join(venous_slices)}')
-                chosen_venous_slice = input('[!] Enter the venous slice index: ')
-                print(f'[!] Available arterial slices: {", ".join(arterial_slices)}')
-                chosen_arterial_slice = input('[!] Enter the arterial slice index: ')
-                
+                    print(f'[!] Available venous slices: {", ".join(venous_slices)}')
+                    chosen_venous_slice = input('[!] Enter the venous slice index: ')
+                    print(f'[!] Available arterial slices: {", ".join(arterial_slices)}')
+                    chosen_arterial_slice = input('[!] Enter the arterial slice index: ')
+
             subtype_artery, slice_artery = chosen_subtype, (chosen_venous_slice, chosen_arterial_slice)
         else:
             available_slices = available_subtypes.get(chosen_subtype, [])
@@ -170,8 +214,20 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     time_points_s = np.load(os.path.join(analysis_directory, 'Fitting', 'time_points_s.npy'))
     subtype_tissue, subtype_artery, slice_tissue, (venous_slice, arterial_slice) = permeability_user_interface(analysis_directory)
 
+    selected_subtype_artery = subtype_artery
     C_t = np.load(os.path.join(analysis_directory, 'CTC Data', 'Tissue', subtype_tissue, f'CTC_slice_{slice_tissue}.npy'))
-    C_a = np.load(os.path.join(analysis_directory, 'TSCC Data', subtype_artery, f'TSCC_slice_{venous_slice}_{arterial_slice}.npy'))
+    C_a, input_metadata = get_input_function_curve(
+        analysis_directory,
+        subtype=subtype_artery,
+        venous_slice=venous_slice,
+        arterial_slice=arterial_slice
+    )
+
+    actual_artery = input_metadata.get('artery_subtype', subtype_artery)
+    actual_venous = input_metadata.get('venous_slice', venous_slice)
+    actual_arterial = input_metadata.get('arterial_slice', arterial_slice)
+    venous_label = 'N/A' if actual_venous is None else str(actual_venous)
+    arterial_label = 'N/A' if actual_arterial is None else str(actual_arterial)
 
     C_t = C_t[0:len(C_a)]
     time_points_s = time_points_s[0:len(C_a)]
@@ -204,7 +260,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
         save_values(
             Ki, SD_Ki, lamda, Ki, 0.0,
             subtype_tissue, slice_tissue,
-            subtype_artery, venous_slice, arterial_slice,
+            actual_artery, venous_label, arterial_label,
             analysis_directory, suffix='_tikhonov'
         )
 
@@ -223,10 +279,10 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
               ') ml/100g/min')
         print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
         save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
-                    subtype_artery, venous_slice, arterial_slice,
+                    actual_artery, venous_label, arterial_label,
                     analysis_directory, suffix='_patlak')
 
-    if subtype_artery == 'Max':
+    if selected_subtype_artery == 'Max':
         if use_two_compartment:
             json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
             json2 = os.path.join(analysis_directory, 'max_info.json')
@@ -236,11 +292,24 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             json2 = os.path.join(analysis_directory, 'max_info.json')
             replace_max_with_artery_type_and_delete(json1, json2)
     restart_prompt = input('[!] Repeat analysis? (y/n): ')
-    if restart_prompt.lower() == 'y':    
+    if restart_prompt.lower() == 'y':
         subtype_tissue, subtype_artery, slice_tissue, (venous_slice, arterial_slice) = permeability_user_interface(analysis_directory)
 
+        selected_subtype_artery = subtype_artery
+
         C_t = np.load(os.path.join(analysis_directory, 'CTC Data', 'Tissue', subtype_tissue, f'CTC_slice_{slice_tissue}.npy'))
-        C_a = np.load(os.path.join(analysis_directory, 'TSCC Data', subtype_artery, f'TSCC_slice_{venous_slice}_{arterial_slice}.npy'))
+        C_a, input_metadata = get_input_function_curve(
+            analysis_directory,
+            subtype=subtype_artery,
+            venous_slice=venous_slice,
+            arterial_slice=arterial_slice
+        )
+
+        actual_artery = input_metadata.get('artery_subtype', subtype_artery)
+        actual_venous = input_metadata.get('venous_slice', venous_slice)
+        actual_arterial = input_metadata.get('arterial_slice', arterial_slice)
+        venous_label = 'N/A' if actual_venous is None else str(actual_venous)
+        arterial_label = 'N/A' if actual_arterial is None else str(actual_arterial)
 
         C_t = C_t[0:len(C_a)]
         time_points_s = time_points_s[0:len(C_a)]
@@ -272,7 +341,7 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             save_values(
                 Ki, SD_Ki, lamda, Ki, 0.0,
                 subtype_tissue, slice_tissue,
-                subtype_artery, venous_slice, arterial_slice,
+                actual_artery, venous_label, arterial_label,
                 analysis_directory, suffix='_tikhonov'
             )
 
@@ -289,10 +358,10 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
             print('[!] Advanced computation of permeability: (', P, '+-', P_std, ') ml/100g/min')
             print(f'[!] Ki: {Ki*6000} ml/100g min, lambda: {lamda*100} ml/100g, SD_Ki: {SD_Ki*6000}')
             save_values(Ki, SD_Ki, lamda, P, P_std, subtype_tissue, slice_tissue,
-                        subtype_artery, venous_slice, arterial_slice,
+                        actual_artery, venous_label, arterial_label,
                         analysis_directory, suffix='_patlak')
 
-        if subtype_artery == 'Max':
+        if selected_subtype_artery == 'Max':
             if use_two_compartment:
                 json1 = os.path.join(analysis_directory, 'values_tikhonov.json')
                 json2 = os.path.join(analysis_directory, 'max_info.json')

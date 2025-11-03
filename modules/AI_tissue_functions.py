@@ -1908,10 +1908,8 @@ def compute_and_plot_ctcs_median(
     skip_bottom = settings.GLOBAL_KI_SKIP_BOTTOM
     skip_top = settings.GLOBAL_KI_SKIP_TOP
 
-    # Load C_a once
-    max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-    ca_file = _get_first_npy(max_folder)
-    C_a_full = np.load(os.path.join(max_folder, ca_file))
+    # Load C_a once according to the configured input function source
+    C_a_full, input_metadata = get_input_function_curve(analysis_directory)
 
     if ref_affine is None or ref_header is None:
         ref_img = nib.load(dce_path)
@@ -3374,9 +3372,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         'aparc.DKTatlas+aseg.deep_in_DCE.nii.gz'
     )
 
-    max_folder = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-    ca_file = _get_first_npy(max_folder)
-    C_a_full = np.load(os.path.join(max_folder, ca_file))
+    C_a_full, input_metadata = get_input_function_curve(analysis_directory)
 
     output_dir = analysis_directory
 
