@@ -268,6 +268,13 @@ completes.
 When running the two-compartment model the tissue function slice images display
 the two-compartment fit instead of the Patlak plot.
 
+### T1 recovery model selection
+The T1/M0 fitting step supports both inversion recovery and saturation recovery
+signal models.  By default the inversion recovery equation is used, matching the
+previous behaviour.  Set the environment variable `P_BRAIN_T1_RECOVERY_MODEL`
+to `saturation` (or adjust `T1_RECOVERY_MODEL` in `utils/settings.py`) to fit a
+pure saturation recovery curve instead.
+
 ### Regularisation strength
 The Tikhonov parameter controlling the two-compartment fit is configured via
 `--lambda` on the command line or the `P_BRAIN_LAMBDA` environment variable.

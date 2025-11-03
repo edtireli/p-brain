@@ -25,6 +25,13 @@ MULTIPROCESSING = True
 # Default number of CPU cores used when multiprocessing is enabled
 NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
 
+# Select the recovery equation to use when fitting T1/M0 from inversion or
+# saturation recovery acquisitions. Accepts ``inversion`` (default) or
+# ``saturation``.
+T1_RECOVERY_MODEL = os.environ.get("P_BRAIN_T1_RECOVERY_MODEL", "inversion").strip().lower()
+if T1_RECOVERY_MODEL not in {"inversion", "saturation"}:
+    T1_RECOVERY_MODEL = "inversion"
+
 # Select kinetic modelling strategy. Valid options are ``patlak``,
 # ``two_compartment`` (regularised two-compartment fit) or ``both`` to execute the two
 # approaches sequentially.  When the environment variable
