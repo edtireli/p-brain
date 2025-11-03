@@ -108,6 +108,12 @@ def compute_brain_mask(t1_path):
     """Generate a crude brain mask from the provided T1 image."""
     t1_img = nib.load(t1_path)
     t1_data = t1_img.get_fdata()
+    # Many clinical datasets store structural scans with a trailing singleton
+    # dimension (e.g. ``(x, y, z, 1)``).  The downstream fitting code expects
+    # a 3-D mask, so squeeze away any singleton axes before we start
+    # processing.  This keeps the brain mask compatible with the voxel matrix
+    # that will be generated from the IR/VFA series.
+    t1_data = np.squeeze(t1_data)
     t1_data = _normalise_image(t1_data)
 
     non_zero = t1_data[t1_data > 0]
@@ -123,6 +129,7 @@ def compute_brain_mask(t1_path):
     mask = remove_small_objects(mask, 500)
     mask = binary_dilation(mask, ball(1))
 
+    mask = np.squeeze(mask)
     return mask.astype(bool)
 
 
@@ -219,6 +226,12 @@ def _ensure_mask_matches_shape(brain_mask, expected_shape):
 
     mask_array = np.asarray(brain_mask)
     expected_shape = tuple(expected_shape)
+
+    # Allow masks saved with trailing singleton dimensions (e.g. ``(x, y, z, 1)``)
+    # by squeezing them before performing the comparison.  This situation is
+    # common when loading NIfTI volumes that were stored with an extra axis.
+    if mask_array.ndim > len(expected_shape):
+        mask_array = np.squeeze(mask_array)
 
     if mask_array.shape != expected_shape:
         print(
