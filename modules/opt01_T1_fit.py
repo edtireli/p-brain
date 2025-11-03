@@ -430,9 +430,6 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     voxel_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl')
     M0_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')
     T1_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')
-    mask_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask.npy')
-    mask_meta_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask_meta.json')
-
     # Initialize alfas and TRs to default values (empty lists or None)
     alfas = []
     TRs = []
@@ -441,30 +438,11 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     M0_matrix_exists = os.path.exists(M0_matrix_path)
     T1_matrix_exists = os.path.exists(T1_matrix_path)
 
-    t1_path = os.path.join(nifti_directory, t1_3D_filename)
-    brain_mask = load_brain_mask(analysis_directory, t1_path)
-    brain_mask_source = None
-
-    mask_meta = {}
-    if os.path.exists(mask_meta_path):
-        try:
-            with open(mask_meta_path, 'r') as mf:
-                mask_meta = json.load(mf)
-        except Exception:
-            mask_meta = {}
-
     voxel_matrix = None
     if voxel_matrix_exists:
         voxel_matrix = load_from_pickle(voxel_matrix_path)
-        brain_mask, brain_mask_source = _resolve_brain_mask(
-            brain_mask, voxel_matrix, mask_path, brain_mask_source
-        )
 
     use_cached = voxel_matrix_exists and M0_matrix_exists and T1_matrix_exists
-    if brain_mask is not None:
-        use_cached = use_cached and mask_meta.get("masked", False)
-    else:
-        use_cached = use_cached and not mask_meta.get("masked", False)
 
     if use_cached:
         M0_matrix = load_from_pickle(M0_matrix_path)
@@ -493,10 +471,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             # Build voxel matrix and fit VFA model
             if voxel_matrix is None:
                 voxel_matrix = build_voxel_matrix(vfa_data)
-            brain_mask, brain_mask_source = _resolve_brain_mask(
-                brain_mask, voxel_matrix, mask_path, brain_mask_source
-            )
-            M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, brain_mask=brain_mask, alfas=alfas, TRs=TRs)
+            M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, alfas=alfas, TRs=TRs)
 
         # Handling for IR
         if not IsVFA:
@@ -507,16 +482,11 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
                 if voxel_matrix is None:
                     voxel_matrix = build_voxel_matrix(dce_data)
-                brain_mask, brain_mask_source = _resolve_brain_mask(
-                    brain_mask, voxel_matrix, mask_path, brain_mask_source
-                )
-                M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False, brain_mask=brain_mask)
+                M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
             else:
                 # No fitting performed without IR or VFA data
                 if voxel_matrix is not None:
                     shape = voxel_matrix.shape[1:]
-                elif brain_mask is not None:
-                    shape = brain_mask.shape
                 else:
                     raise RuntimeError("Unable to determine volume shape for T1/M0 outputs.")
                 M0_matrix = np.full(shape, np.nan)
@@ -526,15 +496,6 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
         if not voxel_matrix_exists:
             save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
-
-        os.makedirs(os.path.dirname(mask_meta_path), exist_ok=True)
-        with open(mask_meta_path, 'w') as mf:
-            mask_applied = brain_mask is not None
-            json.dump({
-                "masked": mask_applied,
-                "mask_shape": list(brain_mask.shape) if mask_applied else None,
-                "mask_source": brain_mask_source if mask_applied else None
-            }, mf)
 
 
 
