@@ -232,15 +232,17 @@ def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
         if max_signal <= 0:
             return (0.0, 0.0)
         initial_A = max_signal
-        initial_B = 2 * max_signal
+        initial_B = 0.5 * max_signal
         initial_T1 = 750
-        bounds = ([1e-6, 1e-6, 100], [np.inf, np.inf, 6000])
+        bounds = ([-np.inf, -np.inf, 300], [np.inf, np.inf, 6000])
         result = least_squares(
             model_residuals_ir,
             [initial_A, initial_B, initial_T1],
             args=(TI_values, voxel_values),
             bounds=bounds,
             method="trf",
+            loss="soft_l1",
+            f_scale=1.0,
         )
     if IsVFA:
         return result.x[0], result.x[1]
