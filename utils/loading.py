@@ -7,6 +7,8 @@ import json
 import importlib
 import time
 
+import utils.settings as settings
+
 
 
 def list_addons():
@@ -172,4 +174,196 @@ def first_existing_file(directory, patterns, time, suffix):
         if os.path.exists(file_path):
             return file_path
     return None
+
+
+def _read_max_artery_type(analysis_directory):
+    info_path = os.path.join(analysis_directory, 'max_info.json')
+    if not os.path.exists(info_path):
+        return None
+
+    try:
+        with open(info_path, 'r') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    for entry in data:
+        if isinstance(entry, str) and entry.startswith('Max artery type:'):
+            return entry.split(':', 1)[1].strip()
+    return None
+
+
+def _parse_tscc_filename(filename):
+    match = re.match(r'TSCC_slice_(\d+)_(\d+)\.npy$', filename)
+    if not match:
+        raise ValueError(f"Unrecognised TSCC filename format: {filename}")
+    venous_slice, arterial_slice = map(int, match.groups())
+    return venous_slice, arterial_slice
+
+
+def _load_shifted_input_function(analysis_directory, subtype, venous_slice, arterial_slice):
+    tscc_root = os.path.join(analysis_directory, 'TSCC Data')
+
+    if subtype is None or subtype == 'Max':
+        max_dir = os.path.join(tscc_root, 'Max')
+        npy_files = [
+            f for f in os.listdir(max_dir)
+            if f.endswith('.npy') and not f.startswith('.')
+        ]
+        if not npy_files:
+            raise FileNotFoundError(f"No .npy files found in {max_dir}.")
+        npy_files.sort()
+        filename = npy_files[0]
+        venous_slice, arterial_slice = _parse_tscc_filename(filename)
+        artery_type = _read_max_artery_type(analysis_directory) or 'Max'
+        path = os.path.join(max_dir, filename)
+    else:
+        if venous_slice is None or arterial_slice is None:
+            raise ValueError(
+                "Both venous and arterial slice indices are required for TSCC input functions."
+            )
+        filename = f'TSCC_slice_{venous_slice}_{arterial_slice}.npy'
+        path = os.path.join(tscc_root, subtype, filename)
+        artery_type = subtype
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Input function file not found: {path}")
+
+    curve = np.load(path)
+    metadata = {
+        'source': 'SSS',
+        'path': path,
+        'artery_subtype': artery_type,
+        'venous_slice': venous_slice,
+        'arterial_slice': arterial_slice,
+    }
+    return curve, metadata
+
+
+def _load_pure_input_function(analysis_directory, subtype, venous_slice, arterial_slice):
+    artery_root = os.path.join(analysis_directory, 'CTC Data', 'Artery')
+    if not os.path.isdir(artery_root):
+        raise FileNotFoundError(f"Artery directory not found: {artery_root}")
+
+    def available_slices(artery_dir):
+        slices = []
+        for fname in os.listdir(artery_dir):
+            match = re.match(r'CTC_slice_(\d+)\.npy$', fname)
+            if match:
+                slices.append((int(match.group(1)), fname))
+        return sorted(slices)
+
+    best_curve = None
+    best_metadata = None
+
+    if subtype is None or subtype == 'Max':
+        for current_subtype in os.listdir(artery_root):
+            artery_dir = os.path.join(artery_root, current_subtype)
+            if not os.path.isdir(artery_dir):
+                continue
+            for slice_idx, fname in available_slices(artery_dir):
+                path = os.path.join(artery_dir, fname)
+                curve = np.load(path)
+                peak = float(np.max(curve))
+                if best_curve is None or peak > best_metadata['peak']:
+                    best_curve = curve
+                    best_metadata = {
+                        'source': 'RICA',
+                        'path': path,
+                        'artery_subtype': current_subtype,
+                        'venous_slice': None,
+                        'arterial_slice': slice_idx,
+                        'peak': peak,
+                    }
+        if best_curve is None:
+            raise FileNotFoundError(
+                f"No arterial concentration curves found in {artery_root}."
+            )
+        metadata = best_metadata.copy()
+        metadata.pop('peak', None)
+        return best_curve, metadata
+
+    artery_dir = os.path.join(artery_root, subtype)
+    if not os.path.isdir(artery_dir):
+        raise FileNotFoundError(f"Artery subtype directory not found: {artery_dir}")
+
+    slices = available_slices(artery_dir)
+    if not slices:
+        raise FileNotFoundError(
+            f"No pure arterial curves available for subtype '{subtype}'."
+        )
+
+    if arterial_slice is None or str(arterial_slice).lower() == 'auto':
+        best_slice = None
+        best_curve = None
+        best_peak = None
+        for slice_idx, fname in slices:
+            path = os.path.join(artery_dir, fname)
+            curve = np.load(path)
+            peak = float(np.max(curve))
+            if best_peak is None or peak > best_peak:
+                best_slice = slice_idx
+                best_curve = curve
+                best_peak = peak
+                best_path = path
+        metadata = {
+            'source': 'RICA',
+            'path': best_path,
+            'artery_subtype': subtype,
+            'venous_slice': None,
+            'arterial_slice': best_slice,
+        }
+        return best_curve, metadata
+
+    try:
+        slice_idx = int(arterial_slice)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid arterial slice index '{arterial_slice}' for pure input function."
+        )
+
+    filename = f'CTC_slice_{slice_idx}.npy'
+    path = os.path.join(artery_dir, filename)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Input function file not found: {path}")
+
+    curve = np.load(path)
+    metadata = {
+        'source': 'RICA',
+        'path': path,
+        'artery_subtype': subtype,
+        'venous_slice': None,
+        'arterial_slice': slice_idx,
+    }
+    return curve, metadata
+
+
+def get_input_function_curve(analysis_directory, subtype='Max',
+                             venous_slice=None, arterial_slice=None):
+    """Load the selected arterial input function as configured.
+
+    Parameters
+    ----------
+    analysis_directory : str
+        Root analysis directory for the current dataset.
+    subtype : str, optional
+        Artery subtype requested by the user.  ``'Max'`` selects the default
+        time-shifted curve in SSS mode or the highest peak pure curve when the
+        pure arterial option is enabled.
+    venous_slice : str or int, optional
+        Venous slice index (used for time-shifted SSS curves).
+    arterial_slice : str or int, optional
+        Arterial slice index.  When ``None`` or ``'auto'`` in pure mode, the
+        slice with the highest peak is selected automatically.
+
+    Returns
+    -------
+    tuple
+        ``(curve, metadata)`` where *curve* is a NumPy array containing the
+        input function and *metadata* a dictionary describing the selection.
+    """
+
+    source = settings.INPUT_FUNCTION_SOURCE
+    if source == 'RICA':
+        return _load_pure_input_function(analysis_directory, subtype, venous_slice, arterial_slice)
+    return _load_shifted_input_function(analysis_directory, subtype, venous_slice, arterial_slice)
 

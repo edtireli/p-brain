@@ -11,7 +11,6 @@ from matplotlib.path import Path
 from collections import defaultdict
 from termcolor import colored
 from utils.mapping import *
-import glob
 import shutil
 import utils.settings as settings
 
@@ -147,6 +146,8 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
     num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
     gs = gridspec.GridSpec(3, num_rois, height_ratios=[1, 1.5, 1])
     fig = plt.figure(figsize=(20, 12))
+    input_curve, input_metadata = get_input_function_curve(analysis_directory)
+    input_curve_path = input_metadata.get('path')
     idx = 0
     for slice_index, roi_voxels_list in selected_voxels.items():
         for roi_num, roi_voxels in enumerate(roi_voxels_list):
@@ -166,15 +167,8 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
             baseline_point = find_baseline_point_advanced(avg_C_t_0) - 1
             avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
             
-            # Get Patlak data
-            max_dir = os.path.join(analysis_directory, 'TSCC Data', 'Max')
-            npy_files = [f for f in os.listdir(max_dir) if f.endswith('.npy') and not f.startswith('.')]
-            if not npy_files:
-                raise FileNotFoundError(f"No .npy files found in {max_dir}.")
-            max_file = npy_files[0]
-            chosen_venous_slice, chosen_arterial_slice = max_file.split('_')[2:4]
-            chosen_arterial_slice = chosen_arterial_slice.split('.')[0]
-            C_a = np.load(os.path.join(analysis_directory, 'TSCC Data', 'Max', f'TSCC_slice_{chosen_venous_slice}_{chosen_arterial_slice}.npy'))
+            # Get Patlak data using the configured input function
+            C_a = input_curve
             C_t = avg_C_t[0:len(C_a)]
             time_points = time_points_s[0:len(C_a)]
             Ki, lambda_, SD_Ki, x_patlak, y_patlak = patlak_analysis_plotting(C_t, C_a, time_points)
@@ -497,7 +491,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 with open(notes_path, 'a') as f:
                     f.write(correction_text)    
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
-                curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
+                curve_path2 = input_curve_path
                 while True:
                     editor = editor = ConcentrationCurveEditor(curve, curve_path2)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
@@ -515,7 +509,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                         with open(notes_path, 'a') as f:
                             f.write(correction_text)
                         curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
-                        curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
+                        curve_path2 = input_curve_path
                         while True:
                             editor = editor = ConcentrationCurveEditor(curve, curve_path2)
                             corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{slice_index+1}.npy')
@@ -564,7 +558,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
                 shutil.copy2(original_file_path, new_file_path)
                 curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')
-                curve_path2 = glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))[0]
+                curve_path2 = input_curve_path
                 while True:
                     editor = ConcentrationCurveEditor(curve, curve_path2)
                     corrected_curve_path = os.path.join(analysis_directory, 'CTC Data', 'Tissue', type, f'CTC_slice_{selected_slice_idx+1}.npy')

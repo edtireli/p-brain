@@ -52,6 +52,15 @@ TISSUE_DENSITY = float(os.environ.get("P_BRAIN_TISSUE_DENSITY", 1.04))
 HEMATOCRIT = float(os.environ.get("P_BRAIN_HEMATOCRIT", 0.42))
 PLASMA_DERIVED_AIF = os.environ.get("P_BRAIN_PLASMA_AIF", "0").lower() in {"1", "true", "yes"}
 
+# Select which input function to use when performing kinetic modelling. The
+# default ``SSS`` corresponds to the legacy behaviour where the superior
+# sagittal sinus curve is time shifted and rescaled to match the arterial
+# signal.  Setting ``P_BRAIN_INPUT_FUNCTION`` to ``RICA`` uses the pure
+# arterial concentration curve from the right internal carotid artery instead.
+INPUT_FUNCTION_SOURCE = os.environ.get("P_BRAIN_INPUT_FUNCTION", "SSS").strip().upper()
+if INPUT_FUNCTION_SOURCE not in {"SSS", "RICA"}:
+    INPUT_FUNCTION_SOURCE = "SSS"
+
 # When enabled, pick the regularisation weight automatically using an L-curve
 # search across ``AUTO_LAMBDA_CANDIDATES``.
 AUTO_LAMBDA = False
