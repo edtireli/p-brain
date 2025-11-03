@@ -133,6 +133,33 @@ def compute_brain_mask(t1_path):
     return mask.astype(bool)
 
 
+def _compute_mask_from_voxel_matrix(voxel_matrix):
+    """Derive a fallback brain mask directly from the acquisition series."""
+    if voxel_matrix is None:
+        return None
+
+    if voxel_matrix.ndim < 4:
+        return None
+
+    # Use the maximum intensity projection over time to capture all anatomy
+    summary_image = np.nanmax(voxel_matrix, axis=0)
+    summary_image = _normalise_image(summary_image)
+
+    non_zero = summary_image[summary_image > 0]
+    if non_zero.size == 0:
+        return None
+
+    threshold = threshold_otsu(non_zero)
+    mask = summary_image > threshold
+
+    mask = binary_closing(mask, ball(1))
+    mask = binary_opening(mask, ball(1))
+    mask = remove_small_objects(mask, 100)
+    mask = binary_dilation(mask, ball(1))
+
+    return mask.astype(bool)
+
+
 def load_brain_mask(analysis_directory, t1_path):
     """Load a cached brain mask or compute a new one if missing."""
     mask_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask.npy')
@@ -241,6 +268,32 @@ def _ensure_mask_matches_shape(brain_mask, expected_shape):
         return None
 
     return mask_array.astype(bool)
+
+
+def _resolve_brain_mask(brain_mask, voxel_matrix, mask_path, existing_source=None):
+    """Ensure the brain mask matches the voxel matrix, falling back if needed."""
+    mask_source = existing_source
+    if brain_mask is not None and mask_source is None:
+        mask_source = "t1"
+
+    if voxel_matrix is None:
+        return brain_mask, mask_source
+
+    ensured_mask = _ensure_mask_matches_shape(brain_mask, voxel_matrix.shape[1:])
+    if ensured_mask is not None:
+        return ensured_mask, mask_source or "t1"
+
+    fallback_mask = _compute_mask_from_voxel_matrix(voxel_matrix)
+    if fallback_mask is not None:
+        try:
+            os.makedirs(os.path.dirname(mask_path), exist_ok=True)
+            np.save(mask_path, fallback_mask)
+            print("Info: Brain mask recomputed from voxel data to match acquisition shape.")
+        except Exception:
+            pass
+        return fallback_mask, "voxel_matrix"
+
+    return None, None
 
 
 def fit_all_voxels(voxel_matrix, TI_values, IsVFA, brain_mask=None, **kwargs):
@@ -377,6 +430,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     voxel_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl')
     M0_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')
     T1_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')
+    mask_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask.npy')
     mask_meta_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask_meta.json')
 
     # Initialize alfas and TRs to default values (empty lists or None)
@@ -389,6 +443,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
 
     t1_path = os.path.join(nifti_directory, t1_3D_filename)
     brain_mask = load_brain_mask(analysis_directory, t1_path)
+    brain_mask_source = None
 
     mask_meta = {}
     if os.path.exists(mask_meta_path):
@@ -401,7 +456,9 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     voxel_matrix = None
     if voxel_matrix_exists:
         voxel_matrix = load_from_pickle(voxel_matrix_path)
-        brain_mask = _ensure_mask_matches_shape(brain_mask, voxel_matrix.shape[1:])
+        brain_mask, brain_mask_source = _resolve_brain_mask(
+            brain_mask, voxel_matrix, mask_path, brain_mask_source
+        )
 
     use_cached = voxel_matrix_exists and M0_matrix_exists and T1_matrix_exists
     if brain_mask is not None:
@@ -436,7 +493,9 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             # Build voxel matrix and fit VFA model
             if voxel_matrix is None:
                 voxel_matrix = build_voxel_matrix(vfa_data)
-            brain_mask = _ensure_mask_matches_shape(brain_mask, voxel_matrix.shape[1:])
+            brain_mask, brain_mask_source = _resolve_brain_mask(
+                brain_mask, voxel_matrix, mask_path, brain_mask_source
+            )
             M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, brain_mask=brain_mask, alfas=alfas, TRs=TRs)
 
         # Handling for IR
@@ -448,7 +507,9 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
                 if voxel_matrix is None:
                     voxel_matrix = build_voxel_matrix(dce_data)
-                brain_mask = _ensure_mask_matches_shape(brain_mask, voxel_matrix.shape[1:])
+                brain_mask, brain_mask_source = _resolve_brain_mask(
+                    brain_mask, voxel_matrix, mask_path, brain_mask_source
+                )
                 M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False, brain_mask=brain_mask)
             else:
                 # No fitting performed without IR or VFA data
@@ -471,7 +532,8 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             mask_applied = brain_mask is not None
             json.dump({
                 "masked": mask_applied,
-                "mask_shape": list(brain_mask.shape) if mask_applied else None
+                "mask_shape": list(brain_mask.shape) if mask_applied else None,
+                "mask_source": brain_mask_source if mask_applied else None
             }, mf)
 
 
