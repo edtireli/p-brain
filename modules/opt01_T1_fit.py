@@ -8,6 +8,9 @@ import json
 import matplotlib.pyplot as plt
 import multiprocessing
 import functools
+from skimage.filters import threshold_otsu
+from skimage.morphology import binary_closing, binary_opening, binary_dilation, ball
+from skimage.morphology import remove_small_objects
 from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
 from utils.fonts import *
 from utils.loading import *
@@ -81,6 +84,73 @@ def build_voxel_matrix(dce_data):
 
     return matrix
 
+# -----------------------------------------------------------------------------
+# Brain masking utilities
+# -----------------------------------------------------------------------------
+
+
+def _normalise_image(data):
+    """Normalise image intensities to [0, 1] while avoiding NaNs."""
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    finite_vals = data[np.isfinite(data)]
+    if finite_vals.size == 0:
+        return data
+    high_percentile = np.percentile(finite_vals, 99)
+    if high_percentile == 0:
+        return data
+    data = data / high_percentile
+    data[data > 1] = 1
+    data[data < 0] = 0
+    return data
+
+
+def compute_brain_mask(t1_path):
+    """Generate a crude brain mask from the provided T1 image."""
+    t1_img = nib.load(t1_path)
+    t1_data = t1_img.get_fdata()
+    t1_data = _normalise_image(t1_data)
+
+    non_zero = t1_data[t1_data > 0]
+    if non_zero.size == 0:
+        raise ValueError("T1 image appears to be empty; cannot compute brain mask.")
+
+    threshold = threshold_otsu(non_zero)
+    mask = t1_data > threshold
+
+    # Morphological operations to clean the mask
+    mask = binary_closing(mask, ball(2))
+    mask = binary_opening(mask, ball(1))
+    mask = remove_small_objects(mask, 500)
+    mask = binary_dilation(mask, ball(1))
+
+    return mask.astype(bool)
+
+
+def load_brain_mask(analysis_directory, t1_path):
+    """Load a cached brain mask or compute a new one if missing."""
+    mask_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask.npy')
+    brain_mask = None
+
+    if os.path.exists(mask_path):
+        try:
+            brain_mask = np.load(mask_path)
+        except Exception:
+            brain_mask = None
+
+    if brain_mask is None:
+        if not os.path.exists(t1_path):
+            print(f"Warning: T1 image missing at {t1_path}; cannot compute brain mask.")
+            return None
+        try:
+            brain_mask = compute_brain_mask(t1_path)
+            os.makedirs(os.path.dirname(mask_path), exist_ok=True)
+            np.save(mask_path, brain_mask)
+        except Exception as exc:
+            print(f"Warning: Unable to compute brain mask ({exc}). Proceeding without masking.")
+            brain_mask = None
+
+    return brain_mask
+
 # Variable flip angle not inversion recovery
 def model_function_VFA(alfas, TR, M0, R1):
     TR = np.array(TR)*1e3 #conversion to ms from s
@@ -142,7 +212,7 @@ def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
         return result.x[0], result.x[1]
     return result.x[0], result.x[2]
 
-def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
+def fit_all_voxels(voxel_matrix, TI_values, IsVFA, brain_mask=None, **kwargs):
     shape_x, shape_y, shape_z = voxel_matrix.shape[1:]
     total_voxels = shape_x * shape_y * shape_z
 
@@ -150,24 +220,41 @@ def fit_all_voxels(voxel_matrix, TI_values, IsVFA, **kwargs):
     alfas = kwargs.get('alfas')
     TRs = kwargs.get('TRs')
 
+    if brain_mask is not None:
+        mask_flat = np.asarray(brain_mask, dtype=bool).reshape(-1)
+        indices = np.where(mask_flat)[0]
+        voxels_to_fit = voxels[indices]
+    else:
+        indices = np.arange(total_voxels)
+        voxels_to_fit = voxels
+
     partial_fit = functools.partial(_fit_single, IsVFA=IsVFA, TI_values=TI_values, alfas=alfas, TRs=TRs)
 
     if MULTIPROCESSING:
         with multiprocessing.Pool(NUMBER_OF_CORES) as pool:
             with auto_logging_suppressed():
                 iterator = tqdm(
-                    pool.imap(partial_fit, voxels),
-                    total=total_voxels,
+                    pool.imap(partial_fit, voxels_to_fit),
+                    total=len(indices),
                     desc=" Fitting Voxel Matrix",
                 )
                 results = list(iterator)
     else:
         with auto_logging_suppressed():
-            iterator = tqdm(voxels, total=total_voxels, desc=" Fitting Voxel Matrix")
+            iterator = tqdm(voxels_to_fit, total=len(indices), desc=" Fitting Voxel Matrix")
             results = [partial_fit(v) for v in iterator]
 
-    M0_values = np.array([r[0] for r in results]).reshape(shape_x, shape_y, shape_z)
-    T1_values = np.array([r[1] for r in results]).reshape(shape_x, shape_y, shape_z)
+    M0_flat = np.full(total_voxels, np.nan)
+    T1_flat = np.full(total_voxels, np.nan)
+
+    fitted_M0 = np.array([r[0] for r in results])
+    fitted_T1 = np.array([r[1] for r in results])
+
+    M0_flat[indices] = fitted_M0
+    T1_flat[indices] = fitted_T1
+
+    M0_values = M0_flat.reshape(shape_x, shape_y, shape_z)
+    T1_values = T1_flat.reshape(shape_x, shape_y, shape_z)
     return M0_values, T1_values
 
 
@@ -178,6 +265,9 @@ def plot_histograms(M0_matrix, T1_matrix, image_directory):
             plt.close(event.canvas.figure)
     M0_values = M0_matrix.flatten()
     T1_values = T1_matrix.flatten()
+
+    M0_values = M0_values[np.isfinite(M0_values)]
+    T1_values = T1_values[np.isfinite(T1_values)]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -218,7 +308,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     fig, axes = plt.subplots(2, grid_size, figsize=(20, 6))
     for i in range(slices):
         ax = axes[0, i]
-        slice_data = T1_matrix[:, :, i]
+        slice_data = np.ma.masked_invalid(T1_matrix[:, :, i])
         im_t1 = ax.imshow(slice_data.T, cmap='viridis', origin='lower')
         ax.axis('off')
         ax.set_title(f'Slice {i+1}')
@@ -227,7 +317,7 @@ def plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory):
     cbar_t1.set_label('Longitudinal (T1) Relaxation Time [ms]', fontproperties=prop, fontsize=9) 
     for i in range(slices):
         ax = axes[1, i]
-        slice_data = M0_matrix[:, :, i]
+        slice_data = np.ma.masked_invalid(M0_matrix[:, :, i])
         im_m0 = ax.imshow(slice_data.T, cmap='plasma', origin='lower')
         ax.axis('off')
     cbar_ax_m0 = fig.add_axes([0.92, 0.15, 0.01, 0.3])
@@ -244,11 +334,12 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     _, IsVFA, IsIR, _, _, _, _ = parameters
     t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
-    
+
     voxel_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl')
     M0_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')
     T1_matrix_path = os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')
-    
+    mask_meta_path = os.path.join(analysis_directory, 'Fitting', 'brain_mask_meta.json')
+
     # Initialize alfas and TRs to default values (empty lists or None)
     alfas = []
     TRs = []
@@ -257,11 +348,28 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     M0_matrix_exists = os.path.exists(M0_matrix_path)
     T1_matrix_exists = os.path.exists(T1_matrix_path)
 
+    t1_path = os.path.join(nifti_directory, t1_3D_filename)
+    brain_mask = load_brain_mask(analysis_directory, t1_path)
+
+    mask_meta = {}
+    if os.path.exists(mask_meta_path):
+        try:
+            with open(mask_meta_path, 'r') as mf:
+                mask_meta = json.load(mf)
+        except Exception:
+            mask_meta = {}
+
     voxel_matrix = None
     if voxel_matrix_exists:
         voxel_matrix = load_from_pickle(voxel_matrix_path)
 
-    if voxel_matrix_exists and M0_matrix_exists and T1_matrix_exists:
+    use_cached = voxel_matrix_exists and M0_matrix_exists and T1_matrix_exists
+    if brain_mask is not None:
+        use_cached = use_cached and mask_meta.get("masked", False)
+    else:
+        use_cached = use_cached and not mask_meta.get("masked", False)
+
+    if use_cached:
         M0_matrix = load_from_pickle(M0_matrix_path)
         T1_matrix = load_from_pickle(T1_matrix_path)
     else:
@@ -288,7 +396,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             # Build voxel matrix and fit VFA model
             if voxel_matrix is None:
                 voxel_matrix = build_voxel_matrix(vfa_data)
-            M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, alfas=alfas, TRs=TRs)
+            M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, brain_mask=brain_mask, alfas=alfas, TRs=TRs)
 
         # Handling for IR
         if not IsVFA:
@@ -299,14 +407,31 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
                 if voxel_matrix is None:
                     voxel_matrix = build_voxel_matrix(dce_data)
-                M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
+                M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False, brain_mask=brain_mask)
+            else:
+                # No fitting performed without IR or VFA data
+                if voxel_matrix is not None:
+                    shape = voxel_matrix.shape[1:]
+                elif brain_mask is not None:
+                    shape = brain_mask.shape
+                else:
+                    raise RuntimeError("Unable to determine volume shape for T1/M0 outputs.")
+                M0_matrix = np.full(shape, np.nan)
+                T1_matrix = np.full(shape, np.nan)
 
         save_as_pickle(M0_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl'))
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
         if not voxel_matrix_exists:
             save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
 
+        os.makedirs(os.path.dirname(mask_meta_path), exist_ok=True)
+        with open(mask_meta_path, 'w') as mf:
+            json.dump({
+                "masked": brain_mask is not None,
+                "mask_shape": list(brain_mask.shape) if brain_mask is not None else None
+            }, mf)
 
-    
-    plot_histograms(M0_matrix, T1_matrix, image_directory) 
+
+
+    plot_histograms(M0_matrix, T1_matrix, image_directory)
     plot_brain_slices_grid(M0_matrix, T1_matrix, image_directory)
