@@ -253,11 +253,18 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     alfas = []
     TRs = []
 
-    if os.path.exists(voxel_matrix_path):
+    voxel_matrix_exists = os.path.exists(voxel_matrix_path)
+    M0_matrix_exists = os.path.exists(M0_matrix_path)
+    T1_matrix_exists = os.path.exists(T1_matrix_path)
+
+    voxel_matrix = None
+    if voxel_matrix_exists:
         voxel_matrix = load_from_pickle(voxel_matrix_path)
+
+    if voxel_matrix_exists and M0_matrix_exists and T1_matrix_exists:
         M0_matrix = load_from_pickle(M0_matrix_path)
         T1_matrix = load_from_pickle(T1_matrix_path)
-    else:    
+    else:
         # Handling for VFA
         IsVFA = False
         if IsVFA:
@@ -279,22 +286,25 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                     print(f"Warning: File not found: {file_path}")
             
             # Build voxel matrix and fit VFA model
-            voxel_matrix = build_voxel_matrix(vfa_data)
+            if voxel_matrix is None:
+                voxel_matrix = build_voxel_matrix(vfa_data)
             M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, alfas=alfas, TRs=TRs)
-        
+
         # Handling for IR
         if not IsVFA:
-            if IsIR: 
+            if IsIR:
                 TI = ['00120', '00300', '00600', '01000', '02000', '04000', '10000']
                 TI_values = [int(times) for times in TI]
                 patterns = ['WIPTI_', 'WIPDelRec-TI_']
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
-                voxel_matrix = build_voxel_matrix(dce_data)
+                if voxel_matrix is None:
+                    voxel_matrix = build_voxel_matrix(dce_data)
                 M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
 
         save_as_pickle(M0_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl'))
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
-        save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
+        if not voxel_matrix_exists:
+            save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
 
 
     
