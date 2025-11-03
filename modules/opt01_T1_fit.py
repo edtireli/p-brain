@@ -11,7 +11,7 @@ import functools
 from skimage.filters import threshold_otsu
 from skimage.morphology import binary_closing, binary_opening, binary_dilation, ball
 from skimage.morphology import remove_small_objects
-from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES
+from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES, T1_RECOVERY_MODEL
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
@@ -211,6 +211,17 @@ def model_residuals_ir(params, TIs, voxel_values):
     return model_function_ir(TIs, A, B, T1) - voxel_values
 
 
+def model_function_sr(TIs, M0, T1):
+    """Saturation recovery model following M0 * (1 - exp(-TI / T1))."""
+    TIs_array = np.asarray(TIs, dtype=float)
+    return M0 * (1 - np.exp(-TIs_array / T1))
+
+
+def model_residuals_sr(params, TIs, voxel_values):
+    M0, T1 = params
+    return model_function_sr(TIs, M0, T1) - voxel_values
+
+
 def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
     if max(voxel_values) == 0:
         return (0.0, 0.0)
@@ -231,20 +242,32 @@ def _fit_single(voxel_values, IsVFA, TI_values, alfas, TRs):
         max_signal = float(np.max(voxel_values))
         if max_signal <= 0:
             return (0.0, 0.0)
-        initial_A = max_signal
-        initial_B = 2 * max_signal
-        initial_T1 = 750
-        bounds = ([1e-6, 1e-6, 100], [np.inf, np.inf, 6000])
-        result = least_squares(
-            model_residuals_ir,
-            [initial_A, initial_B, initial_T1],
-            args=(TI_values, voxel_values),
-            bounds=bounds,
-            method="trf",
-        )
-    if IsVFA:
-        return result.x[0], result.x[1]
-    return result.x[0], result.x[2]
+        if T1_RECOVERY_MODEL == "saturation":
+            initial_M0 = max_signal
+            initial_T1 = 750
+            bounds = ([1e-6, 100], [np.inf, 6000])
+            result = least_squares(
+                model_residuals_sr,
+                [initial_M0, initial_T1],
+                args=(TI_values, voxel_values),
+                bounds=bounds,
+                method="trf",
+            )
+            return result.x[0], result.x[1]
+        else:
+            initial_A = max_signal
+            initial_B = 2 * max_signal
+            initial_T1 = 750
+            bounds = ([1e-6, 1e-6, 100], [np.inf, np.inf, 6000])
+            result = least_squares(
+                model_residuals_ir,
+                [initial_A, initial_B, initial_T1],
+                args=(TI_values, voxel_values),
+                bounds=bounds,
+                method="trf",
+            )
+            return result.x[0], result.x[2]
+    return result.x[0], result.x[1]
 
 def _ensure_mask_matches_shape(brain_mask, expected_shape):
     """Return a boolean mask if the shape matches, otherwise ``None``."""
