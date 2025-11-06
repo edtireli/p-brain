@@ -20,6 +20,12 @@ spec_km.loader.exec_module(km)
 extended_tofts_tikhonov = km.extended_tofts_tikhonov
 residue_metrics = km.residue_metrics
 residue_to_cbf = km.residue_to_cbf
+construct_convolution_matrix = km.construct_convolution_matrix
+
+if hasattr(np, "trapezoid"):
+    _trapezoid = np.trapezoid
+else:  # pragma: no cover - legacy NumPy fallback
+    _trapezoid = np.trapz
 
 spec_ai = importlib.util.spec_from_file_location('modules.AI_tissue_functions', os.path.join(ROOT, 'modules', 'AI_tissue_functions.py'), submodule_search_locations=[os.path.join(ROOT, 'modules')])
 ai = importlib.util.module_from_spec(spec_ai)
@@ -40,7 +46,7 @@ def synthetic_data():
     vp = 0.05
     conv = np.zeros_like(t)
     for i in range(len(t)):
-        integ = np.trapz(aif[:i + 1] * np.exp(-(t[i] - t[:i + 1]) * Ktrans / ve), x=t[:i + 1])
+        integ = _trapezoid(aif[:i + 1] * np.exp(-(t[i] - t[:i + 1]) * Ktrans / ve), x=t[:i + 1])
         conv[i] = integ
     tissue = Ktrans * conv + vp * aif
     noise = 0.01 * np.random.randn(*tissue.shape)
@@ -129,3 +135,41 @@ def test_residue_to_cbf_scaling():
     value = residue_to_cbf(0.002)
     expected = max(0.002 * 6000.0 / 1.04, 0.0)
     assert np.isclose(value, expected)
+
+
+def test_construct_convolution_matrix_trapezoid():
+    ca = np.array([2.0, 4.0, 6.0, 8.0])
+    dt = 2.0
+    A = construct_convolution_matrix(ca, dt)
+    assert np.allclose(A[0], np.zeros_like(A[0]))
+    assert np.isclose(A[1, 0], 0.5 * dt * ca[1])
+    assert np.isclose(A[1, 1], 0.5 * dt * ca[0])
+    assert np.isclose(A[3, 1], dt * ca[2])
+
+
+def test_existing_tikhonov_normalises_impulse():
+    dt = 1.0
+    t = np.arange(0.0, 40.0, dt)
+    ca = np.exp(-t / 7.0)
+    impulse = 3.5 * np.exp(-t / 9.0)
+    A = construct_convolution_matrix(ca, dt)
+    ct = A @ impulse
+
+    result = ai._existing_tikhonov_metrics(
+        ct,
+        ca,
+        t,
+        auto_lambda=False,
+        auto_lambda_value=None,
+        lambd_default=0.1,
+    )
+
+    assert result["impulse_response"] is not None
+    assert result["impulse_response"][0] > 0.0
+    assert np.isclose(result["residue"][0], 1.0, rtol=1e-6)
+    impulse_est = result["impulse_response"]
+    residue = result["residue"]
+    expected_residue = impulse_est / impulse_est[0]
+    assert np.allclose(residue[:5], expected_residue[:5], rtol=0.05, atol=1e-6)
+    assert result["xcorr_shift_samples"] == 0
+    assert result["xcorr_lag_samples"] == 0
