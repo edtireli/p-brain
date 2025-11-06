@@ -50,8 +50,8 @@ class MapJob:
 MAP_JOBS: Sequence[MapJob] = (
     MapJob("CBF_per_voxel_tikhonov", "cbf_montage", 0.0, 30.0),
     MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage", 0.0, 30.0),
-    MapJob("mtt_map", "mtt_montage", 0.0, 0.02),
-    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", 0.0, 0.02),
+    MapJob("mtt_map", "mtt_montage", 0.0, 8),
+    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", 0.0, 8),
     MapJob("cth_map", "cth_montage", 0.0, 3.0),
     MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", 0.0, 3.0),
     MapJob("Ki_per_voxel", "ki_voxel_montage", -0.1, 0.15),
