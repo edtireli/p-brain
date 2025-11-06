@@ -797,13 +797,13 @@ def _build_normalizer(
             mask &= data > EPS
         finite_vals = data[mask]
         if finite_vals.size:
-            vmin = float(np.nanmin(finite_vals))
-            vmax = float(np.nanmax(finite_vals))
+            vmin, vmax = _robust_bounds(finite_vals)
         else:
             vmin, vmax = 0.0, 1.0
 
     if vmax <= vmin:
-        vmax = vmin + (abs(vmin) if vmin != 0 else 1.0)
+        padding = abs(vmin) if vmin != 0 else 1.0
+        vmax = vmin + padding
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
@@ -820,16 +820,29 @@ def _build_projection_normalizer(
     if finite_vals.size == 0:
         raise ValueError("Projection map contains no finite values for colour scaling")
 
-    vmin = float(np.nanmin(finite_vals))
-    vmax = float(np.nanmax(finite_vals))
-
-    if np.isclose(vmin, vmax):
-        padding = abs(vmin) if vmin != 0 else 1.0
-        vmin -= padding * 0.5
-        vmax += padding * 0.5
+    vmin, vmax = _robust_bounds(finite_vals)
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
+
+
+def _robust_bounds(values: np.ndarray, lower_q: float = 2.0, upper_q: float = 98.0) -> tuple[float, float]:
+    """Return percentile-based limits that are resilient to outliers."""
+
+    lo = float(np.nanpercentile(values, lower_q))
+    hi = float(np.nanpercentile(values, upper_q))
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo = float(np.nanmin(values))
+        hi = float(np.nanmax(values))
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        center = lo
+        padding = abs(center) if center != 0 else 1.0
+        lo = center - padding * 0.5
+        hi = center + padding * 0.5
+
+    return lo, hi
 
 
 def _round_bounds(lo: float, hi: float) -> tuple[float, float]:
