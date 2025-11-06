@@ -24,6 +24,27 @@ def _load_montage_dependencies():
     )
 
 
+def _prepare_projection_stats(data_root: str):
+    """Return cached atlas statistics for projection montages."""
+
+    try:
+        deps = _load_montage_dependencies()
+    except ImportError as exc:  # pragma: no cover - import side effect
+        raise RuntimeError(f"Unable to import montage dependencies: {exc}") from exc
+
+    build_population_projection_stats = None
+    if len(deps) >= 4:
+        build_population_projection_stats = deps[3]
+
+    if build_population_projection_stats is None:
+        return None
+
+    return build_population_projection_stats(
+        data_root,
+        include_controls=bool(settings.CONTROLS),
+    )
+
+
 def _resolve_dataset_root(data_root, dataset_id, is_control):
     """Return the filesystem path for ``dataset_id``."""
 
@@ -286,27 +307,15 @@ def main():
         print("No datasets found to process.")
         sys.exit(0)
 
+    projection_stats = None
+    if args.projection:
+        try:
+            projection_stats = _prepare_projection_stats(data_directory)
+        except RuntimeError as exc:
+            print(f"[projection] {exc}")
+            sys.exit(1)
+
     if args.montage:
-        projection_stats = None
-        if args.projection:
-            try:
-                deps = _load_montage_dependencies()
-            except ImportError as exc:
-                print(f"[projection] Unable to import montage dependencies: {exc}")
-                sys.exit(1)
-
-            build_population_projection_stats = None
-            if len(deps) >= 4:
-                build_population_projection_stats = deps[3]
-
-            if build_population_projection_stats is not None:
-                projection_stats = build_population_projection_stats(
-                    data_directory,
-                    include_controls=bool(settings.CONTROLS),
-                )
-            else:
-                projection_stats = None
-
         exit_code = 0
         for dataset_id, is_control in datasets:
             success = _run_montage_for_dataset(
@@ -333,7 +342,21 @@ def main():
         else:
             env.pop("PBRAIN_CONTROLS", None)
         print(f"Running: {command}")
-        subprocess.run(command, shell=True, env=env)
+        result = subprocess.run(command, shell=True, env=env)
+        if result.returncode != 0:
+            print(
+                f"[montage] Skipping montage rendering for {dataset_id} "
+                f"due to pipeline failure (exit code {result.returncode})."
+            )
+            continue
+
+        _run_montage_for_dataset(
+            data_directory,
+            dataset_id,
+            is_control,
+            use_projection=args.projection,
+            projection_stats=projection_stats,
+        )
 
 
 if __name__ == "__main__":
