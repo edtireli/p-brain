@@ -1,4 +1,0 @@
-Metric,n_control,n_patient,coef (pat−ctl),p_adj,R2
-gCMRO2_norm,47,44,,,0.030894242153885032
-gCBF_norm,47,44,,,0.035769557149217146
-Lactate,44,21,,,0.11103752044182003
