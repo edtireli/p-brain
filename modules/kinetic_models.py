@@ -5,12 +5,18 @@ from scipy.special import gamma as gamma_function
 import utils.settings as settings
 
 
+if hasattr(np, "trapezoid"):
+    _trapezoid = np.trapezoid
+else:  # pragma: no cover - legacy NumPy fallback
+    _trapezoid = np.trapz
+
+
 def extended_tofts_model(t, Ktrans, ve, vp, Cp):
     """Basic extended Tofts implementation used for the two-compartment model."""
     integrand = np.zeros_like(t)
     for i in range(len(t)):
         min_len = min(len(Cp[:i+1]), len(t[:i+1]))
-        integral = np.trapz(Cp[:min_len] * np.exp(-(t[i] - t[:min_len]) * Ktrans / ve), x=t[:min_len])
+        integral = _trapezoid(Cp[:min_len] * np.exp(-(t[i] - t[:min_len]) * Ktrans / ve), x=t[:min_len])
         integrand[i] = integral
     min_len = min(len(integrand), len(Cp))
     return Ktrans * integrand[:min_len] + vp * Cp[:min_len]
@@ -18,7 +24,7 @@ def extended_tofts_model(t, Ktrans, ve, vp, Cp):
 
 
 def construct_convolution_matrix(C_a, delta_t):
-    """Build a Toeplitz convolution matrix discretising the Volterra integral."""
+    """Build a Toeplitz convolution matrix using trapezoidal quadrature."""
 
     C_a = np.asarray(C_a, dtype=float).reshape(-1)
     delta_t = float(delta_t)
@@ -29,6 +35,11 @@ def construct_convolution_matrix(C_a, delta_t):
     A = np.zeros((n, n), dtype=float)
     for i in range(n):
         A[i, : i + 1] = C_a[i::-1] * delta_t
+        if i == 0:
+            A[i, 0] = 0.0
+        else:
+            A[i, 0] *= 0.5
+            A[i, i] *= 0.5
     return A
 
 
@@ -54,7 +65,7 @@ def _prepare_penalty_matrix(size, penalty):
 
 
 def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
-    """Solve ``A r = C_t`` with Tikhonov regularisation.
+    r"""Solve ``A r = C_t`` with Tikhonov regularisation.
 
     Parameters
     ----------
@@ -83,17 +94,17 @@ def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
     return np.linalg.solve(regularised, rhs)
 
 
-def residue_to_cbf(residue0, rho_tissue=1.04, hematocrit=None, aif_type="whole_blood"):
-    """CBF in mL/100 g/min from r(0).
+def residue_to_cbf(impulse0, rho_tissue=1.04, hematocrit=None, aif_type="whole_blood"):
+    """CBF in mL/100 g/min from the impulse response at t=0.
 
-    Inputs are residue r(t) from deconvolution with:
+    Inputs are impulse-response samples g(t) from deconvolution with:
       - AIF in plasma concentration [mM]
       - Tissue curve in [mM]
       - Time step in seconds
     If AIF is plasma, convert to whole-blood flow using (1 - Hct).
     """
 
-    r0 = float(residue0)
+    r0 = float(impulse0)
     scale = 1.0
     if aif_type == "plasma":
         if hematocrit is None:
@@ -104,9 +115,15 @@ def residue_to_cbf(residue0, rho_tissue=1.04, hematocrit=None, aif_type="whole_b
 
 
 def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
-    """CTH (capillary transit time heterogeneity) measures the spread of capillary transit times in seconds.
-    It is defined as the standard deviation of the transit time distribution h(t) derived from the residue r(t).
-    MTT = ∫ r(t) dt,  h(t) = -dr/dt normalized to unit area,  CTH = sqrt( ∫ (t - μ)^2 h(t) dt ),  μ = ∫ t h(t) dt.
+    r"""Return MTT/CTH statistics from a unit-normalised residue.
+
+    MTT is computed as :math:`\int r(t)\,dt`, while the capillary transit time
+    density :math:`h(t)` is formed via :math:`h(t) = -r'(t)` and re-normalised
+    to unit area before its moments are evaluated. ``enforce_nonneg`` and
+    ``enforce_monotone`` project the supplied residue onto the nearest
+    non-negative, non-increasing curve; the stabilisation slightly perturbs the
+    resulting moments and is therefore documented explicitly for downstream
+    consumers.
     """
 
     residue = np.asarray(residue, dtype=float).reshape(-1)
@@ -119,19 +136,17 @@ def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
     if enforce_monotone:
         working = np.minimum.accumulate(working)
 
-    # np.trapezoid was introduced in newer NumPy releases; np.trapz provides
-    # the same functionality and is available in older versions as well.
-    mtt = float(np.trapz(working, dx=dt))
+    mtt = float(_trapezoid(working, dx=dt))
 
     h = np.maximum(0.0, -np.gradient(working, dt, edge_order=2))
-    s = float(np.trapz(h, dx=dt))
+    s = float(_trapezoid(h, dx=dt))
     if s <= 0.0:
         return mtt, np.nan, np.full_like(working, np.nan), np.nan
 
     h /= s
     time = np.arange(working.size, dtype=float) * dt
-    mu = float(np.trapz(time * h, dx=dt))
-    variance = float(np.trapz(((time - mu) ** 2) * h, dx=dt))
+    mu = float(_trapezoid(time * h, dx=dt))
+    variance = float(_trapezoid(((time - mu) ** 2) * h, dx=dt))
     cth = float(np.sqrt(max(variance, 0.0)))
 
     return mtt, cth, h, mu

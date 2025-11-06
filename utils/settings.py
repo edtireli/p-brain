@@ -59,6 +59,10 @@ TISSUE_DENSITY = float(os.environ.get("P_BRAIN_TISSUE_DENSITY", 1.04))
 HEMATOCRIT = float(os.environ.get("P_BRAIN_HEMATOCRIT", 0.42))
 PLASMA_DERIVED_AIF = os.environ.get("P_BRAIN_PLASMA_AIF", "0").lower() in {"1", "true", "yes"}
 
+# Optional voxelwise delay alignment prior to deconvolution
+ALIGN_AIF_BY_XCORR = os.environ.get("P_BRAIN_ALIGN_AIF", "0").lower() in {"1", "true", "yes"}
+ALIGN_AIF_MAX_SHIFT_S = float(os.environ.get("P_BRAIN_ALIGN_AIF_MAX_SHIFT", 4.0))
+
 # Select which input function to use when performing kinetic modelling. The
 # default ``SSS`` corresponds to the legacy behaviour where the superior
 # sagittal sinus curve is time shifted and rescaled to match the arterial
@@ -250,6 +254,8 @@ def save_run_settings(analysis_directory, parameters):
         "WRITE_CTH": WRITE_CTH,
         "CTH_MTT_METHOD": CTH_MTT_METHOD,
         "CTH_MTT_GAMMA_VOXELWISE": CTH_MTT_GAMMA_VOXELWISE,
+        "ALIGN_AIF_BY_XCORR": ALIGN_AIF_BY_XCORR,
+        "ALIGN_AIF_MAX_SHIFT_S": ALIGN_AIF_MAX_SHIFT_S,
     })
     if AUTO_LAMBDA:
         settings["AUTO_LAMBDA_VALUE"] = AUTO_LAMBDA_VALUE
@@ -314,6 +320,8 @@ def save_runtime_metadata(analysis_directory, *, extra_environment_keys=None):
         "PBRAIN_TURBO",
         "P_BRAIN_CTH_MTT_METHOD",
         "P_BRAIN_CTH_MTT_GAMMA_VOXELWISE",
+        "P_BRAIN_ALIGN_AIF",
+        "P_BRAIN_ALIGN_AIF_MAX_SHIFT",
     ]
     if extra_environment_keys:
         env_keys.extend(k for k in extra_environment_keys if k not in env_keys)

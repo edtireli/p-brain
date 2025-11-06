@@ -53,6 +53,64 @@ logger = logging.getLogger(__name__)
 if os.getenv("FORCE_RECREATE_MASKS", "0").lower() in {"1", "true", "yes"}:
     force_recreate_masks = True
 
+def _estimate_aif_shift(tissue_curve, arterial_curve, max_shift_samples):
+    """Return the sample shift (applied to the AIF) that maximises alignment."""
+
+    if max_shift_samples <= 0:
+        return 0, 0
+
+    tissue = np.asarray(tissue_curve, dtype=float)
+    arterial = np.asarray(arterial_curve, dtype=float)
+    n = min(tissue.size, arterial.size)
+    if n < 2:
+        return 0, 0
+
+    tissue = tissue[:n]
+    arterial = arterial[:n]
+    if not (np.all(np.isfinite(tissue)) and np.all(np.isfinite(arterial))):
+        return 0, 0
+
+    tissue_zero = tissue - tissue.mean()
+    arterial_zero = arterial - arterial.mean()
+    if np.allclose(tissue_zero, 0.0) or np.allclose(arterial_zero, 0.0):
+        return 0, 0
+
+    corr = np.correlate(tissue_zero, arterial_zero, mode="full")
+    lags = np.arange(-n + 1, n, dtype=int)
+    limit = int(max_shift_samples)
+    if limit <= 0:
+        return 0, 0
+    mask = (lags >= -limit) & (lags <= limit)
+    if not np.any(mask):
+        return 0, 0
+
+    masked_corr = corr[mask]
+    masked_lags = lags[mask]
+    best_idx = np.argmax(masked_corr)
+    lag = int(masked_lags[best_idx])
+    # ``lag`` reports how much the tissue needs to be shifted relative to the
+    # arterial curve.  We return the opposite so that the caller can shift the
+    # AIF instead of re-sampling every tissue voxel.
+    shift = -lag
+    return shift, lag
+
+
+def _shift_with_zeros(arr, shift):
+    """Shift ``arr`` by ``shift`` samples, padding with zeros rather than wrapping."""
+
+    arr = np.asarray(arr, dtype=float)
+    if shift == 0 or arr.size == 0:
+        return arr.copy()
+
+    result = np.zeros_like(arr)
+    if shift > 0:
+        result[shift:] = arr[:-shift]
+    else:
+        shift = -shift
+        result[: arr.size - shift] = arr[shift:]
+    return result
+
+
 def _get_first_npy(folder):
     npy_files = [f for f in os.listdir(folder) if f.endswith('.npy') and not f.startswith('.')]
     if not npy_files:
@@ -92,8 +150,10 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
     fit_curve = extended_tofts_model(time_array, Ktrans, ve, vp, aif)
     delta_t = float(np.diff(time_array)[0])
     A = construct_convolution_matrix(aif, delta_t)
-    residue = tikhonov_regularization(A, tissue_curve, lambd, penalty=penalty)
-    cbf = residue_to_cbf(residue[0], aif_type="plasma", hematocrit=0.42)
+    impulse = tikhonov_regularization(A, tissue_curve, lambd, penalty=penalty)
+    g0 = float(impulse[0]) if impulse.size else float("nan")
+    cbf = residue_to_cbf(g0, aif_type="plasma", hematocrit=0.42)
+    residue = impulse / g0 if np.isfinite(g0) and g0 > 0 else np.full_like(impulse, np.nan)
 
     if return_residue:
         return Ki, lam, SD_Ki, fit_curve, residue, cbf
@@ -113,6 +173,10 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": 0,
+            "xcorr_lag_samples": 0,
+            "xcorr_shift_seconds": 0.0,
         }
 
     n = min(len(C_t), len(C_a), len(t))
@@ -124,6 +188,10 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": 0,
+            "xcorr_lag_samples": 0,
+            "xcorr_shift_seconds": 0.0,
         }
 
     C_t_use = np.asarray(C_t[:n], dtype=float)
@@ -140,6 +208,10 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": 0,
+            "xcorr_lag_samples": 0,
+            "xcorr_shift_seconds": 0.0,
         }
 
     deltas = np.diff(t_use)
@@ -152,14 +224,26 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": 0,
+            "xcorr_lag_samples": 0,
+            "xcorr_shift_seconds": 0.0,
         }
 
     delta_t = float(deltas[0])
     lambd = (auto_lambda_value if auto_lambda and auto_lambda_value is not None
              else lambd_default)
 
+    shift_applied = 0
+    xcorr_lag = 0
+    if settings.ALIGN_AIF_BY_XCORR:
+        max_shift_samples = int(np.floor(settings.ALIGN_AIF_MAX_SHIFT_S / delta_t))
+        shift_applied, xcorr_lag = _estimate_aif_shift(C_t_use, C_a_use, max_shift_samples)
+        if shift_applied:
+            C_a_use = _shift_with_zeros(C_a_use, shift_applied)
+
     try:
-        residue = km_tikhonov_regularization(
+        impulse = km_tikhonov_regularization(
             km_construct_convolution_matrix(C_a_use, delta_t),
             C_t_use,
             lambd,
@@ -172,9 +256,13 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": shift_applied,
+            "xcorr_lag_samples": xcorr_lag,
+            "xcorr_shift_seconds": shift_applied * delta_t,
         }
 
-    if residue.size == 0:
+    if impulse.size == 0:
         return {
             "cbf": float("nan"),
             "mtt": float("nan"),
@@ -182,15 +270,28 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             "residue": None,
             "delta_t": None,
             "h": None,
+            "impulse_response": None,
+            "xcorr_shift_samples": shift_applied,
+            "xcorr_lag_samples": xcorr_lag,
+            "xcorr_shift_seconds": shift_applied * delta_t,
         }
 
+    g0 = float(impulse[0])
     cbf_val = residue_to_cbf(
-        residue[0],
+        g0,
         rho_tissue=settings.TISSUE_DENSITY,
         hematocrit=settings.HEMATOCRIT,
         aif_type="plasma",
     )
-    mtt_val, cth_val, h, _ = residue_metrics(residue, delta_t)
+
+    if not np.isfinite(g0) or g0 <= 0.0:
+        residue = np.full_like(impulse, np.nan)
+        mtt_val = float("nan")
+        cth_val = float("nan")
+        h = None
+    else:
+        residue = impulse / g0
+        mtt_val, cth_val, h, _ = residue_metrics(residue, delta_t)
 
     cbf = float(cbf_val) if np.isfinite(cbf_val) else float("nan")
     mtt = float(mtt_val) if np.isfinite(mtt_val) else float("nan")
@@ -203,6 +304,10 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
         "residue": residue,
         "delta_t": delta_t,
         "h": h,
+        "impulse_response": impulse,
+        "xcorr_shift_samples": shift_applied,
+        "xcorr_lag_samples": xcorr_lag,
+        "xcorr_shift_seconds": shift_applied * delta_t,
     }
 
 
