@@ -29,8 +29,8 @@ class MapJob:
 
     base: str
     output_base: str
-    vmin: float
-    vmax: float
+    vmin: float | None = None
+    vmax: float | None = None
     cmap_name: str = "specthl"
     mask_zero: bool = False
     output_ext: str = ".png"
@@ -48,16 +48,16 @@ class MapJob:
 
 
 MAP_JOBS: Sequence[MapJob] = (
-    MapJob("CBF_per_voxel_tikhonov", "cbf_montage", 0.0, 30.0),
-    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage", 0.0, 30.0),
-    MapJob("mtt_map", "mtt_montage", 0.0, 8),
-    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", 0.0, 8),
-    MapJob("cth_map", "cth_montage", 0.0, 3.0),
-    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", 0.0, 3.0),
-    MapJob("Ki_per_voxel", "ki_voxel_montage", -0.1, 0.15),
-    MapJob("Ki_map_atlas", "ki_atlas_montage", -0.1, 0.15),
-    MapJob("vp_map_atlas", "vp_atlas_montage", 0.0, 3.0),
-    MapJob("vp_per_voxel", "vp_per_voxel", 0.0, 3.0, mask_zero=True, output_ext=".png"),
+    MapJob("CBF_per_voxel_tikhonov", "cbf_montage"),
+    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage"),
+    MapJob("mtt_map", "mtt_montage"),
+    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage"),
+    MapJob("cth_map", "cth_montage"),
+    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage"),
+    MapJob("Ki_per_voxel", "ki_voxel_montage"),
+    MapJob("Ki_map_atlas", "ki_atlas_montage"),
+    MapJob("vp_map_atlas", "vp_atlas_montage"),
+    MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png"),
 )
 
 MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
@@ -788,8 +788,8 @@ def _render_projection_montage(
 def _build_normalizer(
     data: np.ndarray, job: MapJob
 ) -> tuple[mpl.colors.Normalize, list[float]]:
-    vmin = float(job.vmin)
-    vmax = float(job.vmax)
+    vmin = float(job.vmin) if job.vmin is not None else np.nan
+    vmax = float(job.vmax) if job.vmax is not None else np.nan
 
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         mask = np.isfinite(data)
