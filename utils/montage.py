@@ -58,6 +58,18 @@ MAP_JOBS: Sequence[MapJob] = (
     MapJob("Ki_map_atlas", "ki_atlas_montage"),
     MapJob("vp_map_atlas", "vp_atlas_montage"),
     MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png"),
+    MapJob("fa_map", "fa_montage", vmin=0.0, vmax=1.0),
+    MapJob("fa_map_atlas", "fa_parcel_montage", vmin=0.0, vmax=1.0),
+    MapJob("md_map", "md_montage"),
+    MapJob("md_map_atlas", "md_parcel_montage"),
+    MapJob("ad_map", "ad_montage"),
+    MapJob("ad_map_atlas", "ad_parcel_montage"),
+    MapJob("rd_map", "rd_montage"),
+    MapJob("rd_map_atlas", "rd_parcel_montage"),
+    MapJob("mo_map", "mo_montage"),
+    MapJob("mo_map_atlas", "mo_parcel_montage"),
+    MapJob("tensor_residual_map", "tensor_residual_montage"),
+    MapJob("tensor_residual_map_atlas", "tensor_residual_parcel_montage"),
 )
 
 MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
@@ -68,6 +80,12 @@ PROJECTION_TARGETS: Dict[str, str] = {
     "CBF_tikhonov_map_atlas": "cbf_projection_parcel",
     "CTH_tikhonov_map_atlas": "cth_projection_parcel",
     "MTT_tikhonov_map_atlas": "mtt_projection_parcel",
+    "fa_map_atlas": "fa_projection_parcel",
+    "md_map_atlas": "md_projection_parcel",
+    "ad_map_atlas": "ad_projection_parcel",
+    "rd_map_atlas": "rd_projection_parcel",
+    "mo_map_atlas": "mo_projection_parcel",
+    "tensor_residual_map_atlas": "tensor_residual_projection_parcel",
 }
 
 ParcelStatistics = Dict[Tuple[str, str], Dict[int, float]]
