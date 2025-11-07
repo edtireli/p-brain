@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import nibabel as nib
@@ -376,28 +376,50 @@ def find_wm_mask(nifti_directory):
 
 
 def find_dwi_files(nifti_directory):
-    """Locate a DWI NIfTI file and its corresponding ``.bval`` and ``.bvec`` files.
+    """Locate a diffusion NIfTI and its ``.bval``/``.bvec`` files.
 
     The conversion step may create ``.nii`` *or* ``.nii.gz`` files.  This
     function therefore checks for both extensions and strips them correctly when
-    forming the paths to the gradient files.
+    forming the paths to the gradient files.  If both DTI- and DWI-labelled
+    files are present, DTI is preferred.
     """
+
+    diffusion_candidates: Dict[str, List[Tuple[str, str, str]]] = {
+        "dti": [],
+        "dwi": [],
+    }
 
     for root, _, files in os.walk(nifti_directory):
         for file in files:
-            if re.search(r"dwi", file, re.IGNORECASE) and (
-                file.endswith(".nii") or file.endswith(".nii.gz")
-            ):
-                # Handle both .nii and .nii.gz extensions when deriving the base
-                base = os.path.splitext(os.path.join(root, file))[0]
-                if file.endswith(".nii.gz"):
-                    base = os.path.splitext(base)[0]
+            if not (file.endswith(".nii") or file.endswith(".nii.gz")):
+                continue
 
-                bval = base + ".bval"
-                bvec = base + ".bvec"
+            lower = file.lower()
+            diffusion_label: Optional[str] = None
+            if "dti" in lower:
+                diffusion_label = "dti"
+            elif "dwi" in lower:
+                diffusion_label = "dwi"
 
-                if os.path.exists(bval) and os.path.exists(bvec):
-                    return os.path.join(root, file), bval, bvec
+            if diffusion_label is None:
+                continue
+
+            base = os.path.splitext(os.path.join(root, file))[0]
+            if file.endswith(".nii.gz"):
+                base = os.path.splitext(base)[0]
+
+            bval = base + ".bval"
+            bvec = base + ".bvec"
+
+            if os.path.exists(bval) and os.path.exists(bvec):
+                diffusion_candidates[diffusion_label].append(
+                    (os.path.join(root, file), bval, bvec)
+                )
+
+    for label in ("dti", "dwi"):
+        if diffusion_candidates[label]:
+            # Sorting ensures deterministic selection if multiple files match.
+            return sorted(diffusion_candidates[label])[0]
 
     return None, None, None
 
