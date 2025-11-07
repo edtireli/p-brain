@@ -156,6 +156,42 @@ def _run_montage_for_dataset(
     return overall_success
 
 
+def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
+    """Execute the diffusion tensor processing workflow for ``dataset_id``."""
+
+    dataset_root = _resolve_dataset_root(data_root, dataset_id, is_control)
+    if not os.path.isdir(dataset_root):
+        print(f"[diffusion] Dataset directory missing – skipping: {dataset_root}")
+        return False
+
+    analysis_directory = os.path.join(dataset_root, "Analysis")
+    nifti_directory = os.path.join(dataset_root, "NIfTI")
+    image_directory = os.path.join(dataset_root, "Images")
+
+    for path, label in (
+        (analysis_directory, "Analysis"),
+        (nifti_directory, "NIfTI"),
+    ):
+        if not os.path.isdir(path):
+            print(f"[diffusion] {label} directory missing – skipping: {path}")
+            return False
+
+    try:
+        from modules.opt08_fa import compute_fa
+    except ImportError as exc:
+        print(f"[diffusion] Unable to import diffusion workflow: {exc}")
+        return False
+
+    print(f"[diffusion] Computing diffusion metrics for {dataset_id}")
+    try:
+        compute_fa(nifti_directory, analysis_directory, image_directory)
+    except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
+        print(f"[diffusion] Failed to compute diffusion metrics for {dataset_id}: {exc}")
+        return False
+
+    return True
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run p-brain on multiple datasets")
     parser.add_argument(
@@ -187,6 +223,11 @@ def parse_args():
         help=(
             "When used with --montage, also render parcel projection montages for atlas metrics"
         ),
+    )
+    parser.add_argument(
+        "--diffusion",
+        action="store_true",
+        help="Run the diffusion tensor workflow for each dataset",
     )
     return parser.parse_args()
 
@@ -318,6 +359,14 @@ def main():
     if args.montage:
         exit_code = 0
         for dataset_id, is_control in datasets:
+            if args.diffusion:
+                diffusion_ok = _run_diffusion_for_dataset(
+                    data_directory,
+                    dataset_id,
+                    is_control,
+                )
+                if not diffusion_ok:
+                    exit_code = 1
             success = _run_montage_for_dataset(
                 data_directory,
                 dataset_id,
@@ -331,6 +380,8 @@ def main():
 
     # Build command
     command_template = "python3 main.py --id {} --mode auto --data-dir {}"
+    if args.diffusion:
+        command_template += " --diffusion"
 
     for dataset_id, is_control in datasets:
         command = command_template.format(dataset_id, data_directory)

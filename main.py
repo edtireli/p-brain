@@ -21,6 +21,7 @@ import modules.opt02_input_functions as opt02_input_functions
 import modules.opt04_tissue_function as opt04_tissue_function
 import modules.opt05_BBB_parameters as opt05_BBB_parameters
 import modules.opt00_images as opt00_images
+import modules.opt08_fa as opt08_fa
 
 
 def mode_screen():
@@ -74,6 +75,8 @@ def parse_args():
                         help='Enable or disable writing the voxelwise MTT map (default: True in auto mode)')
     parser.add_argument('--write-cth', type=_str2bool, nargs='?', const=True, default=None,
                         help='Enable or disable writing the voxelwise CTH map (default: True in auto mode)')
+    parser.add_argument('--diffusion', action='store_true',
+                        help='Run diffusion tensor processing after the automatic pipeline')
     return parser.parse_args()
 
 
@@ -214,6 +217,8 @@ def main():
     try:
         if mode == 'manual' or args.option is not None:
             set_turbo_mode(False)
+            if args.diffusion:
+                print("[diffusion] The --diffusion flag is only available in automatic and pseudo-automatic modes.")
             manual_cli_loop(args.option, data_directory, analysis_directory, nifti_directory,
                             image_directory, filenames, parameters)
         elif mode == 'auto':
@@ -238,6 +243,10 @@ def main():
                 nifti_directory,
             )
             log_process_end("Segmented M0/T1 rendering")
+            if args.diffusion:
+                log_process_start("Diffusion tensor processing")
+                opt08_fa.compute_fa(nifti_directory, analysis_directory, image_directory)
+                log_process_end("Diffusion tensor processing")
             log_auto("Fully automatic analysis pipeline completed.", level="success")
         elif mode == 'pseudo':
             set_turbo_mode(False)
@@ -245,6 +254,9 @@ def main():
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
             input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
             tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            if args.diffusion:
+                print("[diffusion] Computing diffusion metrics (pseudo-automatic mode)")
+                opt08_fa.compute_fa(nifti_directory, analysis_directory, image_directory)
             manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
                             image_directory, filenames, parameters, pseudo=True)
 
