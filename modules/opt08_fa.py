@@ -19,6 +19,14 @@ except ImportError:  # pragma: no cover - nibabel ships the helper in supported 
     resample_from_to = None
 
 
+_ATLAS_SEGMENTATION_PATH = (
+    "segmentation",
+    "segmentation",
+    "mri",
+    "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+)
+
+
 # ---------------------------------------------------------------------------
 # Tissue mask discovery and handling
 # ---------------------------------------------------------------------------
@@ -161,6 +169,144 @@ def _collect_tissue_masks(
             continue
         masks[tissue] = (mask, info)
     return masks
+
+
+def _atlas_segmentation_path(nifti_directory: str) -> str:
+    return os.path.join(nifti_directory, *_ATLAS_SEGMENTATION_PATH)
+
+
+def _load_label_lookup(lut_path: Optional[str] = None) -> Dict[int, str]:
+    """Return a mapping from atlas indices to region names."""
+
+    if lut_path is None:
+        freesurfer_home = os.environ.get("FREESURFER_HOME")
+        if freesurfer_home:
+            lut_path = os.path.join(freesurfer_home, "FreeSurferColorLUT.txt")
+
+    lookup: Dict[int, str] = {}
+    if lut_path and os.path.exists(lut_path):
+        try:
+            with open(lut_path, "r") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = re.split(r"\s+", line)
+                    if len(parts) >= 2 and parts[0].isdigit():
+                        lookup[int(parts[0])] = parts[1]
+        except Exception:
+            # Fall back to numeric labels if the LUT is unreadable.
+            pass
+    return lookup
+
+
+def _load_atlas_segmentation(
+    nifti_directory: str, reference_img: nib.Nifti1Image
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Load the atlas segmentation in diffusion space.
+
+    Returns ``None`` when the atlas cannot be found or aligned to the reference
+    diffusion image.
+    """
+
+    atlas_path = _atlas_segmentation_path(nifti_directory)
+    if not os.path.isfile(atlas_path):
+        return None
+
+    atlas_img = nib.load(atlas_path)
+    atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.float32)
+    if atlas_data.ndim != 3:
+        return None
+
+    if atlas_img.shape != reference_img.shape or not np.allclose(
+        atlas_img.affine, reference_img.affine
+    ):
+        if resample_from_to is None:
+            print(
+                f"[!] Cannot resample atlas segmentation – nibabel.processing unavailable: {atlas_path}"
+            )
+            return None
+        try:
+            atlas_img = resample_from_to(
+                atlas_img, (reference_img.shape, reference_img.affine), order=0
+            )
+            atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.float32)
+            print("[!] Resampled atlas segmentation to diffusion grid")
+        except Exception as exc:
+            print(f"[!] Failed to resample atlas segmentation: {exc}")
+            return None
+
+    atlas_labels = np.unique(atlas_data)
+    atlas_labels = atlas_labels[atlas_labels != 0]
+    if atlas_labels.size == 0:
+        return None
+
+    return atlas_data.astype(np.int32), atlas_labels.astype(np.int32)
+
+
+def _parcel_metadata(
+    atlas_data: np.ndarray,
+    atlas_labels: np.ndarray,
+    label_lookup: Dict[int, str],
+    wm_mask: Optional[np.ndarray],
+) -> Dict[int, Dict[str, object]]:
+    metadata: Dict[int, Dict[str, object]] = {}
+    for label in atlas_labels:
+        mask = atlas_data == int(label)
+        indices = np.where(mask)
+        voxel_count = int(indices[0].size)
+        if voxel_count == 0:
+            continue
+
+        name = label_lookup.get(int(label), str(int(label)))
+        if wm_mask is not None:
+            overlap = int(np.count_nonzero(wm_mask[indices]))
+            wm_fraction = overlap / voxel_count if voxel_count else 0.0
+            is_wm = wm_fraction >= 0.5
+        else:
+            lower_name = name.lower()
+            is_wm = any(
+                token in lower_name for token in ("white", "wm", "callosum", "corpus")
+            )
+
+        metadata[int(label)] = {
+            "indices": indices,
+            "name": name,
+            "voxel_count": voxel_count,
+            "is_wm": is_wm,
+        }
+
+    return metadata
+
+
+def _parcel_means(
+    metric_data: np.ndarray,
+    metadata: Dict[int, Dict[str, object]],
+    *,
+    restrict_to_wm: bool = False,
+) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
+    parcel_map = np.full(metric_data.shape, np.nan, dtype=np.float32)
+    parcels: Dict[str, Dict[str, float]] = {}
+
+    for label, info in metadata.items():
+        if restrict_to_wm and not info["is_wm"]:
+            continue
+
+        indices = info["indices"]
+        values = metric_data[indices]
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+
+        mean_value = float(np.mean(values, dtype=np.float32))
+        parcel_map[indices] = np.float32(mean_value)
+        parcels[info["name"]] = {
+            "label": int(label),
+            "mean": mean_value,
+            "voxel_count": int(info["voxel_count"]),
+        }
+
+    return parcel_map, parcels
 
 
 def _ensure_image_directory(image_directory: Optional[str], analysis_directory: str) -> Optional[str]:
@@ -344,6 +490,19 @@ def compute_fa(nifti_directory, analysis_directory, image_directory=None):
     image_directory = _ensure_image_directory(image_directory, analysis_directory)
 
     stats_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
+    atlas_summary: Dict[str, Dict[str, object]] = {}
+
+    atlas_loaded = _load_atlas_segmentation(nifti_directory, img)
+    parcel_metadata: Dict[int, Dict[str, object]] = {}
+    if atlas_loaded is not None:
+        atlas_data, atlas_labels = atlas_loaded
+        wm_mask = None
+        if "white_matter" in masks:
+            wm_mask = np.asarray(masks["white_matter"][0], dtype=bool)
+        label_lookup = _load_label_lookup()
+        parcel_metadata = _parcel_metadata(atlas_data, atlas_labels, label_lookup, wm_mask)
+        if not parcel_metadata:
+            parcel_metadata = {}
 
     for metric_name, payload in metrics.items():
         metric_data = payload["data"]
@@ -365,10 +524,34 @@ def compute_fa(nifti_directory, analysis_directory, image_directory=None):
 
         _plot_metric_histogram(metric_name, metric_data, masks, image_directory)
 
+        if parcel_metadata:
+            parcel_map, parcels = _parcel_means(
+                metric_data,
+                parcel_metadata,
+                restrict_to_wm=(metric_name == "fa"),
+            )
+            if parcels:
+                atlas_img = nib.Nifti1Image(parcel_map.astype(np.float32), img.affine, img.header)
+                atlas_img.set_data_dtype(np.float32)
+                atlas_path = os.path.join(diffusion_dir, f"{metric_name}_map_atlas.nii.gz")
+                nib.save(atlas_img, atlas_path)
+                print(f"[!] Saved {metric_name.upper()} atlas map to {atlas_path}")
+                atlas_summary[metric_name] = {
+                    "units": payload["units"],
+                    "parcel_selection": "white_matter" if metric_name == "fa" else "all",
+                    "parcels": parcels,
+                }
+
     stats_path = os.path.join(diffusion_dir, "diffusion_values_median_total.json")
     with open(stats_path, "w") as fp:
         json.dump(stats_summary, fp, indent=4)
     print(f"[!] Wrote diffusion statistics to {stats_path}")
+
+    if atlas_summary:
+        atlas_stats_path = os.path.join(diffusion_dir, "diffusion_values_atlas.json")
+        with open(atlas_stats_path, "w") as fp:
+            json.dump(atlas_summary, fp, indent=4)
+        print(f"[!] Wrote diffusion atlas statistics to {atlas_stats_path}")
 
     mean_fa = float(np.nanmean(fa))
     with open(os.path.join(diffusion_dir, "fa_mean.txt"), "w") as f:
