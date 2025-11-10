@@ -181,6 +181,64 @@ def _collect_tissue_masks(
     return masks
 
 
+def _classify_atlas_label(label_name: str) -> Optional[str]:
+    """Return the canonical tissue key for an atlas label name."""
+
+    if not label_name:
+        return None
+
+    lower = label_name.lower()
+
+    if "cerebellum" in lower:
+        if "white" in lower:
+            return "wm_cerebellum"
+        if "cortex" in lower or lower.startswith("ctx-"):
+            return "gm_cerebellum"
+    if "corpus" in lower or "callosum" in lower:
+        return "wm_cc"
+    if "brain-stem" in lower or "brainstem" in lower:
+        return "brainstem"
+    if "white" in lower or lower.endswith("wm") or "white-matter" in lower:
+        return "white_matter"
+    if lower.startswith("ctx-") or "cortex" in lower:
+        return "cortical_gm"
+    if any(token in lower for token in ("thalamus", "caudate", "putamen", "pallidum", "hippocampus", "amygdala", "accumbens", "ventraldc", "ventraldc", "nucleus", "globus", "hypothalamus")):
+        return "subcortical_gm"
+    if "gm" in lower and "brainstem" in lower:
+        return "gm_brainstem"
+    return None
+
+
+def _derive_tissue_masks_from_atlas(
+    atlas_data: np.ndarray,
+    atlas_labels: np.ndarray,
+    label_lookup: Dict[int, str],
+) -> Dict[str, np.ndarray]:
+    """Generate tissue masks using an aligned atlas segmentation."""
+
+    tissue_masks: Dict[str, np.ndarray] = {}
+    for label in atlas_labels:
+        name = label_lookup.get(int(label), "")
+        tissue_key = _classify_atlas_label(name)
+        if tissue_key is None:
+            continue
+
+        mask = atlas_data == int(label)
+        if not np.any(mask):
+            continue
+
+        if tissue_key in tissue_masks:
+            tissue_masks[tissue_key] |= mask
+        else:
+            tissue_masks[tissue_key] = mask.astype(bool)
+
+    # Derive a brainstem GM mask when only a combined brainstem label exists.
+    if "brainstem" in tissue_masks and "gm_brainstem" not in tissue_masks:
+        tissue_masks["gm_brainstem"] = tissue_masks["brainstem"].copy()
+
+    return tissue_masks
+
+
 def _atlas_segmentation_path(nifti_directory: str) -> str:
     return os.path.join(nifti_directory, *_ATLAS_SEGMENTATION_PATH)
 
@@ -689,17 +747,32 @@ def compute_fa(
 
     atlas_loaded = _load_atlas_segmentation(nifti_directory, img)
     parcel_metadata: Dict[int, Dict[str, object]] = {}
+    atlas_brain_mask: Optional[np.ndarray] = None
     if atlas_loaded is not None:
         atlas_data, atlas_labels = atlas_loaded
+        atlas_brain_mask = atlas_data > 0
         wm_mask = None
         if "white_matter" in masks:
             wm_mask = np.asarray(masks["white_matter"][0], dtype=bool)
         label_lookup = _load_label_lookup()
+        derived_tissues = _derive_tissue_masks_from_atlas(atlas_data, atlas_labels, label_lookup)
+        for tissue, derived_mask in derived_tissues.items():
+            info = _TISSUE_PATTERNS.get(tissue)
+            if info is None:
+                continue
+            if tissue in masks:
+                existing_mask, existing_info = masks[tissue]
+                combined = np.asarray(existing_mask, dtype=bool) | np.asarray(derived_mask, dtype=bool)
+                masks[tissue] = (combined, existing_info)
+            else:
+                masks[tissue] = (np.asarray(derived_mask, dtype=bool), info)
         parcel_metadata = _parcel_metadata(atlas_data, atlas_labels, label_lookup, wm_mask)
         if not parcel_metadata:
             parcel_metadata = {}
 
     brain_mask = _brain_union_mask(masks)
+    if brain_mask is None and atlas_brain_mask is not None:
+        brain_mask = np.asarray(atlas_brain_mask, dtype=bool)
 
     for metric_name, payload in metrics.items():
         raw_metric_data = payload["data"]
