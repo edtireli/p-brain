@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import enumerator
@@ -108,3 +109,116 @@ def test_run_montage_for_dataset_missing_dce(tmp_path, monkeypatch):
     monkeypatch.setattr(enumerator, "_load_montage_dependencies", fake_loader)
 
     assert enumerator._run_montage_for_dataset(tmp_path, "001", False) is False
+
+
+def _create_dataset(root, name, *, control=False):
+    if control:
+        base = root / "controls" / name
+    else:
+        base = root / name
+    base.mkdir(parents=True)
+    return base
+
+
+def test_diffusion_only_processes_patients(monkeypatch, tmp_path):
+    _create_dataset(tmp_path, "001")
+    _create_dataset(tmp_path, "ctrl_a", control=True)
+
+    calls = []
+
+    def fake_diffusion(data_root, dataset_id, is_control):
+        calls.append((data_root, dataset_id, is_control))
+        return True
+
+    monkeypatch.setattr(enumerator, "_run_diffusion_for_dataset", fake_diffusion)
+
+    def fake_montage(*args, **kwargs):  # pragma: no cover - should not run
+        raise AssertionError("Montage rendering should not run without --montage")
+
+    monkeypatch.setattr(enumerator, "_run_montage_for_dataset", fake_montage)
+
+    def fail_run(*args, **kwargs):  # pragma: no cover - should not be invoked
+        raise AssertionError("Pipeline should not execute in diffusion-only mode")
+
+    monkeypatch.setattr(enumerator.subprocess, "run", fail_run)
+
+    argv = [
+        "enumerator.py",
+        "--diffusion_only",
+        "--data-dir",
+        str(tmp_path),
+        "001",
+        "ctrl_a",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc:
+        enumerator.main()
+
+    assert exc.value.code == 0
+    assert calls == [(str(tmp_path), "001", False)]
+
+
+def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
+    _create_dataset(tmp_path, "001")
+    _create_dataset(tmp_path, "ctrl_a", control=True)
+
+    diffusion_calls = []
+    montage_calls = []
+
+    def fake_diffusion(data_root, dataset_id, is_control):
+        diffusion_calls.append((data_root, dataset_id, is_control))
+        return True
+
+    def fake_montage(
+        data_root,
+        dataset_id,
+        is_control,
+        *,
+        use_projection=False,
+        projection_stats=None,
+    ):
+        montage_calls.append(
+            (
+                data_root,
+                dataset_id,
+                is_control,
+                use_projection,
+                projection_stats,
+            )
+        )
+        return True
+
+    monkeypatch.setattr(enumerator, "_run_diffusion_for_dataset", fake_diffusion)
+    monkeypatch.setattr(enumerator, "_run_montage_for_dataset", fake_montage)
+
+    def fail_run(*args, **kwargs):  # pragma: no cover - should not be invoked
+        raise AssertionError("Pipeline should not execute in diffusion-only mode")
+
+    monkeypatch.setattr(enumerator.subprocess, "run", fail_run)
+
+    argv = [
+        "enumerator.py",
+        "--diffusion_only",
+        "--montage",
+        "--data-dir",
+        str(tmp_path),
+        "001",
+        "ctrl_a",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc:
+        enumerator.main()
+
+    assert exc.value.code == 0
+    assert diffusion_calls == [(str(tmp_path), "001", False)]
+    assert montage_calls == [
+        (
+            str(tmp_path),
+            "001",
+            False,
+            False,
+            None,
+        )
+    ]
