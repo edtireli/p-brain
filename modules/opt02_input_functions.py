@@ -217,14 +217,17 @@ def refresh_nifti_directory(nifti_directory):
     return os.listdir(nifti_directory)
 
 def input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
-        (
-            flair_3D_filename,
-            axial_flair_3D_filename,
-            axial_t2_2D_filename,
-            diffusion_filename,
-            dce_filename,
-        ) = filenames
+    (
+        t1_3D_filename,
+        axial_t1_3D_filename,
+        t2_3D_filename,
+        axial_t2_3D_filename,
+        flair_3D_filename,
+        axial_flair_3D_filename,
+        axial_t2_2D_filename,
+        diffusion_filename,
+        dce_filename,
+    ) = filenames
     refresh_nifti_directory(nifti_directory)
     
     IsVFA, IsIR, _, _, _, _, _ = parameters

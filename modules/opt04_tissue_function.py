@@ -567,12 +567,15 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
 
 
 def tissue_function(analysis_directory, nifti_directory, image_directory, filenames):
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
     (
-        flair_3D_filename,
-        axial_flair_3D_filename,
+        _t1_3D_filename,
+        _axial_t1_3D_filename,
+        _t2_3D_filename,
+        _axial_t2_3D_filename,
+        _flair_3D_filename,
+        _axial_flair_3D_filename,
         axial_t2_2D_filename,
-        diffusion_filename,
+        _diffusion_filename,
         dce_filename,
     ) = filenames
     filename_t2 = os.path.join(nifti_directory, axial_t2_2D_filename)
