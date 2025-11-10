@@ -44,8 +44,17 @@ def execute_command(command):
 def check_axial(nifti_directory, filenames):
     processor = ImageProcessor(nifti_directory)
     
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
-    flair_3D_filename, axial_flair_3D_filename_regex, axial_t2_2D_filename, dce_filename = filenames
+    (
+        t1_3D_filename,
+        axial_t1_3D_filename,
+        t2_3D_filename,
+        axial_t2_3D_filename,
+        flair_3D_filename,
+        axial_flair_3D_filename_regex,
+        axial_t2_2D_filename,
+        diffusion_filename,
+        dce_filename,
+    ) = filenames
 
     # Explicit filenames for output
     axial_t1_3D_output = "axVWIPcs_T1W_3D_TFE_32channel.nii"

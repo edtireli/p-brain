@@ -66,7 +66,7 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
         class DummyParameters:
             @staticmethod
             def global_filenames(_):
-                return ("", "", "", "", "", "", "", "WIPhperf120long.nii")
+                return ("", "", "", "", "", "", "", "", "WIPhperf120long.nii")
 
             @staticmethod
             def control_filenames(_):
@@ -97,7 +97,7 @@ def test_run_montage_for_dataset_missing_dce(tmp_path, monkeypatch):
         class DummyParameters:
             @staticmethod
             def global_filenames(_):
-                return ("", "", "", "", "", "", "", None)
+                return ("", "", "", "", "", "", "", None, None)
 
             @staticmethod
             def control_filenames(_):
