@@ -251,6 +251,11 @@ def parse_args():
         action="store_true",
         help="Run the diffusion tensor workflow for each dataset",
     )
+    parser.add_argument(
+        "--diffusion_only",
+        action="store_true",
+        help="Only run the diffusion tensor workflow for patient datasets",
+    )
     return parser.parse_args()
 
 
@@ -370,6 +375,9 @@ def main():
         print("No datasets found to process.")
         sys.exit(0)
 
+    if args.diffusion_only:
+        args.diffusion = True
+
     projection_stats = None
     if args.projection:
         try:
@@ -377,6 +385,36 @@ def main():
         except RuntimeError as exc:
             print(f"[projection] {exc}")
             sys.exit(1)
+
+    if args.diffusion_only:
+        exit_code = 0
+        for dataset_id, is_control in datasets:
+            if is_control:
+                print(
+                    f"[diffusion] Skipping control dataset {dataset_id} in diffusion-only mode."
+                )
+                continue
+
+            diffusion_ok = _run_diffusion_for_dataset(
+                data_directory,
+                dataset_id,
+                is_control,
+            )
+            if not diffusion_ok:
+                exit_code = 1
+
+            if args.montage:
+                success = _run_montage_for_dataset(
+                    data_directory,
+                    dataset_id,
+                    is_control,
+                    use_projection=args.projection,
+                    projection_stats=projection_stats,
+                )
+                if not success:
+                    exit_code = 1
+
+        sys.exit(exit_code)
 
     if args.montage:
         exit_code = 0
