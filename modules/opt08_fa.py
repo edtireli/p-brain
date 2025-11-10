@@ -132,22 +132,41 @@ def _find_file_with_patterns(search_roots: Iterable[str], patterns: Iterable[str
     return None
 
 
+def _reference_grid(img: nib.Nifti1Image) -> Tuple[Tuple[int, ...], np.ndarray]:
+    """Return a resampling target limited to the spatial dimensions of ``img``."""
+
+    shape = img.shape
+    if len(shape) > 3:
+        shape = shape[:3]
+    return shape, img.affine
+
+
 def _load_mask(mask_path: str, reference_img: nib.Nifti1Image) -> Optional[np.ndarray]:
     if mask_path is None:
         return None
 
     mask_img = nib.load(mask_path)
-    if mask_img.shape != reference_img.shape or not np.allclose(mask_img.affine, reference_img.affine):
+    mask_shape = mask_img.shape
+    if len(mask_shape) > 3:
+        # Discard non-spatial dimensions (e.g., singleton time/channel axes).
+        data = mask_img.get_fdata()
+        spatial = data[..., 0]
+        spatial = np.squeeze(spatial)
+        mask_img = nib.Nifti1Image(spatial, mask_img.affine)
+        mask_shape = mask_img.shape
+
+    ref_shape, ref_affine = _reference_grid(reference_img)
+    if mask_shape != ref_shape or not np.allclose(mask_img.affine, ref_affine):
         if resample_from_to is None:
             print(f"[!] Cannot resample {mask_path} – nibabel.processing unavailable")
             return None
         try:
-            mask_img = resample_from_to(mask_img, (reference_img.shape, reference_img.affine), order=0)
+            mask_img = resample_from_to(mask_img, (ref_shape, ref_affine), order=0)
             print(f"[!] Resampled mask {os.path.basename(mask_path)} to diffusion grid")
         except Exception as exc:
             print(f"[!] Failed to resample mask {mask_path}: {exc}")
             return None
-    return mask_img.get_fdata() > 0.5
+    return (mask_img.get_fdata() > 0.5).astype(bool)
 
 
 def _collect_tissue_masks(
@@ -657,7 +676,7 @@ def compute_fa(
     if bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
         bvecs = bvecs.T
 
-    gtab = gradient_table(bvals, bvecs)
+    gtab = gradient_table(bvals=bvals, bvecs=bvecs)
     tenmodel = TensorModel(gtab)
     tenfit = tenmodel.fit(data)
 
