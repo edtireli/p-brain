@@ -302,11 +302,20 @@ def _load_atlas_segmentation(
 
     atlas_img = nib.load(atlas_path)
     atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.float32)
+
+    if atlas_data.ndim > 3:
+        atlas_data = np.squeeze(atlas_data)
+        if atlas_data.ndim > 3:
+            return None
+        atlas_img = nib.Nifti1Image(atlas_data, atlas_img.affine)
+
     if atlas_data.ndim != 3:
         return None
 
-    if atlas_img.shape != reference_img.shape or not np.allclose(
-        atlas_img.affine, reference_img.affine
+    ref_shape, ref_affine = _reference_grid(reference_img)
+
+    if atlas_img.shape != ref_shape or not np.allclose(
+        atlas_img.affine, ref_affine
     ):
         if resample_from_to is None:
             print(
@@ -315,7 +324,7 @@ def _load_atlas_segmentation(
             return None
         try:
             atlas_img = resample_from_to(
-                atlas_img, (reference_img.shape, reference_img.affine), order=0
+                atlas_img, (ref_shape, ref_affine), order=0
             )
             atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.float32)
             print("[!] Resampled atlas segmentation to diffusion grid")
