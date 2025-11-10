@@ -380,8 +380,17 @@ def save_plot_data_AI(C_t, type, subtype, analysis_directory, slice_index, radiu
 
 def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
     
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
-        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    (
+        _t1_3D_filename,
+        _axial_t1_3D_filename,
+        _t2_3D_filename,
+        _axial_t2_3D_filename,
+        _flair_3D_filename,
+        _axial_flair_3D_filename,
+        axial_t2_2D_filename,
+        _diffusion_filename,
+        dce_filename,
+    ) = filenames
     
     # Initialize variables
     max_intensity = -1
@@ -484,8 +493,17 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
 
 def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels, slice_index, frame_index, time_points_s, analysis_directory, image_directory, nifti_directory, r1=4000, TD=120, type='test', subtype='test', IsVFA=False, filenames='filenames'):
     
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
-        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    (
+        _t1_3D_filename,
+        _axial_t1_3D_filename,
+        _t2_3D_filename,
+        _axial_t2_3D_filename,
+        _flair_3D_filename,
+        _axial_flair_3D_filename,
+        axial_t2_2D_filename,
+        _diffusion_filename,
+        dce_filename,
+    ) = filenames
     
     # Initialize variables
     max_intensity = -1
