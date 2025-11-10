@@ -3372,8 +3372,17 @@ def _rename_model_outputs(analysis_directory, image_directory, suffix, boundary=
 def _tissue_function_AI(model, analysis_directory, nifti_directory, image_directory, filenames, parameters):
     """Run tissue function analysis for a single kinetic model."""
     settings.KINETIC_MODEL = model
-    t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename,\
-        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = filenames
+    (
+        t1_3D_filename,
+        axial_t1_3D_filename,
+        t2_3D_filename,
+        axial_t2_3D_filename,
+        flair_3D_filename,
+        axial_flair_3D_filename,
+        axial_t2_2D_filename,
+        diffusion_filename,
+        dce_filename,
+    ) = filenames
 
     IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
 

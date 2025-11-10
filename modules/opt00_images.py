@@ -30,8 +30,17 @@ class MRIViewer:
         if turbo_mode:
             print("[!] Turbo mode enabled; skipping image viewer.")
             return
-        t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, \
-        flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename = self.filenames
+        (
+            t1_3D_filename,
+            axial_t1_3D_filename,
+            t2_3D_filename,
+            axial_t2_3D_filename,
+            flair_3D_filename,
+            axial_flair_3D_filename,
+            axial_t2_2D_filename,
+            diffusion_filename,
+            dce_filename,
+        ) = self.filenames
         patterns_and_names = [
             ([t1_3D_filename], 'Saggital T1'),
             ([axial_t1_3D_filename], '3D Axial T1'),

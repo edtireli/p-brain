@@ -4,13 +4,27 @@ import sys
 import re
 import time 
 
+def _get_first_existing_file(filenames, nifti_directory):
+    """Return the first filename from ``filenames`` that exists."""
+
+    for filename in filenames:
+        if not filename:
+            continue
+        if os.path.exists(os.path.join(nifti_directory, filename)):
+            return filename
+    return None
+
+
 def get_dce_filename(primary, fallback, nifti_directory):
-    if os.path.exists(os.path.join(nifti_directory, fallback)):
-        return fallback
-    if os.path.exists(os.path.join(nifti_directory, primary)):
-        return primary
-    else:
-        return None 
+    return _get_first_existing_file((fallback, primary), nifti_directory)
+
+
+def get_diffusion_filename(candidates, nifti_directory):
+    """Return the configured diffusion volume if present in ``nifti_directory``."""
+
+    if isinstance(candidates, str):
+        candidates = (candidates,)
+    return _get_first_existing_file(candidates, nifti_directory)
 
 # Global parameters: 
 
@@ -51,9 +65,29 @@ def global_filenames(nifti_directory):
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
+    diffusion_filenames = (
+        'WIPDTI_RSI_P.nii',
+        'WIPDTI_RSI_P.nii.gz',
+        'WIPDTI_RSI_A.nii',
+        'WIPDTI_RSI_A.nii.gz',
+        'WIPDWI_RSI_P.nii',
+        'WIPDWI_RSI_P.nii.gz',
+    )
+
+    diffusion_filename = get_diffusion_filename(diffusion_filenames, nifti_directory)
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
-    print(dce_filename)
-    return t1_3D_filename, axial_t1_3D_filename, t2_3D_filename, axial_t2_3D_filename, flair_3D_filename, axial_flair_3D_filename, axial_t2_2D_filename, dce_filename
+
+    return (
+        t1_3D_filename,
+        axial_t1_3D_filename,
+        t2_3D_filename,
+        axial_t2_3D_filename,
+        flair_3D_filename,
+        axial_flair_3D_filename,
+        axial_t2_2D_filename,
+        diffusion_filename,
+        dce_filename,
+    )
 
 # Separate filenames for control datasets used by the AI pipeline
 def control_filenames(nifti_directory):
@@ -71,7 +105,18 @@ def control_filenames(nifti_directory):
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
+    diffusion_filenames = (
+        'WIPDTI_RSI_P.nii',
+        'WIPDTI_RSI_P.nii.gz',
+        'WIPDTI_RSI_A.nii',
+        'WIPDTI_RSI_A.nii.gz',
+        'WIPDWI_RSI_P.nii',
+        'WIPDWI_RSI_P.nii.gz',
+    )
+
+    diffusion_filename = get_diffusion_filename(diffusion_filenames, nifti_directory)
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
+
     return (
         t1_3D_filename,
         axial_t1_3D_filename,
@@ -80,6 +125,7 @@ def control_filenames(nifti_directory):
         flair_3D_filename,
         axial_flair_3D_filename,
         axial_t2_2D_filename,
+        diffusion_filename,
         dce_filename,
     )
 

@@ -4,6 +4,7 @@ import os
 import sys
 
 import utils.settings as settings
+import utils.parameters as parameters
 
 
 def _load_montage_dependencies():
@@ -177,6 +178,22 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
             return False
 
     try:
+        if bool(is_control or settings.CONTROLS):
+            filenames = parameters.control_filenames(nifti_directory)
+        else:
+            filenames = parameters.global_filenames(nifti_directory)
+    except Exception as exc:
+        print(f"[diffusion] Failed to discover configured filenames for {dataset_id}: {exc}")
+        return False
+
+    diffusion_filename = filenames[-2] if filenames else None
+    if not diffusion_filename:
+        print(
+            f"[diffusion] No configured diffusion volume for {dataset_id} – skipping diffusion processing."
+        )
+        return False
+
+    try:
         from modules.opt08_fa import compute_fa
     except ImportError as exc:
         print(f"[diffusion] Unable to import diffusion workflow: {exc}")
@@ -184,7 +201,12 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
 
     print(f"[diffusion] Computing diffusion metrics for {dataset_id}")
     try:
-        compute_fa(nifti_directory, analysis_directory, image_directory)
+        compute_fa(
+            nifti_directory,
+            analysis_directory,
+            image_directory,
+            diffusion_filename=diffusion_filename,
+        )
     except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
         print(f"[diffusion] Failed to compute diffusion metrics for {dataset_id}: {exc}")
         return False

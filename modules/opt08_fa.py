@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import nibabel as nib
@@ -375,29 +375,101 @@ def find_wm_mask(nifti_directory):
     return None
 
 
-def find_dwi_files(nifti_directory):
-    """Locate a DWI NIfTI file and its corresponding ``.bval`` and ``.bvec`` files.
+def find_dwi_files(
+    nifti_directory: str, preferred_filenames: Optional[Sequence[str]] = None
+):
+    """Locate a diffusion NIfTI and its ``.bval``/``.bvec`` files.
 
-    The conversion step may create ``.nii`` *or* ``.nii.gz`` files.  This
-    function therefore checks for both extensions and strips them correctly when
-    forming the paths to the gradient files.
+    ``preferred_filenames`` allows callers to specify explicit filenames that
+    should be considered before falling back to heuristic discovery.  The
+    conversion step may create ``.nii`` *or* ``.nii.gz`` files.  This function
+    therefore checks for both extensions and strips them correctly when forming
+    the paths to the gradient files.  If both DTI- and DWI-labelled files are
+    present, DTI remains preferred.
     """
+
+    def candidate_from(path: str) -> Optional[Tuple[str, str, str]]:
+        if not path.lower().endswith((".nii", ".nii.gz")):
+            return None
+        if not os.path.exists(path):
+            return None
+        base = os.path.splitext(path)[0]
+        if path.lower().endswith(".nii.gz"):
+            base = os.path.splitext(base)[0]
+        bval = base + ".bval"
+        bvec = base + ".bvec"
+        if os.path.exists(bval) and os.path.exists(bvec):
+            return path, bval, bvec
+        return None
+
+    def _preferred_paths(filename: str) -> Iterable[str]:
+        if not filename:
+            return
+
+        if os.path.isabs(filename):
+            base_path = filename
+        else:
+            base_path = os.path.join(nifti_directory, filename)
+
+        candidates = [base_path]
+        lower = base_path.lower()
+
+        if lower.endswith(".nii.gz"):
+            pass
+        elif lower.endswith(".nii"):
+            candidates.append(base_path + ".gz")
+        else:
+            candidates.extend((base_path + ".nii", base_path + ".nii.gz"))
+
+        seen = set()
+        for candidate_path in candidates:
+            if not candidate_path:
+                continue
+            name = os.path.basename(candidate_path)
+            if name.startswith("._"):
+                continue
+            if candidate_path in seen:
+                continue
+            seen.add(candidate_path)
+            yield candidate_path
+
+    if preferred_filenames:
+        for filename in preferred_filenames:
+            for candidate_path in _preferred_paths(filename):
+                candidate = candidate_from(candidate_path)
+                if candidate:
+                    return candidate
+
+    diffusion_candidates: Dict[str, List[Tuple[str, str, str]]] = {
+        "dti": [],
+        "dwi": [],
+    }
 
     for root, _, files in os.walk(nifti_directory):
         for file in files:
-            if re.search(r"dwi", file, re.IGNORECASE) and (
-                file.endswith(".nii") or file.endswith(".nii.gz")
-            ):
-                # Handle both .nii and .nii.gz extensions when deriving the base
-                base = os.path.splitext(os.path.join(root, file))[0]
-                if file.endswith(".nii.gz"):
-                    base = os.path.splitext(base)[0]
+            if file.startswith("._"):
+                continue
+            if not (file.endswith(".nii") or file.endswith(".nii.gz")):
+                continue
 
-                bval = base + ".bval"
-                bvec = base + ".bvec"
+            lower = file.lower()
+            diffusion_label: Optional[str] = None
+            if "dti" in lower:
+                diffusion_label = "dti"
+            elif "dwi" in lower:
+                diffusion_label = "dwi"
 
-                if os.path.exists(bval) and os.path.exists(bvec):
-                    return os.path.join(root, file), bval, bvec
+            if diffusion_label is None:
+                continue
+
+            candidate = candidate_from(os.path.join(root, file))
+            if candidate:
+                diffusion_candidates[diffusion_label].append(candidate)
+
+    for label in ("dti", "dwi"):
+        if diffusion_candidates[label]:
+            # Sorting ensures deterministic selection if multiple files match.
+            return sorted(diffusion_candidates[label])[0]
 
     return None, None, None
 
@@ -437,10 +509,17 @@ def _compute_statistics(
     return stats
 
 
-def compute_fa(nifti_directory, analysis_directory, image_directory=None):
-    dwi_path, bval_path, bvec_path = find_dwi_files(nifti_directory)
+def compute_fa(
+    nifti_directory, analysis_directory, image_directory=None, diffusion_filename=None
+):
+    preferred = (diffusion_filename,) if diffusion_filename else None
+    dwi_path, bval_path, bvec_path = find_dwi_files(
+        nifti_directory, preferred_filenames=preferred
+    )
     if dwi_path is None:
-        print("[!] No DWI data found; skipping FA computation")
+        print(
+            "[!] No diffusion volume found; update utils/parameters.py with the correct filename."
+        )
         return
 
     print(f"[!] Computing FA from {os.path.basename(dwi_path)}")
