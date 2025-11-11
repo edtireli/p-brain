@@ -61,8 +61,14 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
     called = {}
 
     def fake_loader():
-        def fake_generate(analysis_directory, image_directory, dce_path):
-            called["args"] = (analysis_directory, image_directory, dce_path)
+        def fake_generate(
+            analysis_directory,
+            image_directory,
+            dce_path,
+            *,
+            anatomical_overlay=None,
+        ):
+            called["args"] = (analysis_directory, image_directory, dce_path, anatomical_overlay)
 
         class DummyParameters:
             @staticmethod
@@ -82,6 +88,65 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
         str(dataset / "Analysis"),
         str(dataset / "Images"),
         str(dce_file),
+        None,
+    )
+
+
+def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
+    dataset = tmp_path / "001"
+    (dataset / "Analysis").mkdir(parents=True)
+    (dataset / "Images").mkdir()
+    nifti_dir = dataset / "NIfTI"
+    nifti_dir.mkdir()
+    dce_file = nifti_dir / "WIPhperf120long.nii"
+    dce_file.write_bytes(b"")
+
+    overlay_dir = nifti_dir / "segmentation" / "segmentation" / "mri"
+    overlay_dir.mkdir(parents=True)
+    overlay_file = overlay_dir / "T1w_conformed_in_DCE.nii.gz"
+    overlay_file.write_bytes(b"")
+
+    called = {}
+
+    def fake_loader():
+        def fake_generate(
+            analysis_directory,
+            image_directory,
+            dce_path,
+            *,
+            anatomical_overlay=None,
+        ):
+            called["args"] = (
+                analysis_directory,
+                image_directory,
+                dce_path,
+                anatomical_overlay,
+            )
+
+        class DummyParameters:
+            @staticmethod
+            def global_filenames(_):
+                return ("", "", "", "", "", "", "", "", "WIPhperf120long.nii")
+
+            @staticmethod
+            def control_filenames(_):
+                raise AssertionError("control_filenames should not be used for patient data")
+
+        return fake_generate, DummyParameters
+
+    monkeypatch.setattr(enumerator, "_load_montage_dependencies", fake_loader)
+
+    assert (
+        enumerator._run_montage_for_dataset(
+            tmp_path, "001", False, use_anatomical=True
+        )
+        is True
+    )
+    assert called["args"] == (
+        str(dataset / "Analysis"),
+        str(dataset / "Images"),
+        str(dce_file),
+        str(overlay_file),
     )
 
 
@@ -177,6 +242,7 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
         *,
         use_projection=False,
         projection_stats=None,
+        use_anatomical=False,
     ):
         montage_calls.append(
             (
@@ -185,6 +251,7 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
                 is_control,
                 use_projection,
                 projection_stats,
+                use_anatomical,
             )
         )
         return True
@@ -220,5 +287,6 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
             False,
             False,
             None,
+            False,
         )
     ]
