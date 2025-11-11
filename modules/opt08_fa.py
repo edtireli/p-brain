@@ -811,16 +811,13 @@ def compute_fa(
         if metric_mask is None:
             metric_mask = brain_mask
 
+        map_data = np.asarray(raw_metric_data, dtype=np.float32)
         if metric_mask is not None:
-            metric_data = np.where(
-                metric_mask, raw_metric_data, np.float32(np.nan)
-            )
+            metric_data = np.where(metric_mask, map_data, np.float32(np.nan))
         else:
-            metric_data = np.asarray(raw_metric_data, dtype=np.float32)
+            metric_data = map_data
 
-        metric_data = metric_data.astype(np.float32, copy=False)
-
-        metric_img = nib.Nifti1Image(metric_data, img.affine, img.header)
+        metric_img = nib.Nifti1Image(map_data, img.affine, img.header)
         metric_img.set_data_dtype(np.float32)
         map_path = os.path.join(diffusion_dir, f"{metric_name}_map.nii.gz")
         nib.save(metric_img, map_path)
