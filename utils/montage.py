@@ -492,17 +492,6 @@ def _build_reference(volume: np.ndarray, tiles: int) -> Dict[str, np.ndarray] | 
     union_xy_r = np.rot90(union_xy, ROT90)
     r0, r1, c0, c1 = _tight_bbox_from_mask(union_xy_r, pad=BBOX_PADDING)
 
-    # Determine the slice range that actually contains brain voxels so we can
-    # distribute montage tiles across the full anatomy rather than the entire
-    # acquisition extent (which may include empty or background slices).
-    valid_z = np.any(mask, axis=(0, 1))
-    if valid_z.any():
-        zmin = int(np.argmax(valid_z))
-        zmax = int(len(valid_z) - np.argmax(valid_z[::-1]) - 1)
-        z_extent = (zmin, zmax)
-    else:
-        z_extent = (0, 0)
-
     bbox_fracs = {
         "r0_frac": r0 / max(1, union_xy_r.shape[0]),
         "r1_frac": r1 / max(1, union_xy_r.shape[0]),
@@ -510,11 +499,17 @@ def _build_reference(volume: np.ndarray, tiles: int) -> Dict[str, np.ndarray] | 
         "c1_frac": c1 / max(1, union_xy_r.shape[1]),
     }
 
+    z_indices = _spaced_unique_indices(0, volume.shape[2] - 1, tiles)
+    z_fracs = (
+        z_indices / max(1, volume.shape[2] - 1)
+        if volume.shape[2] > 1
+        else np.zeros_like(z_indices)
+    )
+
     return {
         "bbox_fracs": bbox_fracs,
+        "z_fracs": z_fracs,
         "rotate": ROT90,
-        "mask": mask,
-        "z_extent": z_extent,
     }
 
 
@@ -588,21 +583,6 @@ def _spaced_unique_indices(zmin: int, zmax: int, k: int) -> np.ndarray:
     return idx
 
 
-def _slice_indices_from_mask(mask3d: np.ndarray, tiles: int) -> np.ndarray:
-    """Return montage slice indices based on the extent of ``mask3d``."""
-
-    if mask3d.ndim != 3:
-        raise ValueError("Expected a 3D mask when selecting montage slices")
-
-    valid_z = np.any(mask3d, axis=(0, 1))
-    if not valid_z.any():
-        return np.zeros(tiles, dtype=int)
-
-    zmin = int(np.argmax(valid_z))
-    zmax = int(len(valid_z) - np.argmax(valid_z[::-1]) - 1)
-    return _spaced_unique_indices(zmin, zmax, tiles)
-
-
 def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> tuple[int, int, int, int]:
     hx, hy = shape_rot
     r0 = int(np.floor(ref_bbox["r0_frac"] * hx))
@@ -614,6 +594,17 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
     c0 = max(0, min(c0, hy - 1))
     c1 = max(c0 + 1, min(c1, hy))
     return r0, r1, c0, c1
+
+
+def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
+    if nz <= 1:
+        return np.zeros_like(z_fracs, dtype=int)
+    z = np.rint(z_fracs * (nz - 1)).astype(int)
+    z = np.clip(z, 0, nz - 1)
+    for i in range(1, len(z)):
+        if z[i] <= z[i - 1] and nz > 1:
+            z[i] = min(nz - 1, z[i - 1] + 1)
+    return z
 
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
@@ -683,36 +674,12 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    brain_mask = ref_info.get("mask")
-    coverage_mask = None
-    if isinstance(brain_mask, np.ndarray) and brain_mask.shape == data.shape:
-        coverage_mask = brain_mask.astype(bool, copy=False)
-    else:
-        coverage_mask = np.isfinite(data) & (np.abs(data) > EPS)
-        z_extent = ref_info.get("z_extent")
-        if (
-            isinstance(z_extent, tuple)
-            and len(z_extent) == 2
-            and all(isinstance(v, int) for v in z_extent)
-        ):
-            zmin, zmax = z_extent
-            if zmin > 0:
-                coverage_mask[:, :, :zmin] = False
-            if zmax < coverage_mask.shape[2] - 1:
-                coverage_mask[:, :, zmax + 1 :] = False
-
-    coverage_mask = coverage_mask & np.isfinite(data)
-
-    if not np.any(coverage_mask):
-        raise ValueError("Parametric map contains no voxels within the brain mask")
-
-    data = np.where(coverage_mask, data, np.nan)
-
-    union_xy = np.any(coverage_mask, axis=2)
+    valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
+    union_xy = np.any(valmask3d, axis=2)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _slice_indices_from_mask(coverage_mask, rows * cols)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
     if z_indices.size < rows * cols:
         pad_value = z_indices[-1] if z_indices.size else 0
         z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
@@ -788,37 +755,17 @@ def _render_projection_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    brain_mask = ref_info.get("mask")
-    if isinstance(brain_mask, np.ndarray) and brain_mask.shape == data.shape:
-        coverage_mask = brain_mask.astype(bool, copy=False)
-    else:
-        coverage_mask = np.isfinite(data)
-        z_extent = ref_info.get("z_extent")
-        if (
-            isinstance(z_extent, tuple)
-            and len(z_extent) == 2
-            and all(isinstance(v, int) for v in z_extent)
-        ):
-            zmin, zmax = z_extent
-            if zmin > 0:
-                coverage_mask[:, :, :zmin] = False
-            if zmax < coverage_mask.shape[2] - 1:
-                coverage_mask[:, :, zmax + 1 :] = False
-
-    coverage_mask = coverage_mask & np.isfinite(data)
+    finite_mask = np.isfinite(data)
     if job.mask_zero:
-        coverage_mask &= np.abs(data) > EPS
-
-    if not coverage_mask.any():
+        finite_mask &= np.abs(data) > EPS
+    if not finite_mask.any():
         raise ValueError("Projection map contains no finite values")
 
-    data = np.where(coverage_mask, data, np.nan)
-
-    union_xy = np.any(coverage_mask, axis=2)
+    union_xy = np.any(finite_mask, axis=2)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _slice_indices_from_mask(coverage_mask, rows * cols)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
     if z_indices.size < rows * cols:
         pad_value = z_indices[-1] if z_indices.size else 0
         z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
