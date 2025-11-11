@@ -246,11 +246,17 @@ def main():
             if args.diffusion:
                 log_process_start("Diffusion tensor processing")
                 diffusion_filename = filenames[-2] if filenames else None
+                dce_filename = filenames[-1] if filenames else None
                 opt08_fa.compute_fa(
                     nifti_directory,
                     analysis_directory,
                     image_directory,
                     diffusion_filename=diffusion_filename,
+                    dce_path=(
+                        os.path.join(nifti_directory, dce_filename)
+                        if dce_filename
+                        else None
+                    ),
                 )
                 log_process_end("Diffusion tensor processing")
             log_auto("Fully automatic analysis pipeline completed.", level="success")
@@ -263,11 +269,17 @@ def main():
             if args.diffusion:
                 print("[diffusion] Computing diffusion metrics (pseudo-automatic mode)")
                 diffusion_filename = filenames[-2] if filenames else None
+                dce_filename = filenames[-1] if filenames else None
                 opt08_fa.compute_fa(
                     nifti_directory,
                     analysis_directory,
                     image_directory,
                     diffusion_filename=diffusion_filename,
+                    dce_path=(
+                        os.path.join(nifti_directory, dce_filename)
+                        if dce_filename
+                        else None
+                    ),
                 )
             manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
                             image_directory, filenames, parameters, pseudo=True)

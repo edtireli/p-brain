@@ -141,6 +141,42 @@ def _reference_grid(img: nib.Nifti1Image) -> Tuple[Tuple[int, ...], np.ndarray]:
     return shape, img.affine
 
 
+def _maybe_resample_to_dce(
+    img: nib.Nifti1Image,
+    target: Optional[Tuple[Tuple[int, ...], np.ndarray]],
+    label: str,
+) -> nib.Nifti1Image:
+    """Resample ``img`` to ``target`` when provided, preserving float32 storage."""
+
+    if target is None:
+        return img
+
+    ref_shape, ref_affine = target
+    if img.shape == ref_shape and np.allclose(img.affine, ref_affine):
+        return img
+
+    if resample_from_to is None:
+        print(
+            f"[!] Cannot resample {label} to DCE space – nibabel.processing unavailable"
+        )
+        return img
+
+    try:
+        resampled = resample_from_to(img, target)
+    except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
+        print(f"[!] Failed to resample {label} to DCE space: {exc}")
+        return img
+
+    data = resampled.get_fdata(dtype=np.float32)
+    resampled = nib.Nifti1Image(
+        np.asarray(data, dtype=np.float32, order="C"),
+        resampled.affine,
+        resampled.header,
+    )
+    resampled.set_data_dtype(np.float32)
+    return resampled
+
+
 def _load_mask(mask_path: str, reference_img: nib.Nifti1Image) -> Optional[np.ndarray]:
     if mask_path is None:
         return None
@@ -664,7 +700,12 @@ _BRAIN_TISSUE_GROUPS = {
 
 
 def compute_fa(
-    nifti_directory, analysis_directory, image_directory=None, diffusion_filename=None
+    nifti_directory,
+    analysis_directory,
+    image_directory=None,
+    diffusion_filename=None,
+    *,
+    dce_path: Optional[str] = None,
 ):
     preferred = (diffusion_filename,) if diffusion_filename else None
     dwi_path, bval_path, bvec_path = find_dwi_files(
@@ -679,6 +720,20 @@ def compute_fa(
     print(f"[!] Computing FA from {os.path.basename(dwi_path)}")
     img = nib.load(dwi_path)
     data = img.get_fdata()
+
+    dce_resample_target: Optional[Tuple[Tuple[int, ...], np.ndarray]] = None
+    if dce_path:
+        if os.path.isfile(dce_path):
+            try:
+                dce_img = nib.load(dce_path)
+                dce_resample_target = _reference_grid(dce_img)
+            except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
+                print(f"[!] Failed to load DCE reference for diffusion resampling: {exc}")
+        else:
+            print(
+                "[!] DCE reference for diffusion resampling missing – proceeding without resampling: "
+                f"{dce_path}"
+            )
 
     bvals = np.loadtxt(bval_path)
     bvecs = np.loadtxt(bvec_path)
@@ -822,6 +877,11 @@ def compute_fa(
 
         metric_img = nib.Nifti1Image(metric_data, img.affine, img.header)
         metric_img.set_data_dtype(np.float32)
+        metric_img = _maybe_resample_to_dce(
+            metric_img,
+            dce_resample_target,
+            f"{metric_name.upper()} map",
+        )
         map_path = os.path.join(diffusion_dir, f"{metric_name}_map.nii.gz")
         nib.save(metric_img, map_path)
         print(f"[!] Saved {metric_name.upper()} map to {map_path}")
@@ -856,8 +916,15 @@ def compute_fa(
                 restrict_to_wm=payload.get("restrict_parcels_to_wm", False),
             )
             if parcels:
-                atlas_img = nib.Nifti1Image(parcel_map.astype(np.float32), img.affine, img.header)
+                atlas_img = nib.Nifti1Image(
+                    parcel_map.astype(np.float32), img.affine, img.header
+                )
                 atlas_img.set_data_dtype(np.float32)
+                atlas_img = _maybe_resample_to_dce(
+                    atlas_img,
+                    dce_resample_target,
+                    f"{metric_name.upper()} atlas map",
+                )
                 atlas_path = os.path.join(diffusion_dir, f"{metric_name}_map_atlas.nii.gz")
                 nib.save(atlas_img, atlas_path)
                 print(f"[!] Saved {metric_name.upper()} atlas map to {atlas_path}")
@@ -897,7 +964,13 @@ def compute_fa(
             print(f"[!] Mean WM FA: {mean_fa_wm:.4f}")
 
             fa_wm = np.where(wm_mask, fa, np.nan)
-            fa_wm_img = nib.Nifti1Image(fa_wm.astype(np.float32), img.affine, img.header)
+            fa_wm_img = nib.Nifti1Image(
+                fa_wm.astype(np.float32), img.affine, img.header
+            )
+            fa_wm_img.set_data_dtype(np.float32)
+            fa_wm_img = _maybe_resample_to_dce(
+                fa_wm_img, dce_resample_target, "WM FA map"
+            )
             wm_out_path = os.path.join(diffusion_dir, "fa_wm_map.nii.gz")
             nib.save(fa_wm_img, wm_out_path)
             legacy_wm_path = os.path.join(analysis_directory, "FA_WM_map.nii.gz")
