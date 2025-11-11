@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+from skimage.transform import resize
 
 ROWS = 2
 COLS = 5
@@ -681,6 +682,21 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
     return np.clip(z, 0, nz - 1)
 
 
+def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
+    target_shape = (int(target_shape[0]), int(target_shape[1]))
+    if mask.shape == target_shape:
+        return mask.astype(bool, copy=False)
+
+    resized = resize(
+        mask.astype(np.float32),
+        target_shape,
+        order=0,
+        preserve_range=True,
+        anti_aliasing=False,
+    )
+    return resized >= 0.5
+
+
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
     found: Dict[str, str] = {}
     search_dirs = job.search_directories or ("",)
@@ -790,11 +806,22 @@ def _render_montage(
         slc = slr[r0:r1, c0:c1]
 
         union_crop = union_xy_r[r0:r1, c0:c1]
+        extent = (0.0, 1.0, 1.0, 0.0)
         if overlay_volume is not None:
             overlay_slice = overlay_volume[:, :, zi]
             overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
-            overlay_crop = overlay_rot[r0:r1, c0:c1]
-            overlay_mask = (~union_crop) | (~np.isfinite(overlay_crop))
+            overlay_r0, overlay_r1, overlay_c0, overlay_c1 = _map_bbox_from_ref(
+                ref_info["bbox_fracs"], overlay_rot.shape
+            )
+            overlay_crop = overlay_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
+            if overlay_rot.shape != union_xy_r.shape:
+                overlay_union = _resize_mask(union_xy_r, overlay_rot.shape)
+            else:
+                overlay_union = union_xy_r
+            overlay_union_crop = overlay_union[
+                overlay_r0:overlay_r1, overlay_c0:overlay_c1
+            ]
+            overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
             overlay_arr = np.ma.array(overlay_crop, mask=overlay_mask)
             ax.imshow(
                 overlay_arr,
@@ -803,6 +830,7 @@ def _render_montage(
                 origin="upper",
                 vmin=overlay_vmin,
                 vmax=overlay_vmax,
+                extent=extent,
             )
 
         if job.mask_zero:
@@ -824,6 +852,7 @@ def _render_montage(
             interpolation="nearest",
             origin="upper",
             alpha=overlay_alpha,
+            extent=extent,
         )
 
     # Hide any unused axes when there are fewer slices than tiles
