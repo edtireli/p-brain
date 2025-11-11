@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+import shutil
 import subprocess
 import sys
 
@@ -105,6 +106,178 @@ def _find_anatomical_overlay(nifti_directory: str) -> str | None:
     return None
 
 
+def _maybe_generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> str | None:
+    """Return an anatomical overlay, generating one when necessary."""
+
+    overlay = _find_anatomical_overlay(nifti_directory)
+    if overlay is not None:
+        return overlay
+
+    generated = _generate_anatomical_overlay(nifti_directory, dce_path)
+    if generated is not None:
+        return generated
+
+    return None
+
+
+def _generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> str | None:
+    """Generate a T1 overlay coregistered to the provided DCE reference."""
+
+    t1_candidates = _discover_t1_candidates(nifti_directory)
+    if not t1_candidates:
+        return None
+
+    print("[montage] Anatomical overlay missing – attempting to resample T1 to DCE space.")
+
+    for candidate in t1_candidates:
+        try:
+            prepared = _ensure_nifti_volume(candidate)
+        except Exception as exc:  # noqa: BLE001 - surface helpful context
+            print(
+                f"[montage] Failed to prepare anatomical candidate {candidate!r}: {exc}"
+            )
+            continue
+
+        overlay_path = _derive_overlay_output_path(prepared)
+        try:
+            produced = _coregister_volume_to_reference(prepared, dce_path, overlay_path)
+        except Exception as exc:  # noqa: BLE001 - surface helpful context
+            print(
+                "[montage] Failed to resample anatomical volume into DCE space: "
+                f"{exc}"
+            )
+            continue
+
+        if produced and os.path.isfile(produced):
+            return produced
+
+    return None
+
+
+def _discover_t1_candidates(nifti_directory: str) -> list[str]:
+    """Return candidate anatomical T1 volumes from segmentation outputs."""
+
+    search_roots = (
+        os.path.join(nifti_directory, "segmentation", "segmentation", "mri"),
+        os.path.join(nifti_directory, "segmentation", "mri"),
+        os.path.join(nifti_directory, "segmentation"),
+    )
+
+    patterns = (
+        "T1w_conformed*",
+        "T1w*",
+        "T1_*",
+        "T1.*",
+        "orig.mgz",
+    )
+
+    candidates: list[str] = []
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        for pattern in patterns:
+            search_pattern = os.path.join(root, "**", pattern)
+            for path in sorted(glob.iglob(search_pattern, recursive=True)):
+                if not os.path.isfile(path):
+                    continue
+                if "_in_DCE" in os.path.basename(path):
+                    continue
+                candidates.append(path)
+
+    return candidates
+
+
+def _ensure_nifti_volume(path: str) -> str:
+    """Convert ``path`` to a NIfTI file if necessary and return the usable path."""
+
+    lower = path.lower()
+    if lower.endswith(".nii") or lower.endswith(".nii.gz"):
+        return path
+
+    if lower.endswith(".mgz"):
+        converted = path[:-4] + ".nii.gz"
+        if os.path.isfile(converted):
+            return converted
+
+        try:
+            import nibabel as nib
+            import numpy as np
+        except Exception as exc:  # noqa: BLE001 - expose helpful context
+            raise RuntimeError(
+                "nibabel is required to convert MGZ anatomical volumes to NIfTI"
+            ) from exc
+
+        image = nib.load(path)
+        data = np.asanyarray(image.dataobj)
+        nifti = nib.Nifti1Image(data, image.affine)
+        nib.save(nifti, converted)
+        return converted
+
+    return path
+
+
+def _derive_overlay_output_path(source_path: str) -> str:
+    """Return the expected overlay filename for ``source_path``."""
+
+    directory, filename = os.path.split(source_path)
+    base = filename
+    if base.lower().endswith(".nii.gz"):
+        base = base[:-7]
+    elif base.lower().endswith(".nii"):
+        base = base[:-4]
+    elif base.lower().endswith(".mgz"):
+        base = base[:-4]
+
+    return os.path.join(directory, f"{base}_in_DCE.nii.gz")
+
+
+def _coregister_volume_to_reference(
+    source_path: str, reference_path: str, output_path: str
+) -> str:
+    """Resample ``source_path`` into ``reference_path`` space and return ``output_path``."""
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    flirt_path = shutil.which("flirt")
+    if flirt_path:
+        command = [
+            flirt_path,
+            "-in",
+            source_path,
+            "-ref",
+            reference_path,
+            "-applyxfm",
+            "-usesqform",
+            "-interp",
+            "trilinear",
+            "-out",
+            output_path,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.isfile(output_path):
+            return output_path
+
+        stderr = (result.stderr or "").strip()
+        print(
+            "[montage] FLIRT command failed while generating anatomical overlay: "
+            f"{stderr or 'unknown error'}"
+        )
+
+    try:
+        import nibabel as nib
+        from nibabel.processing import resample_from_to
+    except Exception as exc:  # noqa: BLE001 - expose helpful context
+        raise RuntimeError(
+            "Unable to generate anatomical overlay without FSL flirt or nibabel"
+        ) from exc
+
+    source_img = nib.load(source_path)
+    reference_img = nib.load(reference_path)
+    resampled = resample_from_to(source_img, reference_img)
+    nib.save(resampled, output_path)
+    return output_path
+
+
 def _resolve_dataset_root(data_root, dataset_id, is_control):
     """Return the filesystem path for ``dataset_id``."""
 
@@ -189,7 +362,9 @@ def _run_montage_for_dataset(
 
     anatomical_overlay = None
     if use_anatomical:
-        anatomical_overlay = _find_anatomical_overlay(nifti_directory)
+        anatomical_overlay = _maybe_generate_anatomical_overlay(
+            nifti_directory, dce_path
+        )
         if anatomical_overlay is None:
             print(
                 "[montage] Anatomical overlay requested but no T1 reference was found – "
