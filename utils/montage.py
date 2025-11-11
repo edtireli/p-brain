@@ -35,6 +35,7 @@ class MapJob:
     mask_zero: bool = False
     output_ext: str = ".png"
     patterns: Sequence[str] = field(default_factory=tuple)
+    search_directories: Sequence[str] = ("",)
 
     def candidate_patterns(self) -> Sequence[str]:
         if self.patterns:
@@ -58,18 +59,38 @@ MAP_JOBS: Sequence[MapJob] = (
     MapJob("Ki_map_atlas", "ki_atlas_montage"),
     MapJob("vp_map_atlas", "vp_atlas_montage"),
     MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png"),
-    MapJob("fa_map", "fa_montage", vmin=0.0, vmax=1.0),
-    MapJob("fa_map_atlas", "fa_parcel_montage", vmin=0.0, vmax=1.0),
-    MapJob("md_map", "md_montage"),
-    MapJob("md_map_atlas", "md_parcel_montage"),
-    MapJob("ad_map", "ad_montage"),
-    MapJob("ad_map_atlas", "ad_parcel_montage"),
-    MapJob("rd_map", "rd_montage"),
-    MapJob("rd_map_atlas", "rd_parcel_montage"),
-    MapJob("mo_map", "mo_montage"),
-    MapJob("mo_map_atlas", "mo_parcel_montage"),
-    MapJob("tensor_residual_map", "tensor_residual_montage"),
-    MapJob("tensor_residual_map_atlas", "tensor_residual_parcel_montage"),
+    MapJob(
+        "fa_map",
+        "fa_montage",
+        vmin=0.0,
+        vmax=1.0,
+        search_directories=("", "diffusion"),
+    ),
+    MapJob(
+        "fa_map_atlas",
+        "fa_parcel_montage",
+        vmin=0.0,
+        vmax=1.0,
+        search_directories=("", "diffusion"),
+    ),
+    MapJob("md_map", "md_montage", search_directories=("", "diffusion")),
+    MapJob("md_map_atlas", "md_parcel_montage", search_directories=("", "diffusion")),
+    MapJob("ad_map", "ad_montage", search_directories=("", "diffusion")),
+    MapJob("ad_map_atlas", "ad_parcel_montage", search_directories=("", "diffusion")),
+    MapJob("rd_map", "rd_montage", search_directories=("", "diffusion")),
+    MapJob("rd_map_atlas", "rd_parcel_montage", search_directories=("", "diffusion")),
+    MapJob("mo_map", "mo_montage", search_directories=("", "diffusion")),
+    MapJob("mo_map_atlas", "mo_parcel_montage", search_directories=("", "diffusion")),
+    MapJob(
+        "tensor_residual_map",
+        "tensor_residual_montage",
+        search_directories=("", "diffusion"),
+    ),
+    MapJob(
+        "tensor_residual_map_atlas",
+        "tensor_residual_parcel_montage",
+        search_directories=("", "diffusion"),
+    ),
 )
 
 MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
@@ -588,11 +609,14 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
     found: Dict[str, str] = {}
-    for pattern in job.candidate_patterns():
-        for path in sorted(glob.glob(os.path.join(analysis_directory, pattern))):
-            suffix = _extract_suffix(path, job.base)
-            if suffix not in found or path.endswith(".nii.gz"):
-                found[suffix] = path
+    search_dirs = job.search_directories or ("",)
+    for rel_dir in search_dirs:
+        base_dir = analysis_directory if not rel_dir else os.path.join(analysis_directory, rel_dir)
+        for pattern in job.candidate_patterns():
+            for path in sorted(glob.glob(os.path.join(base_dir, pattern))):
+                suffix = _extract_suffix(path, job.base)
+                if suffix not in found or path.endswith(".nii.gz"):
+                    found[suffix] = path
     return found
 
 
