@@ -777,6 +777,7 @@ def _render_montage(
     overlay_vmax = overlay.get("vmax") if overlay else None
 
     for ax, z in zip(axes, z_indices):
+        zi = int(np.clip(z, 0, data.shape[2] - 1))
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
@@ -784,13 +785,13 @@ def _render_montage(
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-        sl = data[:, :, int(z)]
+        sl = data[:, :, zi]
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
 
         union_crop = union_xy_r[r0:r1, c0:c1]
         if overlay_volume is not None:
-            overlay_slice = overlay_volume[:, :, int(z)]
+            overlay_slice = overlay_volume[:, :, zi]
             overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
             overlay_crop = overlay_rot[r0:r1, c0:c1]
             overlay_mask = (~union_crop) | (~np.isfinite(overlay_crop))
@@ -885,6 +886,7 @@ def _render_projection_montage(
     axes = axes.ravel()
 
     for ax, z in zip(axes, z_indices):
+        zi = int(np.clip(z, 0, data.shape[2] - 1))
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
@@ -892,7 +894,7 @@ def _render_projection_montage(
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-        sl = data[:, :, int(z)]
+        sl = data[:, :, zi]
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
 
