@@ -6,7 +6,7 @@ import glob
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -146,6 +146,7 @@ def generate_parametric_montages(
     image_directory: str,
     dce_path: str,
     *,
+    anatomical_overlay: str | None = None,
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
@@ -160,6 +161,10 @@ def generate_parametric_montages(
         Root ``Images`` directory for the current subject.
     dce_path:
         Path to the native-space DCE reference volume used to select slices.
+    anatomical_overlay:
+        Optional path to a T1-weighted anatomical volume already aligned to the
+        DCE reference. When provided, montage values will be rendered atop the
+        grayscale anatomical background.
     rows, cols:
         Layout of the montage grid.
     dpi:
@@ -182,6 +187,13 @@ def generate_parametric_montages(
         print("[montage] Reference volume contained no finite voxels – skipping montages.")
         return
 
+    overlay = None
+    if anatomical_overlay:
+        overlay, overlay_error = _prepare_anatomical_overlay(anatomical_overlay, reference)
+        if overlay_error:
+            print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
+            overlay = None
+
     out_dir = os.path.join(image_directory, "AI", "Montages")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -199,6 +211,7 @@ def generate_parametric_montages(
                     rows=rows,
                     cols=cols,
                     dpi=dpi,
+                    overlay=overlay,
                 )
                 generated_any = True
                 print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -483,6 +496,51 @@ def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     return data
 
 
+def _prepare_anatomical_overlay(
+    overlay_path: str, reference: np.ndarray
+) -> tuple[Dict[str, Any] | None, str | None]:
+    try:
+        overlay = _load_reference_volume(overlay_path)
+    except FileNotFoundError:
+        return None, f"Anatomical overlay not found: {overlay_path}"
+    except Exception as exc:  # noqa: BLE001 - report to CLI users
+        return None, f"Failed to load anatomical overlay {overlay_path}: {exc}"
+
+    if overlay is None:
+        return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
+
+    if overlay.shape != reference.shape:
+        return (
+            None,
+            "Anatomical overlay shape does not match the DCE reference volume "
+            f"({overlay.shape} vs {reference.shape})",
+        )
+
+    vmin, vmax = _estimate_intensity_range(overlay)
+    return {
+        "volume": overlay,
+        "alpha": 0.65,
+        "vmin": vmin,
+        "vmax": vmax,
+    }, None
+
+
+def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
+    finite = volume[np.isfinite(volume)]
+    if finite.size == 0:
+        return None, None
+
+    vmin, vmax = np.percentile(finite, (2.0, 98.0))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return None, None
+
+    if np.isclose(vmin, vmax):
+        delta = np.abs(vmin) if vmin else 1.0
+        vmax = vmin + delta
+
+    return float(vmin), float(vmax)
+
+
 def _build_reference(volume: np.ndarray, tiles: int) -> Dict[str, np.ndarray] | None:
     mask = np.isfinite(volume) & (np.abs(volume) > EPS)
     if not mask.any():
@@ -668,6 +726,7 @@ def _render_montage(
     rows: int,
     cols: int,
     dpi: int,
+    overlay: Dict[str, Any] | None = None,
 ) -> None:
     img = nib.load(map_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
@@ -696,6 +755,11 @@ def _render_montage(
     fig.patch.set_alpha(0.0)
     axes = axes.ravel()
 
+    overlay_volume = overlay.get("volume") if overlay else None
+    overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
+    overlay_vmin = overlay.get("vmin") if overlay else None
+    overlay_vmax = overlay.get("vmax") if overlay else None
+
     for ax, z in zip(axes, z_indices):
         ax.set_xticks([])
         ax.set_yticks([])
@@ -709,6 +773,21 @@ def _render_montage(
         slc = slr[r0:r1, c0:c1]
 
         union_crop = union_xy_r[r0:r1, c0:c1]
+        if overlay_volume is not None:
+            overlay_slice = overlay_volume[:, :, int(z)]
+            overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
+            overlay_crop = overlay_rot[r0:r1, c0:c1]
+            overlay_mask = (~union_crop) | (~np.isfinite(overlay_crop))
+            overlay_arr = np.ma.array(overlay_crop, mask=overlay_mask)
+            ax.imshow(
+                overlay_arr,
+                cmap="gray",
+                interpolation="nearest",
+                origin="upper",
+                vmin=overlay_vmin,
+                vmax=overlay_vmax,
+            )
+
         if job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
@@ -721,7 +800,14 @@ def _render_montage(
             mask_slice = np.isfinite(slc)
 
         arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
-        ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
+        ax.imshow(
+            arr,
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest",
+            origin="upper",
+            alpha=overlay_alpha,
+        )
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
