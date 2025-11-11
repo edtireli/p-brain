@@ -81,6 +81,7 @@ def _find_anatomical_overlay(nifti_directory: str) -> str | None:
     search_roots = (
         os.path.join(nifti_directory, "segmentation", "segmentation", "mri"),
         os.path.join(nifti_directory, "segmentation", "mri"),
+        os.path.join(nifti_directory, "segmentation"),
         nifti_directory,
     )
 
@@ -92,8 +93,12 @@ def _find_anatomical_overlay(nifti_directory: str) -> str | None:
     )
 
     for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+
         for pattern in patterns:
-            for path in sorted(glob.glob(os.path.join(root, pattern))):
+            search_pattern = os.path.join(root, "**", pattern)
+            for path in sorted(glob.iglob(search_pattern, recursive=True)):
                 if os.path.isfile(path):
                     return path
 
