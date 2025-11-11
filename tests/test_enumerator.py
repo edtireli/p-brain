@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+import nibabel as nib
+import numpy as np
 import pytest
 
 
@@ -205,6 +207,73 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
         str(dataset / "Images"),
         str(dce_file),
         str(overlay_file),
+    )
+
+
+def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "001"
+    (dataset / "Analysis").mkdir(parents=True)
+    (dataset / "Images").mkdir()
+    nifti_dir = dataset / "NIfTI"
+    nifti_dir.mkdir()
+
+    dce_file = nifti_dir / "WIPhperf120long.nii"
+    dce_image = nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4))
+    dce_image.to_filename(str(dce_file))
+
+    overlay_dir = nifti_dir / "segmentation" / "segmentation" / "mri"
+    overlay_dir.mkdir(parents=True)
+    t1_candidate = overlay_dir / "T1w_conformed.nii.gz"
+    t1_image = nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4))
+    t1_image.to_filename(str(t1_candidate))
+
+    called = {}
+
+    def fake_loader():
+        def fake_generate(
+            analysis_directory,
+            image_directory,
+            dce_path,
+            *,
+            anatomical_overlay=None,
+        ):
+            called["args"] = (
+                analysis_directory,
+                image_directory,
+                dce_path,
+                anatomical_overlay,
+            )
+
+        class DummyParameters:
+            @staticmethod
+            def global_filenames(_):
+                return ("", "", "", "", "", "", "", "", "WIPhperf120long.nii")
+
+            @staticmethod
+            def control_filenames(_):
+                raise AssertionError("control_filenames should not be used for patient data")
+
+        return fake_generate, DummyParameters
+
+    monkeypatch.setattr(enumerator, "_load_montage_dependencies", fake_loader)
+    monkeypatch.setattr(enumerator.shutil, "which", lambda _: None)
+
+    assert (
+        enumerator._run_montage_for_dataset(
+            tmp_path, "001", False, use_anatomical=True
+        )
+        is True
+    )
+
+    overlay_path = overlay_dir / "T1w_conformed_in_DCE.nii.gz"
+    assert overlay_path.exists()
+    assert called["args"] == (
+        str(dataset / "Analysis"),
+        str(dataset / "Images"),
+        str(dce_file),
+        str(overlay_path),
     )
 
 
