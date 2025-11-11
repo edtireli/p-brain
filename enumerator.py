@@ -1,6 +1,7 @@
 import argparse
-import subprocess
+import glob
 import os
+import subprocess
 import sys
 
 import utils.settings as settings
@@ -46,6 +47,59 @@ def _prepare_projection_stats(data_root: str):
     )
 
 
+def _find_anatomical_overlay(nifti_directory: str) -> str | None:
+    """Return a T1 volume aligned to DCE space when available."""
+
+    preferred = (
+        os.path.join(
+            nifti_directory,
+            "segmentation",
+            "segmentation",
+            "mri",
+            "T1w_conformed_in_DCE.nii.gz",
+        ),
+        os.path.join(
+            nifti_directory,
+            "segmentation",
+            "segmentation",
+            "mri",
+            "T1w_in_DCE.nii.gz",
+        ),
+        os.path.join(
+            nifti_directory,
+            "segmentation",
+            "segmentation",
+            "mri",
+            "T1_in_DCE.nii.gz",
+        ),
+    )
+
+    for candidate in preferred:
+        if os.path.isfile(candidate):
+            return candidate
+
+    search_roots = (
+        os.path.join(nifti_directory, "segmentation", "segmentation", "mri"),
+        os.path.join(nifti_directory, "segmentation", "mri"),
+        nifti_directory,
+    )
+
+    patterns = (
+        "*T1*DCE*.nii.gz",
+        "*T1*DCE*.nii",
+        "*T1*_in_DCE*.nii.gz",
+        "*T1*_in_DCE*.nii",
+    )
+
+    for root in search_roots:
+        for pattern in patterns:
+            for path in sorted(glob.glob(os.path.join(root, pattern))):
+                if os.path.isfile(path):
+                    return path
+
+    return None
+
+
 def _resolve_dataset_root(data_root, dataset_id, is_control):
     """Return the filesystem path for ``dataset_id``."""
 
@@ -67,6 +121,7 @@ def _run_montage_for_dataset(
     *,
     use_projection=False,
     projection_stats=None,
+    use_anatomical=False,
 ):
     """Render parametric montages for ``dataset_id`` if possible."""
 
@@ -127,10 +182,29 @@ def _run_montage_for_dataset(
         print(f"[montage] DCE file missing – skipping montage rendering: {dce_path}")
         return False
 
+    anatomical_overlay = None
+    if use_anatomical:
+        anatomical_overlay = _find_anatomical_overlay(nifti_directory)
+        if anatomical_overlay is None:
+            print(
+                "[montage] Anatomical overlay requested but no T1 reference was found – "
+                "continuing without overlay."
+            )
+        else:
+            print(
+                "[montage] Using anatomical overlay for montages: "
+                f"{os.path.relpath(anatomical_overlay, start=data_root)}"
+            )
+
     print(f"[montage] Generating montages for {dataset_id}")
     overall_success = True
     try:
-        generate_parametric_montages(analysis_directory, image_directory, dce_path)
+        generate_parametric_montages(
+            analysis_directory,
+            image_directory,
+            dce_path,
+            anatomical_overlay=anatomical_overlay,
+        )
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")
         overall_success = False
@@ -238,6 +312,14 @@ def parse_args():
         "--montage",
         action="store_true",
         help="Only generate montage images for the selected datasets",
+    )
+    parser.add_argument(
+        "--montage_anatomical",
+        action="store_true",
+        help=(
+            "Overlay montage values on the anatomical T1 volume resliced to DCE space "
+            "(requires precomputed alignment, implies --montage)"
+        ),
     )
     parser.add_argument(
         "--projection",
@@ -375,6 +457,9 @@ def main():
         print("No datasets found to process.")
         sys.exit(0)
 
+    if args.montage_anatomical:
+        args.montage = True
+
     if args.diffusion_only:
         args.diffusion = True
 
@@ -410,6 +495,7 @@ def main():
                     is_control,
                     use_projection=args.projection,
                     projection_stats=projection_stats,
+                    use_anatomical=args.montage_anatomical,
                 )
                 if not success:
                     exit_code = 1
@@ -433,6 +519,7 @@ def main():
                 is_control,
                 use_projection=args.projection,
                 projection_stats=projection_stats,
+                use_anatomical=args.montage_anatomical,
             )
             if not success:
                 exit_code = 1
@@ -467,6 +554,7 @@ def main():
             is_control,
             use_projection=args.projection,
             projection_stats=projection_stats,
+            use_anatomical=args.montage_anatomical,
         )
 
 
