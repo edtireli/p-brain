@@ -657,12 +657,28 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
 def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
     if nz <= 1:
         return np.zeros_like(z_fracs, dtype=int)
-    z = np.rint(z_fracs * (nz - 1)).astype(int)
-    z = np.clip(z, 0, nz - 1)
+
+    z = np.asarray(z_fracs, dtype=np.float64)
+    if z.size == 0:
+        return np.zeros(0, dtype=int)
+
+    # Numerical precision issues can occasionally push the fractional
+    # positions slightly outside the expected [0, 1] range which, once
+    # rescaled, leads to out-of-bounds slice indices. Clip the fractions
+    # before converting to discrete indices to guarantee they fall within
+    # the valid extent of the target volume.
+    z = np.clip(z, 0.0, 1.0)
+    z = np.rint(z * (nz - 1)).astype(int)
+
+    # Ensure monotonically increasing slice selection so that repeated
+    # fractions still walk forward through the target volume.  Perform the
+    # adjustment before a final clip in case the increment would otherwise
+    # exceed the upper bound.
     for i in range(1, len(z)):
-        if z[i] <= z[i - 1] and nz > 1:
-            z[i] = min(nz - 1, z[i - 1] + 1)
-    return z
+        if z[i] <= z[i - 1]:
+            z[i] = z[i - 1] + 1
+
+    return np.clip(z, 0, nz - 1)
 
 
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
