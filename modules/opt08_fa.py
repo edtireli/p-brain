@@ -845,14 +845,10 @@ def compute_fa(
         "fa": {
             "data": fa,
             "units": "unitless",
-            "voxel_mask_tissues": _WM_TISSUES,
-            "stats_mask_selection": ("white_matter", "wm_cerebellum", "brainstem"),
-            "stats_union_label": "white_matter_total",
-            "stats_union_tissues": _WM_TISSUES,
-            "tissue_groups": {"white_matter": _WM_TISSUES},
+            "tissue_groups": _BRAIN_TISSUE_GROUPS,
             "include_parcels": True,
-            "restrict_parcels_to_wm": True,
-            "parcel_selection": "white_matter",
+            "restrict_parcels_to_wm": False,
+            "parcel_selection": "all",
         },
         "md": {
             "data": md,
@@ -881,14 +877,10 @@ def compute_fa(
         "mo": {
             "data": mode,
             "units": "unitless",
-            "voxel_mask_tissues": _WM_TISSUES,
-            "stats_mask_selection": ("white_matter", "wm_cerebellum", "brainstem"),
-            "stats_union_label": "white_matter_total",
-            "stats_union_tissues": _WM_TISSUES,
-            "tissue_groups": {"white_matter": _WM_TISSUES},
+            "tissue_groups": _BRAIN_TISSUE_GROUPS,
             "include_parcels": True,
-            "restrict_parcels_to_wm": True,
-            "parcel_selection": "white_matter",
+            "restrict_parcels_to_wm": False,
+            "parcel_selection": "all",
         },
         "tensor_residual": {
             "data": residual,
@@ -1033,11 +1025,12 @@ def compute_fa(
             json.dump(atlas_summary, fp, indent=4)
         print(f"[!] Wrote diffusion atlas statistics to {atlas_stats_path}")
 
-    wm_union_mask = _union_of_tissues(masks, _WM_TISSUES)
-    if wm_union_mask is not None:
-        mean_fa = float(np.nanmean(np.where(wm_union_mask, fa, np.nan)))
+    brain_union_mask = brain_mask if brain_mask is not None else _brain_union_mask(masks)
+    if brain_union_mask is not None:
+        mean_fa = float(np.nanmean(np.where(brain_union_mask, fa, np.nan)))
     else:
         mean_fa = float(np.nanmean(fa))
+    wm_union_mask = _union_of_tissues(masks, _WM_TISSUES)
     with open(os.path.join(diffusion_dir, "fa_mean.txt"), "w") as f:
         f.write(f"{mean_fa}\n")
     print(f"[!] Mean FA: {mean_fa:.4f}")
