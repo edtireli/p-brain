@@ -423,6 +423,13 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
     _create_dataset(tmp_path, "001")
 
     montage_calls = []
+    diffusion_calls = []
+
+    def fake_diffusion(data_root, dataset_id, is_control):
+        diffusion_calls.append((data_root, dataset_id, is_control))
+        return True
+
+    monkeypatch.setattr(enumerator, "_run_diffusion_for_dataset", fake_diffusion)
 
     def fake_montage(
         data_root,
@@ -475,3 +482,4 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
             True,
         )
     ]
+    assert diffusion_calls == [(str(tmp_path), "001", False)]

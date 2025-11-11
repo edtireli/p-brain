@@ -639,6 +639,7 @@ def main():
 
     if args.montage_anatomical:
         args.montage = True
+        args.diffusion = True
 
     if args.diffusion_only:
         args.diffusion = True
