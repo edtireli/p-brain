@@ -151,6 +151,13 @@ def _maybe_resample_to_dce(
     if target is None:
         return img
 
+    original_data = np.asarray(img.get_fdata(dtype=np.float32))
+    finite_original = np.isfinite(original_data)
+    if np.any(finite_original):
+        original_signal = float(np.nanmax(np.abs(original_data[finite_original])))
+    else:
+        original_signal = 0.0
+
     ref_shape, ref_affine = target
     if img.shape == ref_shape and np.allclose(img.affine, ref_affine):
         return img
@@ -168,11 +175,45 @@ def _maybe_resample_to_dce(
         return img
 
     data = resampled.get_fdata(dtype=np.float32)
+    finite_resampled = np.isfinite(data)
+    has_resampled_signal = np.any(finite_resampled)
+    if has_resampled_signal:
+        resampled_signal = float(np.nanmax(np.abs(data[finite_resampled])))
+    else:
+        resampled_signal = 0.0
+
+    signal_floor = np.finfo(np.float32).eps
+    if original_signal > signal_floor and (
+        resampled_signal <= signal_floor or not has_resampled_signal
+    ):
+        print(
+            f"[!] Resampling {label} collapsed non-zero diffusion values – keeping "
+            "diffusion-space geometry."
+        )
+        fallback_header = img.header.copy()
+        fallback_header.set_data_dtype(np.float32)
+        try:
+            fallback_header.set_slope_inter(1.0, 0.0)
+        except AttributeError:
+            with np.errstate(invalid="ignore"):
+                fallback_header["scl_slope"] = 1.0
+                fallback_header["scl_inter"] = 0.0
+        fallback_img = nib.Nifti1Image(
+            np.asarray(original_data, dtype=np.float32, order="C"),
+            img.affine,
+            fallback_header,
+        )
+        fallback_img.set_data_dtype(np.float32)
+        return fallback_img
+
     header = resampled.header.copy()
     header.set_data_dtype(np.float32)
-    with np.errstate(invalid="ignore"):
-        header["scl_slope"] = 1.0
-        header["scl_inter"] = 0.0
+    try:
+        header.set_slope_inter(1.0, 0.0)
+    except AttributeError:
+        with np.errstate(invalid="ignore"):
+            header["scl_slope"] = 1.0
+            header["scl_inter"] = 0.0
     resampled = nib.Nifti1Image(
         np.asarray(data, dtype=np.float32, order="C"),
         resampled.affine,
