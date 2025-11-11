@@ -290,3 +290,61 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
             False,
         )
     ]
+
+
+def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
+    _create_dataset(tmp_path, "001")
+
+    montage_calls = []
+
+    def fake_montage(
+        data_root,
+        dataset_id,
+        is_control,
+        *,
+        use_projection=False,
+        projection_stats=None,
+        use_anatomical=False,
+    ):
+        montage_calls.append(
+            (
+                data_root,
+                dataset_id,
+                is_control,
+                use_projection,
+                projection_stats,
+                use_anatomical,
+            )
+        )
+        return True
+
+    monkeypatch.setattr(enumerator, "_run_montage_for_dataset", fake_montage)
+
+    def fail_run(*args, **kwargs):  # pragma: no cover - should not be invoked
+        raise AssertionError("Pipeline should not execute when only montages are requested")
+
+    monkeypatch.setattr(enumerator.subprocess, "run", fail_run)
+
+    argv = [
+        "enumerator.py",
+        "--montage_anatomical",
+        "--data-dir",
+        str(tmp_path),
+        "001",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc:
+        enumerator.main()
+
+    assert exc.value.code == 0
+    assert montage_calls == [
+        (
+            str(tmp_path),
+            "001",
+            False,
+            False,
+            None,
+            True,
+        )
+    ]

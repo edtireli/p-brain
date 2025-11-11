@@ -318,7 +318,7 @@ def parse_args():
         action="store_true",
         help=(
             "Overlay montage values on the anatomical T1 volume resliced to DCE space "
-            "(requires precomputed alignment)"
+            "(requires precomputed alignment, implies --montage)"
         ),
     )
     parser.add_argument(
@@ -456,6 +456,9 @@ def main():
     if not datasets:
         print("No datasets found to process.")
         sys.exit(0)
+
+    if args.montage_anatomical:
+        args.montage = True
 
     if args.diffusion_only:
         args.diffusion = True
