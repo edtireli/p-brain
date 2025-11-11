@@ -168,10 +168,15 @@ def _maybe_resample_to_dce(
         return img
 
     data = resampled.get_fdata(dtype=np.float32)
+    header = resampled.header.copy()
+    header.set_data_dtype(np.float32)
+    with np.errstate(invalid="ignore"):
+        header["scl_slope"] = 1.0
+        header["scl_inter"] = 0.0
     resampled = nib.Nifti1Image(
         np.asarray(data, dtype=np.float32, order="C"),
         resampled.affine,
-        resampled.header,
+        header,
     )
     resampled.set_data_dtype(np.float32)
     return resampled
