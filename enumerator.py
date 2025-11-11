@@ -441,6 +441,7 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
         return False
 
     diffusion_filename = filenames[-2] if filenames else None
+    dce_filename = filenames[-1] if filenames else None
     if not diffusion_filename:
         print(
             f"[diffusion] No configured diffusion volume for {dataset_id} – skipping diffusion processing."
@@ -460,6 +461,11 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
             analysis_directory,
             image_directory,
             diffusion_filename=diffusion_filename,
+            dce_path=(
+                os.path.join(nifti_directory, dce_filename)
+                if dce_filename
+                else None
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
         print(f"[diffusion] Failed to compute diffusion metrics for {dataset_id}: {exc}")
