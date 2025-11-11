@@ -158,6 +158,36 @@ def _maybe_resample_to_dce(
     else:
         original_signal = 0.0
 
+    # ``resample_from_to`` performs spline interpolation which does not handle
+    # ``NaN`` values gracefully – even a single ``NaN`` can propagate through
+    # the neighbourhood and collapse the entire resampled volume to ``NaN``.
+    # The diffusion metrics purposefully store ``NaN`` outside their valid
+    # tissue masks, so temporarily replace them with zeros during resampling
+    # while separately tracking which voxels contained real signal.  The mask
+    # is later re-applied in the resampled space to restore ``NaN`` padding.
+    has_nans = np.logical_not(finite_original).any()
+    if has_nans:
+        filled_data = np.where(finite_original, original_data, 0.0).astype(
+            np.float32, copy=False
+        )
+        filled_header = img.header.copy()
+        filled_header.set_data_dtype(np.float32)
+        try:
+            filled_header.set_slope_inter(1.0, 0.0)
+        except AttributeError:
+            with np.errstate(invalid="ignore"):
+                filled_header["scl_slope"] = 1.0
+                filled_header["scl_inter"] = 0.0
+        resample_source = nib.Nifti1Image(filled_data, img.affine, filled_header)
+        resample_source.set_data_dtype(np.float32)
+        nan_mask_img = nib.Nifti1Image(
+            finite_original.astype(np.float32), img.affine, img.header
+        )
+        nan_mask_img.set_data_dtype(np.float32)
+    else:
+        resample_source = img
+        nan_mask_img = None
+
     ref_shape, ref_affine = target
     if img.shape == ref_shape and np.allclose(img.affine, ref_affine):
         return img
@@ -169,12 +199,24 @@ def _maybe_resample_to_dce(
         return img
 
     try:
-        resampled = resample_from_to(img, target)
+        resampled = resample_from_to(resample_source, target)
     except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
         print(f"[!] Failed to resample {label} to DCE space: {exc}")
         return img
 
     data = resampled.get_fdata(dtype=np.float32)
+    if nan_mask_img is not None:
+        try:
+            resampled_mask = resample_from_to(nan_mask_img, target, order=0)
+            mask_data = resampled_mask.get_fdata(dtype=np.float32)
+            valid_mask = mask_data > 0.5
+            data = np.where(valid_mask, data, np.float32(np.nan))
+        except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
+            print(
+                "[!] Failed to resample diffusion validity mask; falling back to "
+                f"diffusion-space geometry for {label}: {exc}"
+            )
+            return img
     finite_resampled = np.isfinite(data)
     has_resampled_signal = np.any(finite_resampled)
     if has_resampled_signal:
