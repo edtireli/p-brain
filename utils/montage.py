@@ -10,7 +10,7 @@ import glob
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple, TYPE_CHECKING
 
 import matplotlib as mpl
 import matplotlib.colors as mcolors
@@ -68,6 +68,20 @@ MASK_CANDIDATES_ICV = (
     "brainmask.mgz",
 )
 FREESURFER_BRAINMASK = ("brainmask.mgz", "brainmask.nii.gz")
+
+if TYPE_CHECKING:  # pragma: no cover - only for static type checking
+    from modules import AI_tissue_functions as _tissue_mod
+
+_TISSUE_UTILS: "_tissue_mod | None" = None
+
+
+def _tissue() -> "_tissue_mod":
+    global _TISSUE_UTILS
+    if _TISSUE_UTILS is None:
+        from modules import AI_tissue_functions as _tissue_mod  # noqa: WPS433
+
+        _TISSUE_UTILS = _tissue_mod
+    return _TISSUE_UTILS
 
 
 @dataclass
@@ -203,6 +217,13 @@ def generate_parametric_montages(
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
+    pct_lo: float = 2.0,
+    pct_hi: float = 98.0,
+    median_size: int = 3,
+    sigma_vox: float = 0.6,
+    smooth: bool = True,
+    n_slices: int | None = None,
+    axis: int = 2,
 ) -> None:
     """Render PNG montages for available parametric maps.
 
@@ -349,6 +370,13 @@ def generate_parametric_montages(
                     overlay=overlay,
                     brain_mask=brain_mask,
                     segmentation_img=segmentation_img,
+                    pct_lo=pct_lo,
+                    pct_hi=pct_hi,
+                    median_size=median_size,
+                    sigma_vox=sigma_vox,
+                    smooth=smooth,
+                    n_slices=n_slices,
+                    axis=axis,
                 )
                 generated_any = True
                 print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -1168,6 +1196,94 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
     return r0, r1, c0, c1
 
 
+def _extract_rotated_plane(volume: np.ndarray, axis: int, index: int) -> np.ndarray:
+    plane = np.take(volume, index, axis=axis)
+    return np.rot90(plane, ROT90)
+
+
+def _fallback_brain_mask(volume: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(volume)
+    values = volume[finite]
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.zeros_like(volume, dtype=bool)
+    try:
+        thr = float(threshold_otsu(values))
+    except Exception:
+        thr = float(np.nanpercentile(values, 70.0))
+    mask = finite & (volume > thr)
+    mask = binary_fill_holes(mask)
+    mask = remove_small_objects(mask, min_size=HEAD_MIN_VOXELS, connectivity=2)
+    mask = _largest_component(mask)
+    return mask.astype(bool)
+
+
+def _align_array_like(
+    source: Any,
+    metric_img: nib.Nifti1Image,
+    *,
+    order: int,
+    affine: np.ndarray | None = None,
+    header: nib.Nifti1Header | None = None,
+) -> np.ndarray | None:
+    if source is None:
+        return None
+
+    if isinstance(source, np.ndarray) and source.shape == metric_img.shape:
+        return np.asarray(source, dtype=np.float32)
+
+    if isinstance(source, nib.Nifti1Image):
+        img = source
+    elif isinstance(source, str):
+        img = nib.load(source)
+    else:
+        data = np.asarray(source, dtype=np.float32)
+        img_affine = affine if affine is not None else metric_img.affine
+        img = nib.Nifti1Image(data, img_affine, header)
+
+    if img.shape == metric_img.shape and np.allclose(img.affine, metric_img.affine):
+        return np.asarray(img.get_fdata(), dtype=np.float32)
+
+    resampled = _tissue().resample_like(img, metric_img, order=order)
+    return np.asarray(resampled.get_fdata(), dtype=np.float32)
+
+
+def _prepare_overlay_for_metric(
+    overlay: Dict[str, Any] | None,
+    metric_img: nib.Nifti1Image,
+) -> Dict[str, Any]:
+    if not overlay:
+        return {}
+
+    affine = overlay.get("affine")
+    header = overlay.get("header")
+    result: Dict[str, Any] = {}
+
+    volume = _align_array_like(overlay.get("volume"), metric_img, order=1, affine=affine, header=header)
+    if volume is not None:
+        result["data"] = volume.astype(np.float32)
+
+    mask_head = _align_array_like(overlay.get("mask_head"), metric_img, order=0, affine=affine)
+    if mask_head is not None:
+        result["mask_head"] = mask_head > 0.5
+
+    mask_brain = _align_array_like(overlay.get("mask_brain"), metric_img, order=0, affine=affine)
+    if mask_brain is not None:
+        result["mask_brain"] = mask_brain > 0.5
+
+    alpha_map = _align_array_like(overlay.get("alpha_map"), metric_img, order=1, affine=affine)
+    if alpha_map is not None:
+        result["alpha_map"] = np.clip(alpha_map.astype(np.float32), 0.0, 1.0)
+
+    if "vmin" in overlay:
+        result["vmin"] = overlay.get("vmin")
+    if "vmax" in overlay:
+        result["vmax"] = overlay.get("vmax")
+
+    result["alpha"] = float(overlay.get("alpha", 0.65))
+    return result
+
+
 def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
     z = np.asarray(z_fracs, dtype=np.float64)
     if nz <= 0 or z.size == 0:
@@ -1259,325 +1375,244 @@ def _render_montage(
     overlay: Dict[str, Any] | None = None,
     brain_mask: np.ndarray | None = None,
     segmentation_img: nib.Nifti1Image | None = None,
+    pct_lo: float = 2.0,
+    pct_hi: float = 98.0,
+    median_size: int = 3,
+    sigma_vox: float = 0.6,
+    smooth: bool = True,
+    n_slices: int | None = None,
+    axis: int = 2,
 ) -> None:
-    img = nib.load(map_path)
-    # Resample every map to the DCE reference grid for slice parity
-    from nibabel.processing import resample_from_to
+    del brain_mask, segmentation_img  # handled via new utilities
 
-    target = (reference_img.shape, reference_img.affine)
-    if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
-        img = resample_from_to(img, target, order=1)
-    data = np.asarray(img.get_fdata(), dtype=np.float32)
-    # Light display smoothing for coarse diffusion grids
-    try:
-        zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
-        zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
-        ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
-        if ratio > 1.4:
-            data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
-    except Exception:
-        pass
+    metric_img = nib.as_closest_canonical(nib.load(map_path))
+    data = np.asarray(metric_img.get_fdata(), dtype=np.float32)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
+    data[np.isinf(data)] = np.nan
 
-    if brain_mask is not None:
-        mask_data = np.asarray(brain_mask, dtype=bool)
-        if mask_data.shape != data.shape:
-            if segmentation_img is None:
-                raise ValueError("Brain mask shape does not match parametric map")
-            from nibabel.processing import resample_from_to
+    tissue = _tissue()
+    reference_can = nib.as_closest_canonical(reference_img)
+    anatomy_img = tissue.resample_like(reference_can, metric_img, order=1)
+    anatomy_data = np.asarray(anatomy_img.get_fdata(), dtype=np.float32)
 
-            target = (data.shape, img.affine)
-            seg_img = segmentation_img
-            if (
-                segmentation_img.shape != data.shape
-                or not np.allclose(segmentation_img.affine, img.affine)
-            ):
-                try:
-                    seg_img = resample_from_to(segmentation_img, target, order=0)
-                except Exception as exc:  # noqa: BLE001
-                    raise ValueError(
-                        "Failed to resample brain mask to parametric map space"
-                    ) from exc
-            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
-            mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
-        brain_mask = mask_data
-        valmask3d = np.isfinite(data) & mask_data
+    masks = tissue.get_tissue_masks_like(metric_img)
+    brain = masks.get("combined", np.zeros_like(data, dtype=bool))
+
+    overlay_aligned = _prepare_overlay_for_metric(overlay, metric_img)
+    overlay_brain = overlay_aligned.get("mask_brain")
+    if not np.any(brain) and isinstance(overlay_brain, np.ndarray) and overlay_brain.any():
+        brain = overlay_brain.astype(bool, copy=False)
+        print("[montage] Using overlay brain mask fallback for montage alignment.")
+
+    if not np.any(brain):
+        fallback = _fallback_brain_mask(anatomy_data)
+        if np.any(fallback):
+            brain = fallback
+            print("[montage] Derived fallback brain mask from anatomical reference.")
+
+    if not np.any(brain):
+        print("[montage] Falling back to finite voxels for montage coverage.")
+        brain = np.isfinite(data)
+
+    brain = brain.astype(bool, copy=False)
+
+    tissue.clean_metric_inplace(
+        data,
+        brain,
+        median_size=median_size,
+        sigma_vox=(0.0 if not smooth else sigma_vox),
+        smooth_axis=2,
+    )
+
+    assert data.shape == brain.shape
+    brain_values = data[brain]
+    finite_brain = brain_values[np.isfinite(brain_values)]
+    if finite_brain.size == 0:
+        finite_global = data[np.isfinite(data)]
+        if finite_global.size:
+            replacement = float(np.nanmedian(finite_global))
+            data[brain] = replacement
+        else:
+            data[brain] = 0.0
+    if not np.isfinite(data[brain]).all():
+        nonfinite = brain & ~np.isfinite(data)
+        if np.any(nonfinite):
+            finite_global = data[np.isfinite(data)]
+            replacement = float(np.nanmedian(finite_global)) if finite_global.size else 0.0
+            data[nonfinite] = replacement
+    if not np.isfinite(data[brain]).all():
+        raise ValueError("Non-finite values remain inside the brain mask after cleaning")
+
+    if job.vmin is not None or job.vmax is not None:
+        if job.vmin is None or job.vmax is None:
+            pct_vmin, pct_vmax = tissue.masked_percentiles(data, brain, pct_lo, pct_hi)
+            vmin = float(job.vmin) if job.vmin is not None else float(pct_vmin)
+            vmax = float(job.vmax) if job.vmax is not None else float(pct_vmax)
+        else:
+            vmin = float(job.vmin)
+            vmax = float(job.vmax)
     else:
-        valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
-    union_xy = np.any(valmask3d, axis=2)
-    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
+        vmin, vmax = tissue.masked_percentiles(data, brain, pct_lo, pct_hi)
 
-    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
-    if z_indices.size < rows * cols:
-        pad_value = z_indices[-1] if z_indices.size else 0
-        z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
-    else:
-        z_indices = z_indices[: rows * cols]
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        finite = data[brain & np.isfinite(data)]
+        if finite.size:
+            vmin = float(np.nanmin(finite))
+            vmax = float(np.nanmax(finite))
+            if vmax <= vmin:
+                pad = max(abs(vmin), 1.0)
+                vmax = vmin + pad
+        else:
+            vmin, vmax = 0.0, 1.0
+
+    if (getattr(job, "metric", "") or "").lower() == "fa":
+        vmin = 0.0
+        vmax = float(vmax)
 
     cmap = _get_cmap(job.cmap_name)
-    norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
-    norm, tick_values = _build_normalizer(
-        norm_data, job, mask_zero_override=False if brain_mask is not None else None
-    )
-    if (getattr(job, "metric", None) or "").lower() == "fa":
-        vmax = float(getattr(norm, "vmax", 1.0))
-        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    # Keep sub-vmin faint so low values remain visible; NaNs remain invisible
-    under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax, clip=False)
+    tick_values = _default_ticks(vmin, vmax)
+    under_rgba = list(cmap(0.0))
+    under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
+    rotate = int(ref_info["rotate"])
+    tiles = rows * cols
+
+    union_xy = np.any(brain, axis=2)
+    if not union_xy.any():
+        union_xy = np.ones(brain.shape[:2], dtype=bool)
+    union_xy_r = np.rot90(union_xy, rotate)
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
+
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
+    if z_indices.size < tiles:
+        pad_val = z_indices[-1] if z_indices.size else 0
+        z_indices = np.pad(z_indices, (0, tiles - z_indices.size), constant_values=pad_val)
+    else:
+        z_indices = z_indices[:tiles]
+
+    overlay_data = overlay_aligned.get("data")
+    overlay_mask_head = overlay_aligned.get("mask_head")
+    overlay_alpha_map = overlay_aligned.get("alpha_map")
+    overlay_alpha = float(overlay_aligned.get("alpha", 0.65)) if overlay_aligned else 1.0
+    overlay_vmin = overlay_aligned.get("vmin") if overlay_aligned else None
+    overlay_vmax = overlay_aligned.get("vmax") if overlay_aligned else None
+    overlay_brain = overlay_aligned.get("mask_brain")
+
+    if overlay_data is not None:
+        overlay_z_indices = _map_z_from_ref(ref_info["z_fracs"], overlay_data.shape[2])
+        if overlay_z_indices.size < tiles:
+            pad_val = overlay_z_indices[-1] if overlay_z_indices.size else 0
+            overlay_z_indices = np.pad(
+                overlay_z_indices, (0, tiles - overlay_z_indices.size), constant_values=pad_val
+            )
+        else:
+            overlay_z_indices = overlay_z_indices[:tiles]
+    else:
+        overlay_z_indices = None
+
     fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
+        rows,
+        cols,
+        figsize=(cols * 2.2, rows * 2.2),
+        facecolor=(0.0, 0.0, 0.0, 0.0),
     )
     fig.patch.set_alpha(0.0)
     axes = axes.ravel()
 
-    overlay_volume = overlay.get("volume") if overlay else None
-    overlay_mask_volume = overlay.get("mask_head") if overlay else None
-    overlay_affine = overlay.get("affine") if overlay else None
-    overlay_header = overlay.get("header") if overlay else None
-    overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
-    overlay_alpha_map = overlay.get("alpha_map") if overlay else None
-    overlay_vmin = overlay.get("vmin") if overlay else None
-    overlay_vmax = overlay.get("vmax") if overlay else None
-    overlay_data = None
-    overlay_mask_data = None
-    overlay_alpha_data = None
-    overlay_z_indices = None
-    if overlay_volume is not None:
-        ovl_img = None
-        if isinstance(overlay_volume, str):
-            ovl_img = nib.load(overlay_volume)
-        elif hasattr(overlay_volume, "shape") and hasattr(overlay_volume, "affine"):
-            ovl_img = overlay_volume
-        elif isinstance(overlay_volume, np.ndarray):
-            affine = overlay_affine if overlay_affine is not None else img.affine
-            header = overlay_header if overlay_header is not None else img.header
-            ovl_img = nib.Nifti1Image(overlay_volume, affine, header)
-        if ovl_img is not None:
-            from nibabel.processing import resample_from_to
+    def _safe_crop(plane: np.ndarray) -> np.ndarray:
+        rows_lim, cols_lim = plane.shape
+        rr0 = max(0, min(r0, rows_lim))
+        rr1 = max(rr0, min(r1, rows_lim))
+        cc0 = max(0, min(c0, cols_lim))
+        cc1 = max(cc0, min(c1, cols_lim))
+        return plane[rr0:rr1, cc0:cc1]
 
-            target = (data.shape[:3], img.affine)  # already equals reference grid
-            ovl_affine = ovl_img.affine
-            alpha_img = None
-            if overlay_alpha_map is not None:
-                alpha_img = nib.Nifti1Image(
-                    np.asarray(overlay_alpha_map, dtype=np.float32),
-                    overlay_affine if overlay_affine is not None else ovl_affine,
-                )
-            if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_affine, img.affine):
-                ovl_img = resample_from_to(ovl_img, target, order=1)
-            overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
-            if alpha_img is not None:
-                if alpha_img.shape[:3] != data.shape[:3] or not np.allclose(
-                    alpha_img.affine, img.affine
-                ):
-                    alpha_img = resample_from_to(alpha_img, target, order=1)
-                overlay_alpha_data = np.asarray(alpha_img.get_fdata(), dtype=np.float32)
-            if overlay_mask_volume is not None:
-                mask_img = None
-                if isinstance(overlay_mask_volume, str):
-                    mask_img = nib.load(overlay_mask_volume)
-                elif hasattr(overlay_mask_volume, "shape") and hasattr(
-                    overlay_mask_volume, "affine"
-                ):
-                    mask_img = overlay_mask_volume
-                elif isinstance(overlay_mask_volume, np.ndarray):
-                    mask_affine = overlay_affine if overlay_affine is not None else ovl_img.affine
-                    mask_img = nib.Nifti1Image(overlay_mask_volume.astype(np.float32), mask_affine)
-                if mask_img is not None:
-                    if mask_img.shape[:3] != data.shape[:3] or not np.allclose(
-                        mask_img.affine, img.affine
-                    ):
-                        mask_img = resample_from_to(mask_img, target, order=0)
-                    overlay_mask_data = (
-                        np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
-                    )
-            if overlay_mask_data is None and overlay_data is not None:
-                overlay_mask_data = np.isfinite(overlay_data)
-            if overlay_data is not None:
-                overlay_z_indices = _map_z_from_ref(
-                    ref_info["z_fracs"], overlay_data.shape[2]
-                )
+    def _match_shape(arr: np.ndarray, target_shape: tuple[int, int], fill_value: float) -> np.ndarray:
+        if arr.shape == target_shape:
+            return arr
+        result = np.full(target_shape, fill_value, dtype=arr.dtype)
+        rows_fit = min(target_shape[0], arr.shape[0])
+        cols_fit = min(target_shape[1], arr.shape[1])
+        result[:rows_fit, :cols_fit] = arr[:rows_fit, :cols_fit]
+        return result
 
-    nz = data.shape[2]
-    if nz == 0:
-        raise ValueError("volume has zero z-extent")
-    if z_indices.size and z_indices.max() >= nz:
-        raise RuntimeError(f"z mapping produced {int(z_indices.max())} with nz={nz}")
+    def _match_mask(arr: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+        if arr.shape == target_shape:
+            return arr.astype(bool, copy=False)
+        result = np.zeros(target_shape, dtype=bool)
+        rows_fit = min(target_shape[0], arr.shape[0])
+        cols_fit = min(target_shape[1], arr.shape[1])
+        result[:rows_fit, :cols_fit] = arr[:rows_fit, :cols_fit]
+        return result
 
-    if overlay_data is not None and overlay_z_indices is not None:
-        if overlay_z_indices.size < rows * cols:
-            pad_value = (
-                overlay_z_indices[-1] if overlay_z_indices.size else 0
-            )
-            overlay_z_indices = np.pad(
-                overlay_z_indices,
-                (0, rows * cols - overlay_z_indices.size),
-                constant_values=pad_value,
-            )
-        else:
-            overlay_z_indices = overlay_z_indices[: rows * cols]
-
-    for tile_index, (ax, z) in enumerate(zip(axes, z_indices)):
-        zi = int(np.clip(z, 0, data.shape[2] - 1))
-        overlay_zi = None
-        if overlay_z_indices is not None and tile_index < overlay_z_indices.size:
-            overlay_zi = int(
-                np.clip(overlay_z_indices[tile_index], 0, overlay_data.shape[2] - 1)
-            )
+    for idx, ax in enumerate(axes):
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
-        ax.set_facecolor("#e0e0e0")
+        ax.set_facecolor("#d0d0d0")
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-        sl = data[:, :, zi]
-        slr = np.rot90(sl, ref_info["rotate"])
-        slc = slr[r0:r1, c0:c1]
-        if np.isfinite(slc).sum() == 0:
-            print(f"[montage] z={zi}: all NaN after mask/crop")
+        if idx >= z_indices.size:
+            ax.axis("off")
+            continue
 
-        union_crop = union_xy_r[r0:r1, c0:c1]
-        extent = (0.0, 1.0, 1.0, 0.0)
-        overlay_union_crop = union_crop
-        render_shape = slc.shape
+        zi = int(np.clip(z_indices[idx], 0, data.shape[2] - 1))
+        data_plane = np.rot90(data[:, :, zi], rotate)
+        mask_plane = np.rot90(brain[:, :, zi], rotate)
+        data_crop = _safe_crop(data_plane)
+        mask_crop = _safe_crop(mask_plane).astype(bool, copy=False)
+        target_shape = data_crop.shape
+
         if overlay_data is not None:
-            index_for_overlay = zi if overlay_zi is None else overlay_zi
-            overlay_slice = overlay_data[:, :, index_for_overlay]
-            overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
-            overlay_r0, overlay_r1, overlay_c0, overlay_c1 = _map_bbox_from_ref(
-                ref_info["bbox_fracs"], overlay_rot.shape
-            )
-            overlay_crop = overlay_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
-            # Underlay visibility follows HEAD mask, not the brain union
-            overlay_alpha_crop = None
-            if overlay_mask_data is not None:
-                mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
-                mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
-                overlay_union = mask_rot.astype(bool)
+            ovl_zi = int(np.clip(overlay_z_indices[idx], 0, overlay_data.shape[2] - 1))
+            overlay_plane = np.rot90(overlay_data[:, :, ovl_zi], rotate)
+            overlay_crop = _safe_crop(overlay_plane)
+            overlay_crop = _match_shape(overlay_crop, target_shape, 0.0)
+
+            if isinstance(overlay_mask_head, np.ndarray):
+                mask_head_plane = np.rot90(overlay_mask_head[:, :, ovl_zi], rotate)
+                overlay_mask_crop = _safe_crop(mask_head_plane)
+                overlay_mask_crop = _match_mask(overlay_mask_crop, target_shape)
+            elif isinstance(overlay_brain, np.ndarray):
+                mask_brain_plane = np.rot90(overlay_brain[:, :, ovl_zi], rotate)
+                overlay_mask_crop = _match_mask(_safe_crop(mask_brain_plane), target_shape)
             else:
-                overlay_union = union_xy_r
-            overlay_union_crop = overlay_union[
-                overlay_r0:overlay_r1, overlay_c0:overlay_c1
-            ]
-            if overlay_alpha_data is not None:
-                alpha_slice = overlay_alpha_data[:, :, index_for_overlay]
-                alpha_rot = np.rot90(alpha_slice, ref_info["rotate"])
-                overlay_alpha_crop = alpha_rot[
-                    overlay_r0:overlay_r1, overlay_c0:overlay_c1
-                ]
-                overlay_alpha_crop = overlay_alpha_crop * overlay_union_crop.astype(np.float32)
-                overlay_alpha_crop = np.clip(overlay_alpha_crop, 0.0, 1.0)
-            overlay_mask_slice = None
-            if overlay_mask_data is not None:
-                mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
-                mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
-                overlay_mask_slice = mask_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
-            overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
-            if overlay_mask_slice is not None:
-                overlay_mask |= ~overlay_mask_slice
-            overlay_arr = np.ma.array(overlay_crop, mask=overlay_mask)
+                overlay_mask_crop = mask_crop
+
+            if isinstance(overlay_alpha_map, np.ndarray):
+                alpha_plane = np.rot90(overlay_alpha_map[:, :, ovl_zi], rotate)
+                alpha_crop = np.clip(_safe_crop(alpha_plane), 0.0, 1.0)
+                alpha_crop = _match_shape(alpha_crop, target_shape, 0.0)
+            else:
+                overlay_mask_float = overlay_mask_crop.astype(np.float32)
+                alpha_crop = overlay_mask_float * overlay_alpha
+
+            overlay_arr = np.ma.array(
+                overlay_crop,
+                mask=~overlay_mask_crop,
+            )
             ax.imshow(
                 overlay_arr,
                 cmap="gray",
-                # underlay: keep sharp-ish skull edges; avoid “holes” by preferring bilinear
                 interpolation="bilinear",
                 origin="upper",
                 vmin=overlay_vmin,
                 vmax=overlay_vmax,
-                extent=extent,
-                alpha=(
-                    overlay_alpha * overlay_alpha_crop
-                    if overlay_alpha_crop is not None
-                    else overlay_alpha
-                ),
+                alpha=alpha_crop,
             )
-            render_shape = overlay_crop.shape
 
-        mask_slice = valmask3d[:, :, zi]
-        mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
-        mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
-
-        if brain_mask is None and job.mask_zero:
-            finite_vals = slc[np.isfinite(slc) & (slc > 0)]
-            if finite_vals.size:
-                cutoff = np.percentile(finite_vals, 0.1)
-                eps_dyn = max(cutoff, 1e-6)
-            else:
-                eps_dyn = 1e-6
-            mask_slice_crop &= slc > eps_dyn
-
-        slc_filled = np.array(slc, copy=True)
-        slc_filled[~mask_slice_crop] = 0.0
-        slc_render = slc_filled.astype(np.float32)
-        mask_render = mask_slice_crop
-        union_render = union_crop
-        if render_shape != slc.shape:
-            slc_render = resize(
-                slc_render,
-                render_shape,
-                order=1,
-                preserve_range=True,
-                anti_aliasing=True,
-            ).astype(np.float32)
-            mask_render = _resize_mask(mask_slice_crop, render_shape)
-            union_render = _resize_mask(union_crop, render_shape)
-        # seal tiny pinholes from resampling
-        try:
-            from skimage.morphology import binary_closing as _bclose
-
-            valid_mask = _bclose(union_render & mask_render, footprint=np.ones((2, 2), bool))
-        except Exception:
-            valid_mask = union_render & mask_render
-        arr = np.ma.array(
-            slc_render,
-            mask=(~valid_mask) | (~np.isfinite(slc_render)),
+        metric_arr = np.ma.masked_where(~mask_crop, data_crop)
+        ax.imshow(
+            metric_arr,
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest",
+            origin="upper",
         )
-        # If the slice is entirely below global vmin (e.g., FA in cortex),
-        # use a local min/max so low-but-real values remain visible.
-        finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
-        if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
-            loc_vmin = float(np.nanmin(finite_vals))
-            loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
-            if loc_vmax > loc_vmin:
-                local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
-                ax.imshow(
-                    arr,
-                    cmap=cmap,
-                    norm=local_norm,
-                    interpolation="bilinear",
-                    origin="upper",
-                    alpha=overlay_alpha,
-                    extent=extent,
-                )
-            else:
-                ax.imshow(
-                    arr,
-                    cmap=cmap,
-                    norm=norm,
-                    interpolation="bilinear",
-                    origin="upper",
-                    alpha=overlay_alpha,
-                    extent=extent,
-                )
-        else:
-            ax.imshow(
-                arr,
-                cmap=cmap,
-                norm=norm,
-                interpolation="bilinear",
-                origin="upper",
-                alpha=overlay_alpha,
-                extent=extent,
-            )
-
-    # Hide any unused axes when there are fewer slices than tiles
-    for ax in axes[len(z_indices) :]:
-        ax.axis("off")
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
@@ -1592,8 +1627,6 @@ def _render_montage(
     plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
     plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
-
-
 def _render_projection_montage(
     data: np.ndarray,
     ref_info: Dict[str, np.ndarray],

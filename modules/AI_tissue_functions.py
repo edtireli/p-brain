@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 turbo_mode = False  # Set to True to suppress all plots
 force_recreate_masks = False  # If True: recreate all masks regardless of existence
 # If True, drop detection is performed on tissue CTCs and the ignored
@@ -11,15 +13,17 @@ correct_signal_jumps = False
 # previous one-step "-applyxfm -usesqform" approach is retained.
 use_flirt_registration = False
 
-import nibabel as nib
-import matplotlib.pyplot as plt
-import numpy as np
-import subprocess
-import os
-import multiprocessing
-import shutil
-import warnings
+import hashlib
 import logging
+import os
+import shutil
+import subprocess
+from collections import OrderedDict
+from typing import Dict, Iterable
+
+import matplotlib.pyplot as plt
+import nibabel as nib
+import numpy as np
 import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
@@ -36,15 +40,294 @@ from .kinetic_models import (
     residue_to_cbf,
     gamma_fit_metrics,
 )
+from nibabel.processing import resample_from_to
+from scipy.ndimage import (
+    binary_closing,
+    gaussian_filter,
+    median_filter,
+)
 from skimage.transform import resize
 import json
-from scipy.ndimage import binary_dilation
+import multiprocessing
+import warnings
 from matplotlib.gridspec import GridSpec
 from tqdm import tqdm
 import re
 
 
 logger = logging.getLogger(__name__)
+
+_MASK_FILE_GROUPS: Dict[str, tuple[str, ...]] = {
+    "wm": (
+        "wm.nii.gz",
+        "wm_mask.nii.gz",
+        "white_matter_mask.nii.gz",
+    ),
+    "gm": (
+        "gm.nii.gz",
+        "gm_mask.nii.gz",
+        "gray_matter_mask.nii.gz",
+    ),
+    "cortical_gm": ("cortical_gm.nii.gz",),
+    "subcortical_gm": ("subcortical_gm.nii.gz",),
+    "cerebellum": (
+        "gm_cerebellum.nii.gz",
+        "wm_cerebellum.nii.gz",
+        "cerebellum_mask.nii.gz",
+    ),
+    "brainstem": ("gm_brainstem.nii.gz", "brainstem_mask.nii.gz"),
+    "cc": ("wm_cc.nii.gz", "cc_mask.nii.gz"),
+}
+
+_MASK_CACHE_LIMIT = 12
+_MASK_RESAMPLE_CACHE: "OrderedDict[tuple[str, tuple[int, ...], str], np.ndarray]" = OrderedDict()
+_MASK_LOGGED_PATHS: set[str] = set()
+
+
+def _affine_digest(affine: np.ndarray) -> str:
+    arr = np.asarray(affine, dtype=np.float64).ravel()
+    return hashlib.sha1(arr.tobytes()).hexdigest()
+
+
+def _candidate_mask_directories(ref_img: nib.Nifti1Image) -> Iterable[str]:
+    filename = getattr(ref_img, "get_filename", lambda: None)()
+    if not filename:
+        return []
+
+    base_dir = os.path.abspath(os.path.dirname(filename))
+    candidates = {
+        base_dir,
+        os.path.abspath(os.path.join(base_dir, "..")),
+        os.path.abspath(os.path.join(base_dir, "..", "segmentation")),
+        os.path.abspath(os.path.join(base_dir, "..", "segmentation", "segmentation")),
+        os.path.abspath(
+            os.path.join(base_dir, "..", "segmentation", "segmentation", "mri")
+        ),
+        os.path.abspath(os.path.join(base_dir, "..", "masks")),
+    }
+    return [path for path in candidates if os.path.isdir(path)]
+
+
+def _load_mask_path(path: str, ref_img: nib.Nifti1Image) -> np.ndarray | None:
+    key = (
+        os.path.abspath(path),
+        tuple(int(x) for x in ref_img.shape[:3]),
+        _affine_digest(ref_img.affine),
+    )
+    cached = _MASK_RESAMPLE_CACHE.get(key)
+    if cached is not None:
+        _MASK_RESAMPLE_CACHE.move_to_end(key)
+        return cached.copy()
+
+    try:
+        mask_img = nib.load(path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - mask loading should not abort montages
+        logger.warning("[masks] Failed to load %s: %s", path, exc)
+        return None
+
+    mask_img = nib.as_closest_canonical(mask_img)
+    ref_can = nib.as_closest_canonical(ref_img)
+    target = (ref_can.shape, ref_can.affine)
+    if mask_img.shape != ref_can.shape or not np.allclose(mask_img.affine, ref_can.affine):
+        mask_img = resample_from_to(mask_img, target, order=0)
+
+    data = np.asarray(mask_img.get_fdata(), dtype=np.float32)
+    mask = np.isfinite(data) & (data > 0.5)
+    if not np.any(mask):
+        return None
+
+    _MASK_RESAMPLE_CACHE[key] = mask.astype(bool, copy=False)
+    while len(_MASK_RESAMPLE_CACHE) > _MASK_CACHE_LIMIT:
+        _MASK_RESAMPLE_CACHE.popitem(last=False)
+
+    if path not in _MASK_LOGGED_PATHS:
+        logger.info(
+            "[masks] Resampled mask %s to grid %s", os.path.basename(path), ref_can.shape
+        )
+        _MASK_LOGGED_PATHS.add(path)
+
+    return mask.copy()
+
+
+def get_tissue_masks_like(ref_img: nib.Nifti1Image) -> Dict[str, np.ndarray]:
+    """Return available tissue masks aligned to ``ref_img``.
+
+    Every returned mask is a boolean array with the same shape as ``ref_img``.
+    A ``combined`` entry is always present and represents the union across all
+    discovered masks.
+    """
+
+    ref_can = nib.as_closest_canonical(ref_img)
+
+    results: Dict[str, np.ndarray] = {}
+    seen_arrays: list[np.ndarray] = []
+
+    for directory in _candidate_mask_directories(ref_can):
+        for label, names in _MASK_FILE_GROUPS.items():
+            if label in results:
+                continue
+            for name in names:
+                path = os.path.join(directory, name)
+                mask = _load_mask_path(path, ref_can)
+                if mask is None:
+                    continue
+                if any(np.array_equal(mask, existing) for existing in seen_arrays):
+                    continue
+                results[label] = mask.astype(bool, copy=False)
+                seen_arrays.append(results[label])
+                break
+
+    combined = np.zeros(ref_can.shape, dtype=bool)
+    for mask in results.values():
+        combined |= mask
+    if np.any(combined):
+        structure = np.ones((3, 3, 3), dtype=bool)
+        combined = binary_closing(combined, structure=structure)
+    results["combined"] = combined
+    return results
+
+
+def clean_metric_inplace(
+    data: np.ndarray,
+    brain_mask: np.ndarray,
+    median_size: int = 3,
+    sigma_vox: float = 0.6,
+    smooth_axis: int | None = None,
+) -> None:
+    """Fill NaNs/Infs and apply masked smoothing inside ``brain_mask``."""
+
+    if data.shape != brain_mask.shape:
+        raise ValueError("Metric array and brain mask shapes do not match")
+
+    mask = np.asarray(brain_mask, dtype=bool)
+    if not np.any(mask):
+        return
+
+    data[np.isinf(data)] = np.nan
+
+    inside = np.asarray(data[mask], dtype=np.float32)
+    finite_inside = inside[np.isfinite(inside)]
+    if finite_inside.size == 0:
+        finite_inside = np.asarray(data[np.isfinite(data)], dtype=np.float32)
+    if finite_inside.size == 0:
+        fill_value = 0.0
+        logger.warning("[montage] Metric volume contains no finite values")
+    else:
+        fill_value = float(np.median(finite_inside))
+
+    nan_inside = np.isnan(data) & mask
+    if np.any(nan_inside):
+        temp = np.array(data, copy=True)
+        temp[nan_inside] = fill_value
+        if median_size and median_size > 1:
+            temp = median_filter(temp, size=median_size, mode="nearest")
+        data[nan_inside] = temp[nan_inside]
+
+    if sigma_vox and sigma_vox > 0:
+        if data.ndim != 3:
+            raise ValueError("Metric smoothing expects a 3D volume")
+        if smooth_axis is None:
+            sig = (sigma_vox, sigma_vox, 0.0)
+        else:
+            axis_idx = int(smooth_axis)
+            if axis_idx < 0 or axis_idx >= data.ndim:
+                raise ValueError("smooth_axis is out of bounds for metric volume")
+            sig = [sigma_vox] * data.ndim
+            sig[axis_idx] = 0.0
+            sig = tuple(sig)
+
+        data_f = np.asarray(data, dtype=np.float32)
+        mask_f = mask.astype(np.float32)
+        smoothed_num = gaussian_filter(data_f * mask_f, sigma=sig, mode="nearest")
+        smoothed_den = gaussian_filter(mask_f, sigma=sig, mode="nearest")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            smoothed = np.divide(
+                smoothed_num,
+                smoothed_den,
+                out=np.zeros_like(data_f),
+                where=smoothed_den > 0,
+            )
+        data[mask] = smoothed[mask]
+
+    data[mask] = data[mask].astype(np.float32, copy=False)
+    if np.isnan(data[mask]).any():
+        raise ValueError("Cleaning failed to remove NaNs inside brain mask")
+
+
+def masked_percentiles(
+    data: np.ndarray,
+    mask: np.ndarray,
+    lo: float = 2.0,
+    hi: float = 98.0,
+) -> tuple[float, float]:
+    values = np.asarray(data, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool)
+    if values.shape != mask.shape:
+        raise ValueError("Data and mask shapes do not match")
+
+    masked_values = values[mask]
+    masked_values = masked_values[np.isfinite(masked_values)]
+    if masked_values.size == 0:
+        return float("nan"), float("nan")
+
+    lo_val = float(np.nanpercentile(masked_values, lo))
+    hi_val = float(np.nanpercentile(masked_values, hi))
+    return lo_val, hi_val
+
+
+def resample_like(
+    src_img: nib.Nifti1Image,
+    ref_img: nib.Nifti1Image,
+    *,
+    order: int,
+) -> nib.Nifti1Image:
+    """Return ``src_img`` resampled into the grid of ``ref_img``."""
+
+    src_can = nib.as_closest_canonical(src_img)
+    ref_can = nib.as_closest_canonical(ref_img)
+    if src_can.shape == ref_can.shape and np.allclose(src_can.affine, ref_can.affine):
+        return nib.Nifti1Image(
+            np.asarray(src_can.get_fdata(), dtype=np.float32),
+            ref_can.affine,
+            ref_can.header,
+        )
+
+    resampled = resample_from_to(src_can, (ref_can.shape, ref_can.affine), order=order)
+    data = np.asarray(resampled.get_fdata(), dtype=np.float32)
+    return nib.Nifti1Image(data, ref_can.affine, ref_can.header)
+
+
+def robust_slice_indices(mask: np.ndarray, axis: int, n: int) -> list[int]:
+    """Return ``n`` slice indices spaced across occupied voxels."""
+
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 3:
+        raise ValueError("Mask must be 3D for slice selection")
+    if not (0 <= axis < mask.ndim):
+        raise ValueError("Axis out of bounds for mask")
+    if n <= 0:
+        return []
+
+    occupancy = np.any(mask, axis=tuple(i for i in range(3) if i != axis))
+    occupied_indices = np.flatnonzero(occupancy)
+    if occupied_indices.size == 0:
+        center = mask.shape[axis] // 2
+        return [center for _ in range(n)]
+
+    if occupied_indices.size == 1:
+        return [int(occupied_indices[0]) for _ in range(n)]
+
+    quantiles = np.linspace(0.0, 1.0, num=n)
+    positions = np.interp(
+        quantiles,
+        np.linspace(0.0, 1.0, occupied_indices.size),
+        occupied_indices.astype(float),
+    )
+    indices = np.rint(positions).astype(int)
+    indices = np.clip(indices, occupied_indices.min(), occupied_indices.max())
+    return indices.tolist()
 
 # Allow overriding the default mask regeneration behaviour via an
 # environment variable.  By default, existing masks are re-used to avoid
