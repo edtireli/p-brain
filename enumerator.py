@@ -48,7 +48,29 @@ def _prepare_projection_stats(data_root: str):
     )
 
 
-def _find_anatomical_overlay(nifti_directory: str) -> str | None:
+def _build_overlay_config(primary: str | None, fallback: str | None = None) -> dict[str, str] | None:
+    """Return a normalized overlay configuration mapping."""
+
+    if not primary and not fallback:
+        return None
+
+    config: dict[str, str] = {}
+    if primary:
+        config["path"] = primary
+    if fallback and fallback != primary:
+        config["fallback"] = fallback
+    return config
+
+
+def _overlay_display_path(config: dict[str, str] | str) -> str:
+    """Return the path string used when reporting overlay usage."""
+
+    if isinstance(config, dict):
+        return config.get("path") or config.get("fallback", "")
+    return config
+
+
+def _find_anatomical_overlay(nifti_directory: str) -> dict[str, str] | None:
     """Return a T1 volume aligned to DCE space when available."""
 
     preferred = (
@@ -75,38 +97,61 @@ def _find_anatomical_overlay(nifti_directory: str) -> str | None:
         ),
     )
 
+    fallback_overlay = None
     for candidate in preferred:
         if os.path.isfile(candidate):
-            return candidate
+            fallback_overlay = candidate
+            break
 
-    search_roots = (
-        os.path.join(nifti_directory, "segmentation", "segmentation", "mri"),
-        os.path.join(nifti_directory, "segmentation", "mri"),
-        os.path.join(nifti_directory, "segmentation"),
-        nifti_directory,
-    )
+    if fallback_overlay is None:
+        search_roots = (
+            os.path.join(nifti_directory, "segmentation", "segmentation", "mri"),
+            os.path.join(nifti_directory, "segmentation", "mri"),
+            os.path.join(nifti_directory, "segmentation"),
+            nifti_directory,
+        )
 
-    patterns = (
-        "*T1*DCE*.nii.gz",
-        "*T1*DCE*.nii",
-        "*T1*_in_DCE*.nii.gz",
-        "*T1*_in_DCE*.nii",
-    )
+        patterns = (
+            "*T1*DCE*.nii.gz",
+            "*T1*DCE*.nii",
+            "*T1*_in_DCE*.nii.gz",
+            "*T1*_in_DCE*.nii",
+        )
 
-    for root in search_roots:
-        if not os.path.isdir(root):
+        for root in search_roots:
+            if not os.path.isdir(root):
+                continue
+
+            for pattern in patterns:
+                search_pattern = os.path.join(root, "**", pattern)
+                for path in sorted(glob.iglob(search_pattern, recursive=True)):
+                    if os.path.isfile(path):
+                        fallback_overlay = path
+                        break
+                if fallback_overlay:
+                    break
+            if fallback_overlay:
+                break
+
+    if fallback_overlay is None:
+        return None
+
+    highres_primary = None
+    for candidate in _discover_t1_candidates(nifti_directory):
+        try:
+            prepared = _ensure_nifti_volume(candidate)
+        except Exception:  # noqa: BLE001 - discovery should continue
             continue
+        if os.path.isfile(prepared):
+            highres_primary = prepared
+            break
 
-        for pattern in patterns:
-            search_pattern = os.path.join(root, "**", pattern)
-            for path in sorted(glob.iglob(search_pattern, recursive=True)):
-                if os.path.isfile(path):
-                    return path
-
-    return None
+    return _build_overlay_config(highres_primary or fallback_overlay, fallback_overlay)
 
 
-def _maybe_generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> str | None:
+def _maybe_generate_anatomical_overlay(
+    nifti_directory: str, dce_path: str
+) -> dict[str, str] | None:
     """Return an anatomical overlay, generating one when necessary."""
 
     overlay = _find_anatomical_overlay(nifti_directory)
@@ -120,7 +165,9 @@ def _maybe_generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> s
     return None
 
 
-def _generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> str | None:
+def _generate_anatomical_overlay(
+    nifti_directory: str, dce_path: str
+) -> dict[str, str] | None:
     """Generate a T1 overlay coregistered to the provided DCE reference."""
 
     t1_candidates = _discover_t1_candidates(nifti_directory)
@@ -149,7 +196,7 @@ def _generate_anatomical_overlay(nifti_directory: str, dce_path: str) -> str | N
             continue
 
         if produced and os.path.isfile(produced):
-            return produced
+            return _build_overlay_config(prepared, produced)
 
     return None
 
@@ -371,9 +418,10 @@ def _run_montage_for_dataset(
                 "continuing without overlay."
             )
         else:
+            display_path = _overlay_display_path(anatomical_overlay)
             print(
                 "[montage] Using anatomical overlay for montages: "
-                f"{os.path.relpath(anatomical_overlay, start=data_root)}"
+                f"{os.path.relpath(display_path, start=data_root)}"
             )
 
     print(f"[montage] Generating montages for {dataset_id}")
