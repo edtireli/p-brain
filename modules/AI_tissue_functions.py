@@ -3509,7 +3509,15 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     _rename_model_outputs(analysis_directory, image_directory, suffix, boundary)
 
 
-def tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
+def tissue_function_AI(
+    analysis_directory,
+    nifti_directory,
+    image_directory,
+    filenames,
+    parameters,
+    *,
+    compute_diffusion: bool = False,
+):
     """Run tissue function analysis using the configured kinetic model."""
     model_setting = settings.KINETIC_MODEL.lower()
     models = ['patlak', 'two_compartment'] if model_setting == 'both' else [model_setting]
@@ -3533,10 +3541,45 @@ def tissue_function_AI(analysis_directory, nifti_directory, image_directory, fil
         if os.path.exists(screenshot_backup):
             shutil.copy2(screenshot_backup, os.path.join(ai_base, screenshot_name))
 
-        _tissue_function_AI(m, analysis_directory, nifti_directory, image_directory, filenames, parameters)
+        _tissue_function_AI(
+            m,
+            analysis_directory,
+            nifti_directory,
+            image_directory,
+            filenames,
+            parameters,
+        )
 
     if os.path.exists(screenshot_backup):
         os.remove(screenshot_backup)
+
+    if compute_diffusion:
+        diffusion_filename = filenames[-2] if filenames else None
+        if diffusion_filename:
+            try:
+                from . import opt08_fa
+            except ImportError as exc:  # pragma: no cover - import error is user-facing
+                print(f"[diffusion] Unable to import diffusion workflow: {exc}")
+            else:
+                dce_filename = filenames[-1] if filenames else None
+                dce_path = (
+                    os.path.join(nifti_directory, dce_filename)
+                    if dce_filename
+                    else None
+                )
+                try:
+                    print("[diffusion] Computing diffusion metrics")
+                    opt08_fa.compute_fa(
+                        nifti_directory,
+                        analysis_directory,
+                        image_directory,
+                        diffusion_filename=diffusion_filename,
+                        dce_path=dce_path,
+                    )
+                except Exception as exc:  # noqa: BLE001 - expose runtime issues
+                    print(f"[diffusion] Failed to compute diffusion metrics: {exc}")
+        else:
+            print("[diffusion] No diffusion filename configured; skipping diffusion metrics.")
 
     dce_filename = filenames[-1] if filenames else None
     if dce_filename:

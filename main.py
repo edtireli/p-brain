@@ -21,7 +21,6 @@ import modules.opt02_input_functions as opt02_input_functions
 import modules.opt04_tissue_function as opt04_tissue_function
 import modules.opt05_BBB_parameters as opt05_BBB_parameters
 import modules.opt00_images as opt00_images
-import modules.opt08_fa as opt08_fa
 
 
 def mode_screen():
@@ -234,7 +233,14 @@ def main():
             input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
             log_process_end("AI input function extraction")
             log_process_start("Tissue kinetic modelling")
-            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
+            tissue_function_AI(
+                analysis_directory,
+                nifti_directory,
+                image_directory,
+                filenames,
+                parameters,
+                compute_diffusion=args.diffusion,
+            )
             log_process_end("Tissue kinetic modelling")
             log_process_start("Segmented M0/T1 rendering")
             opt01_T1_fit.generate_segmented_m0_t1_maps(
@@ -243,44 +249,20 @@ def main():
                 nifti_directory,
             )
             log_process_end("Segmented M0/T1 rendering")
-            if args.diffusion:
-                log_process_start("Diffusion tensor processing")
-                diffusion_filename = filenames[-2] if filenames else None
-                dce_filename = filenames[-1] if filenames else None
-                opt08_fa.compute_fa(
-                    nifti_directory,
-                    analysis_directory,
-                    image_directory,
-                    diffusion_filename=diffusion_filename,
-                    dce_path=(
-                        os.path.join(nifti_directory, dce_filename)
-                        if dce_filename
-                        else None
-                    ),
-                )
-                log_process_end("Diffusion tensor processing")
             log_auto("Fully automatic analysis pipeline completed.", level="success")
         elif mode == 'pseudo':
             set_turbo_mode(False)
             print_banner()
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
             input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            tissue_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters)
-            if args.diffusion:
-                print("[diffusion] Computing diffusion metrics (pseudo-automatic mode)")
-                diffusion_filename = filenames[-2] if filenames else None
-                dce_filename = filenames[-1] if filenames else None
-                opt08_fa.compute_fa(
-                    nifti_directory,
-                    analysis_directory,
-                    image_directory,
-                    diffusion_filename=diffusion_filename,
-                    dce_path=(
-                        os.path.join(nifti_directory, dce_filename)
-                        if dce_filename
-                        else None
-                    ),
-                )
+            tissue_function_AI(
+                analysis_directory,
+                nifti_directory,
+                image_directory,
+                filenames,
+                parameters,
+                compute_diffusion=args.diffusion,
+            )
             manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
                             image_directory, filenames, parameters, pseudo=True)
 
