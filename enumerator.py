@@ -312,7 +312,6 @@ def _run_montage_for_dataset(
     use_projection=False,
     projection_stats=None,
     use_anatomical=False,
-    montage_options=None,
 ):
     """Render parametric montages for ``dataset_id`` if possible."""
 
@@ -395,14 +394,12 @@ def _run_montage_for_dataset(
         segmentation_path = _expected_segmentation_path(nifti_directory)
         if not os.path.isfile(segmentation_path):
             segmentation_path = None
-        options = montage_options or {}
         generate_parametric_montages(
             analysis_directory,
             image_directory,
             dce_path,
             anatomical_overlay=anatomical_overlay,
             segmentation_path=segmentation_path,
-            **options,
         )
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")
@@ -543,54 +540,6 @@ def parse_args():
         action="store_true",
         help="Only run the diffusion tensor workflow for patient datasets",
     )
-    parser.add_argument(
-        "--pct-lo",
-        dest="pct_lo",
-        type=float,
-        default=2.0,
-        help="Lower percentile for montage intensity scaling (default: 2.0)",
-    )
-    parser.add_argument(
-        "--pct-hi",
-        dest="pct_hi",
-        type=float,
-        default=98.0,
-        help="Upper percentile for montage intensity scaling (default: 98.0)",
-    )
-    parser.add_argument(
-        "--median-size",
-        dest="median_size",
-        type=int,
-        default=3,
-        help="Median filter kernel width for in-mask filling (default: 3)",
-    )
-    parser.add_argument(
-        "--sigma-vox",
-        dest="sigma_vox",
-        type=float,
-        default=0.6,
-        help="Gaussian smoothing sigma in voxels for cleaned metrics (default: 0.6)",
-    )
-    parser.add_argument(
-        "--no-smooth",
-        dest="no_smooth",
-        action="store_true",
-        help="Disable Gaussian smoothing inside the montage brain mask",
-    )
-    parser.add_argument(
-        "--n-slices",
-        dest="n_slices",
-        type=int,
-        default=None,
-        help="Number of slices to display (default: rows*cols)",
-    )
-    parser.add_argument(
-        "--axis",
-        dest="axis",
-        type=int,
-        default=2,
-        help="Axis along which to extract montage slices (0=sagittal,1=coronal,2=axial)",
-    )
     return parser.parse_args()
 
 
@@ -677,17 +626,6 @@ def main():
     ids = args.ids
     start_id = args.start_id
 
-    n_slices = args.n_slices if args.n_slices and args.n_slices > 0 else None
-    montage_options = {
-        "pct_lo": args.pct_lo,
-        "pct_hi": args.pct_hi,
-        "median_size": args.median_size,
-        "sigma_vox": args.sigma_vox,
-        "smooth": not args.no_smooth,
-        "n_slices": n_slices,
-        "axis": args.axis,
-    }
-
     # If user gave no ids and no --all, default to all
     if not ids and not use_all:
         use_all = True
@@ -761,7 +699,6 @@ def main():
                     use_projection=args.projection,
                     projection_stats=projection_stats,
                     use_anatomical=args.montage_anatomical,
-                    montage_options=montage_options,
                 )
                 if not success:
                     exit_code = 1
@@ -786,7 +723,6 @@ def main():
                 use_projection=args.projection,
                 projection_stats=projection_stats,
                 use_anatomical=args.montage_anatomical,
-                montage_options=montage_options,
             )
             if not success:
                 exit_code = 1
@@ -822,7 +758,6 @@ def main():
             use_projection=args.projection,
             projection_stats=projection_stats,
             use_anatomical=args.montage_anatomical,
-            montage_options=montage_options,
         )
 
 
