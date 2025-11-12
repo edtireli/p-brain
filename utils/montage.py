@@ -1045,6 +1045,9 @@ def _render_montage(
             render_shape = overlay_crop.shape
 
         mask_slice = valmask3d[:, :, zi]
+        mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
+        mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
+
         if brain_mask is None and job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
@@ -1052,12 +1055,12 @@ def _render_montage(
                 eps_dyn = max(cutoff, 1e-6)
             else:
                 eps_dyn = 1e-6
-            mask_slice &= slc > eps_dyn
+            mask_slice_crop &= slc > eps_dyn
 
         slc_filled = np.array(slc, copy=True)
-        slc_filled[~mask_slice] = 0.0
+        slc_filled[~mask_slice_crop] = 0.0
         slc_render = slc_filled.astype(np.float32)
-        mask_render = mask_slice
+        mask_render = mask_slice_crop
         union_render = union_crop
         if render_shape != slc.shape:
             slc_render = resize(
@@ -1067,7 +1070,7 @@ def _render_montage(
                 preserve_range=True,
                 anti_aliasing=True,
             ).astype(np.float32)
-            mask_render = _resize_mask(mask_slice, render_shape)
+            mask_render = _resize_mask(mask_slice_crop, render_shape)
             union_render = _resize_mask(union_crop, render_shape)
         valid_mask = union_render & mask_render
         arr = np.ma.array(
