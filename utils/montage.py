@@ -16,6 +16,14 @@ import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
+from skimage.filters import threshold_otsu
+from skimage.morphology import (
+    ball,
+    binary_opening,
+    binary_closing,
+    remove_small_holes,
+    remove_small_objects,
+)
 
 ROWS = 2
 COLS = 5
@@ -236,12 +244,9 @@ def generate_parametric_montages(
             segmentation_img = None
             brain_mask = None
 
-    ref_info = _build_reference(reference, rows * cols, mask=brain_mask)
-    if ref_info is None:
-        print("[montage] Reference volume contained no finite voxels – skipping montages.")
-        return
-
+    # Load T1 underlay first so we can build a HEAD mask for cropping
     overlay = None
+    head_mask: np.ndarray | None = None
     if anatomical_overlay:
         overlay, overlay_error = _prepare_anatomical_overlay(
             anatomical_overlay, reference_img, segmentation_img
@@ -249,9 +254,18 @@ def generate_parametric_montages(
         if overlay_error:
             print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
             overlay = None
-        # Fallback brain mask from the anatomical if atlas mask fails
-        if brain_mask is None and overlay is not None and isinstance(overlay.get("mask"), np.ndarray):
-            brain_mask = overlay["mask"].astype(bool)
+        # Fallback brain mask from T1 if atlas mask is absent
+        if brain_mask is None and overlay is not None and isinstance(overlay.get("mask_brain"), np.ndarray):
+            brain_mask = overlay["mask_brain"].astype(bool)
+        # Head mask for cropping the tiles and masking the underlay
+        if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
+            head_mask = overlay["mask_head"].astype(bool)
+
+    # Build reference using head mask when available, else brain
+    ref_info = _build_reference(reference, rows * cols, mask=head_mask if head_mask is not None else brain_mask)
+    if ref_info is None:
+        print("[montage] Reference volume contained no finite voxels – skipping montages.")
+        return
 
     out_dir = os.path.join(image_directory, "AI", "Montages")
     os.makedirs(out_dir, exist_ok=True)
@@ -582,8 +596,25 @@ def _prepare_anatomical_overlay(
     if overlay_data.ndim != 3:
         return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
 
-    overlay_mask = np.isfinite(overlay_data)
+    # Build a HEAD mask from the T1 to keep skull/scalp/CSF and remove air
+    finite = np.isfinite(overlay_data)
+    vals = overlay_data[finite]
+    if vals.size == 0:
+        return None, "Anatomical overlay has no finite voxels"
+    try:
+        otsu = float(threshold_otsu(vals))
+    except Exception:
+        otsu = float(np.percentile(vals, 50))
+    thr = max(otsu * 0.6, float(np.percentile(vals, 15)))
+    mask_head = finite & (overlay_data > thr)
+    mask_head = binary_opening(mask_head, ball(1))
+    mask_head = binary_closing(mask_head, ball(2))
+    mask_head = remove_small_holes(mask_head, area_threshold=5000)
+    mask_head = remove_small_objects(mask_head, min_size=5000)
 
+    # Optional brain mask from atlas for parametric overlays
+    overlay_mask = finite
+    mask_brain = None
     if segmentation_img is not None:
         try:
             from nibabel.processing import resample_from_to
@@ -595,7 +626,8 @@ def _prepare_anatomical_overlay(
             ):
                 seg_img = resample_from_to(segmentation_img, overlay_img, order=0)
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
-            overlay_mask &= np.isfinite(seg_data) & (seg_data > 0.5)
+            mask_brain = np.isfinite(seg_data) & (seg_data > 0.5)
+            overlay_mask &= mask_brain
         except Exception as exc:  # noqa: BLE001 - surface helpful context
             return (
                 None,
@@ -605,10 +637,11 @@ def _prepare_anatomical_overlay(
     else:
         overlay_mask &= overlay_data > 0
 
+    # Use head mask for the underlay, so air is gone though head tissue remains
     masked_overlay = np.array(overlay_data, copy=True)
-    masked_overlay[~overlay_mask] = 0.0
+    masked_overlay[~mask_head] = 0.0
     overlay_for_range = np.array(overlay_data, copy=True)
-    overlay_for_range[~overlay_mask] = np.nan
+    overlay_for_range[~mask_head] = np.nan
     vmin, vmax = _estimate_intensity_range(overlay_for_range)
 
     clean_overlay_img = nib.Nifti1Image(
@@ -622,7 +655,9 @@ def _prepare_anatomical_overlay(
         "alpha": 0.65,
         "vmin": vmin,
         "vmax": vmax,
-        "mask": overlay_mask,
+        "mask_head": mask_head,    # for underlay display and cropping
+        "mask_brain": mask_brain,  # for parametric overlays
+        "mask": mask_head,         # keep legacy key pointing to head mask
         "affine": np.array(clean_overlay_img.affine, copy=True),
         "header": clean_overlay_img.header.copy()
         if clean_overlay_img.header is not None
@@ -935,7 +970,7 @@ def _render_montage(
     axes = axes.ravel()
 
     overlay_volume = overlay.get("volume") if overlay else None
-    overlay_mask_volume = overlay.get("mask") if overlay else None
+    overlay_mask_volume = overlay.get("mask_head") if overlay else None
     overlay_affine = overlay.get("affine") if overlay else None
     overlay_header = overlay.get("header") if overlay else None
     overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
@@ -1037,8 +1072,11 @@ def _render_montage(
                 ref_info["bbox_fracs"], overlay_rot.shape
             )
             overlay_crop = overlay_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
-            if overlay_rot.shape != union_xy_r.shape:
-                overlay_union = _resize_mask(union_xy_r, overlay_rot.shape)
+            # Underlay visibility follows HEAD mask, not the brain union
+            if overlay_mask_data is not None:
+                mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
+                mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
+                overlay_union = mask_rot.astype(bool)
             else:
                 overlay_union = union_xy_r
             overlay_union_crop = overlay_union[
