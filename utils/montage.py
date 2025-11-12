@@ -249,6 +249,9 @@ def generate_parametric_montages(
         if overlay_error:
             print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
             overlay = None
+        # Fallback brain mask from the anatomical if atlas mask fails
+        if brain_mask is None and overlay is not None and isinstance(overlay.get("mask"), np.ndarray):
+            brain_mask = overlay["mask"].astype(bool)
 
     out_dir = os.path.join(image_directory, "AI", "Montages")
     os.makedirs(out_dir, exist_ok=True)
@@ -264,6 +267,7 @@ def generate_parametric_montages(
                     out_path,
                     job,
                     ref_info,
+                    reference_img=reference_img,
                     rows=rows,
                     cols=cols,
                     dpi=dpi,
@@ -847,6 +851,7 @@ def _render_montage(
     job: MapJob,
     ref_info: Dict[str, np.ndarray],
     *,
+    reference_img: nib.Nifti1Image,
     rows: int,
     cols: int,
     dpi: int,
@@ -855,7 +860,22 @@ def _render_montage(
     segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
     img = nib.load(map_path)
+    # Resample every map to the DCE reference grid for slice parity
+    from nibabel.processing import resample_from_to
+
+    target = (reference_img.shape, reference_img.affine)
+    if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+        img = resample_from_to(img, target, order=1)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
+    # Light display smoothing for coarse diffusion grids
+    try:
+        zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
+        zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
+        ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
+        if ratio > 1.4:
+            data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
+    except Exception:
+        pass
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
@@ -904,7 +924,8 @@ def _render_montage(
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     under_rgba = list(cmap(0.0))
-    under_rgba[-1] = 0.35
+    # Full transparency below vmin when a brain mask exists
+    under_rgba[-1] = 0.0 if brain_mask is not None else 0.35
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
@@ -935,8 +956,7 @@ def _render_montage(
             ovl_img = nib.Nifti1Image(overlay_volume, affine, header)
         if ovl_img is not None:
             from nibabel.processing import resample_from_to
-
-            target = (data.shape[:3], img.affine)
+            target = (data.shape[:3], img.affine)  # already equals reference grid
             if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_img.affine, img.affine):
                 ovl_img = resample_from_to(ovl_img, target, order=1)
             overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
