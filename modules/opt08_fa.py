@@ -934,8 +934,12 @@ def compute_fa(
             parcel_metadata = {}
 
     brain_mask = _brain_union_mask(masks)
-    if brain_mask is None and atlas_brain_mask is not None:
-        brain_mask = np.asarray(atlas_brain_mask, dtype=bool)
+    if atlas_brain_mask is not None:
+        atlas_brain_mask = np.asarray(atlas_brain_mask, dtype=bool)
+        if brain_mask is None:
+            brain_mask = atlas_brain_mask
+        else:
+            brain_mask = np.asarray(brain_mask, dtype=bool) | atlas_brain_mask
 
     for metric_name, payload in metrics.items():
         raw_metric_data = payload["data"]
