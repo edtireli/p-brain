@@ -1,4 +1,8 @@
-"""Utilities for rendering parametric map montages in native DCE space."""
+"""Utilities for rendering parametric map montages in native DCE space.
+
+Supports external head/ICV masks (e.g., FSL/FreeSurfer). If present, these are
+preferentially used to remove air outside the head while retaining skull/scalp,
+and to constrain colour overlays to the intracranial volume."""
 
 from __future__ import annotations
 
@@ -13,7 +17,11 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+import shutil
+import subprocess
+import tempfile
 from matplotlib.colors import LinearSegmentedColormap
+from nibabel.processing import resample_from_to
 from scipy.ndimage import gaussian_filter, binary_fill_holes, label
 from skimage.transform import resize
 from skimage.filters import threshold_otsu
@@ -22,6 +30,7 @@ from skimage.morphology import (
     binary_closing,
     binary_dilation,
     binary_erosion,
+    binary_opening,
     remove_small_objects,
 )
 
@@ -36,6 +45,23 @@ HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
 ICV_ERODE_MM = 3.0        # approximate skull thickness to peel head -> ICV
+MASK_CANDIDATES_HEAD = (
+    "head_mask_in_DCE.nii.gz",
+    "head_mask.nii.gz",
+    "mask_head.nii.gz",
+    "head_in_DCE.nii.gz",
+    "skull_mask_in_DCE.nii.gz",
+    "skull_mask.nii.gz",
+)
+MASK_CANDIDATES_ICV = (
+    "icv_mask_in_DCE.nii.gz",
+    "icv_mask.nii.gz",
+    "mask_icv.nii.gz",
+    "brainmask_in_DCE.nii.gz",
+    "brainmask.nii.gz",
+    "brainmask.mgz",
+)
+FREESURFER_BRAINMASK = ("brainmask.mgz", "brainmask.nii.gz")
 
 
 @dataclass
@@ -166,6 +192,8 @@ def generate_parametric_montages(
     *,
     anatomical_overlay: str | None = None,
     segmentation_path: str | None = None,
+    head_mask_path: str | None = None,
+    icv_mask_path: str | None = None,
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
@@ -187,6 +215,13 @@ def generate_parametric_montages(
     segmentation_path:
         Optional atlas segmentation aligned to the DCE reference. When provided,
         montage rendering will restrict overlays to the labelled brain voxels.
+    head_mask_path:
+        Optional explicit path to a head mask aligned to the DCE reference. If
+        not provided, common filenames will be searched near the DCE volume.
+    icv_mask_path:
+        Optional explicit path to an intracranial volume mask aligned to the DCE
+        reference. If not provided, common filenames will be searched near the
+        DCE volume.
     rows, cols:
         Layout of the montage grid.
     dpi:
@@ -224,8 +259,6 @@ def generate_parametric_montages(
             segmentation_data = np.asarray(segmentation_img.get_fdata(), dtype=np.float32)
             if segmentation_data.ndim != 3:
                 raise ValueError("Segmentation volume is not 3D")
-            from nibabel.processing import resample_from_to
-
             target = (reference.shape, reference_img.affine)
             if (
                 segmentation_img.shape != reference.shape
@@ -248,12 +281,24 @@ def generate_parametric_montages(
             segmentation_img = None
             brain_mask = None
 
+    # Try to load external masks (FSL/FreeSurfer outputs) and prefer them
+    ext_head_mask, ext_icv_mask = _load_external_masks(
+        dce_path,
+        reference_img,
+        explicit_head=head_mask_path,
+        explicit_icv=icv_mask_path,
+    )
+
     # Load T1 underlay first so we can build a HEAD mask for cropping
     overlay = None
     head_mask: np.ndarray | None = None
     if anatomical_overlay:
         overlay, overlay_error = _prepare_anatomical_overlay(
-            anatomical_overlay, reference_img, segmentation_img
+            anatomical_overlay,
+            reference_img,
+            segmentation_img,
+            head_mask_override=ext_head_mask,
+            icv_mask_override=ext_icv_mask,
         )
         if overlay_error:
             print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
@@ -264,6 +309,12 @@ def generate_parametric_montages(
         # Head mask for cropping the tiles and masking the underlay
         if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
             head_mask = overlay["mask_head"].astype(bool)
+    else:
+        # Even without an anatomical underlay we can still crop by external head mask
+        if ext_head_mask is not None:
+            head_mask = ext_head_mask
+        if brain_mask is None and ext_icv_mask is not None:
+            brain_mask = ext_icv_mask
 
     # Build reference using head mask when available, else brain
     ref_info = _build_reference(reference, rows * cols, mask=head_mask if head_mask is not None else brain_mask)
@@ -586,6 +637,9 @@ def _prepare_anatomical_overlay(
     overlay_path: str,
     reference_img: nib.Nifti1Image,
     segmentation_img: nib.Nifti1Image | None = None,
+    *,
+    head_mask_override: np.ndarray | None = None,
+    icv_mask_override: np.ndarray | None = None,
 ) -> tuple[Dict[str, Any] | None, str | None]:
     try:
         overlay_img = nib.load(overlay_path)
@@ -603,20 +657,58 @@ def _prepare_anatomical_overlay(
     if not np.isfinite(overlay_data).any():
         return None, "Anatomical overlay has no finite voxels"
 
-    try:
-        mask_head, mask_brain = _build_head_mask(
-            overlay_img,
-            segmentation_img,
-            dilate_mm=HEAD_DILATE_MM,
-            erode_mm=ICV_ERODE_MM,
-        )
-    except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
-        mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
-        mask_brain = None
-        print(
-            "[montage] Failed to build anatomical head mask – falling back to "
-            f"finite voxels only: {exc}"
-        )
+    # Prefer explicit/external masks if provided; otherwise derive from T1 (+atlas)
+    mask_head = head_mask_override
+    mask_brain = icv_mask_override
+
+    if mask_head is None and mask_brain is None:
+        ref_filename = reference_img.get_filename() if hasattr(reference_img, "get_filename") else None
+        if ref_filename:
+            fs_icv = _try_freesurfer_icv_from_nearby(ref_filename, reference_img)
+            if fs_icv is not None:
+                mask_brain = fs_icv
+        if mask_brain is None and isinstance(overlay_path, str) and os.path.isfile(overlay_path):
+            fsl_head, fsl_icv = _try_fsl_bet_masks(overlay_path, overlay_img)
+            if fsl_icv is not None:
+                mask_brain = fsl_icv
+            if fsl_head is not None:
+                mask_head = fsl_head
+
+    if mask_head is not None or mask_brain is not None:
+        try:
+            if mask_head is None and mask_brain is not None:
+                r = _voxel_radius(overlay_img, ICV_ERODE_MM)
+                # approximate skull thickness back outwards
+                mask_head = binary_dilation(mask_brain, ball(max(1, r)))
+            if mask_brain is None and mask_head is not None:
+                r = _voxel_radius(overlay_img, ICV_ERODE_MM)
+                mask_brain = binary_erosion(mask_head, ball(max(1, r)))
+                mask_brain = binary_fill_holes(mask_brain)
+        except Exception:
+            pass
+
+    if mask_head is None or mask_brain is None:
+        try:
+            derived_head, derived_brain = _build_head_mask(
+                overlay_img,
+                segmentation_img,
+                dilate_mm=HEAD_DILATE_MM,
+                erode_mm=ICV_ERODE_MM,
+            )
+            if mask_head is None:
+                mask_head = derived_head
+            if mask_brain is None:
+                mask_brain = derived_brain
+        except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
+            if mask_head is None:
+                mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
+            if mask_brain is None:
+                mask_brain = None
+            print(
+                "[montage] Failed to build anatomical head mask – falling back to "
+                "finite voxels only:",
+                exc,
+            )
 
     if mask_head is None or not np.any(mask_head):
         mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
@@ -698,8 +790,6 @@ def _build_head_mask(
 
     icv_prior: np.ndarray | None = None
     if segmentation_img is not None:
-        from nibabel.processing import resample_from_to
-
         seg_img = segmentation_img
         if seg_img.shape != overlay_img.shape or not np.allclose(
             seg_img.affine, overlay_img.affine
@@ -729,6 +819,188 @@ def _build_head_mask(
     head = binary_fill_holes(head)
     head = _largest_component(head)
     return head.astype(bool), icv.astype(bool)
+
+
+def _load_binary_mask(path: str, reference_img: nib.Nifti1Image) -> np.ndarray | None:
+    """Load a binary mask from disk, resample to the reference grid, return bool array."""
+
+    try:
+        img = nib.load(path)
+    except Exception:
+        return None
+    if img.ndim != 3 and (hasattr(img, "shape") and len(img.shape) != 3):
+        return None
+
+    try:
+        if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+            img = resample_from_to(img, (reference_img.shape, reference_img.affine), order=0)
+        data = np.asarray(img.get_fdata(), dtype=np.float32)
+        mask = np.isfinite(data) & (data > 0.5)
+        if not mask.any():
+            # sometimes masks are 0/1 but smoothed; open+fill to revive thin rims
+            mask = data > 0.1
+            mask = binary_opening(mask, ball(1))
+        mask = binary_fill_holes(mask)
+        mask = _largest_component(mask)
+        return mask.astype(bool)
+    except Exception:
+        return None
+
+
+def _search_nearby(paths: list[str], names: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    for root in paths:
+        for name in names:
+            candidate = os.path.join(root, name)
+            if os.path.isfile(candidate):
+                out.append(candidate)
+    return out
+
+
+def _load_external_masks(
+    dce_path: str,
+    reference_img: nib.Nifti1Image,
+    *,
+    explicit_head: str | None = None,
+    explicit_icv: str | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Locate and load external head/ICV masks if available.
+
+    Search order:
+      1) Explicit paths if provided.
+      2) Same folder as DCE.
+      3) Siblings commonly present in this repository layout:
+         - ../NIfTI/
+         - ../segmentation/segmentation/mri/
+    """
+
+    dce_dir = os.path.abspath(os.path.dirname(dce_path))
+    siblings = [
+        dce_dir,
+        os.path.abspath(os.path.join(dce_dir, "..", "NIfTI")),
+        os.path.abspath(os.path.join(dce_dir, "..", "segmentation", "segmentation", "mri")),
+    ]
+
+    head_candidates: list[str] = []
+    icv_candidates: list[str] = []
+    if explicit_head:
+        head_candidates.append(explicit_head)
+    if explicit_icv:
+        icv_candidates.append(explicit_icv)
+    head_candidates.extend(_search_nearby(siblings, MASK_CANDIDATES_HEAD))
+    icv_candidates.extend(_search_nearby(siblings, MASK_CANDIDATES_ICV))
+
+    head_mask = None
+    icv_mask = None
+    head_source = None
+    icv_source = None
+    for path in head_candidates:
+        candidate = _load_binary_mask(path, reference_img)
+        if candidate is not None:
+            head_mask = candidate
+            head_source = path
+            break
+    for path in icv_candidates:
+        candidate = _load_binary_mask(path, reference_img)
+        if candidate is not None:
+            icv_mask = candidate
+            icv_source = path
+            break
+
+    if head_mask is not None:
+        print(f"[montage] Using external head mask: {head_source}")
+    else:
+        print("[montage] No external head mask engaged.")
+    if icv_mask is not None:
+        print(f"[montage] Using external ICV mask: {icv_source}")
+    else:
+        print("[montage] No external ICV mask engaged.")
+
+    return head_mask, icv_mask
+
+
+def _has_cmd(cmd: str) -> bool:
+    try:
+        return shutil.which(cmd) is not None
+    except Exception:
+        return False
+
+
+def _try_freesurfer_icv_from_nearby(
+    dce_path: str, reference_img: nib.Nifti1Image
+) -> np.ndarray | None:
+    """Look for FreeSurfer brainmask.* near the DCE and load as ICV."""
+
+    dce_dir = os.path.abspath(os.path.dirname(dce_path))
+    candidates: list[str] = []
+    siblings = [
+        dce_dir,
+        os.path.abspath(os.path.join(dce_dir, "..", "NIfTI")),
+        os.path.abspath(os.path.join(dce_dir, "..", "segmentation", "segmentation", "mri")),
+    ]
+    for root in siblings:
+        for name in FREESURFER_BRAINMASK:
+            path = os.path.join(root, name)
+            if os.path.isfile(path):
+                candidates.append(path)
+    if candidates:
+        print("[montage] FreeSurfer brainmask candidates:", candidates)
+    for path in candidates:
+        try:
+            img = nib.load(path)
+            if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+                img = resample_from_to(img, (reference_img.shape, reference_img.affine), order=0)
+            data = np.asarray(img.get_fdata(), dtype=np.float32)
+            mask = np.isfinite(data) & (data > 0.5)
+            mask = binary_fill_holes(mask)
+            mask = _largest_component(mask)
+            if mask.any():
+                print("[montage] Using FreeSurfer ICV:", path)
+                return mask.astype(bool)
+        except Exception:
+            continue
+    return None
+
+
+def _try_fsl_bet_masks(
+    overlay_path: str, overlay_img: nib.Nifti1Image
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Use FSL BET on the underlay to get ICV, then grow to head."""
+
+    if not _has_cmd("bet"):
+        return None, None
+    try:
+        with tempfile.TemporaryDirectory(prefix="pbrain_bet_") as td:
+            prefix = os.path.join(td, "ovl")
+            cmd = ["bet", overlay_path, prefix, "-m", "-R", "-f", "0.20"]
+            print("[montage] Running FSL BET:", " ".join(cmd))
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                print("[montage] FSL BET failed:", result.stderr.strip()[:240])
+                return None, None
+            mask_path = prefix + "_mask.nii.gz"
+            if not os.path.isfile(mask_path):
+                print("[montage] FSL BET produced no _mask.nii.gz")
+                return None, None
+            mask_img = nib.load(mask_path)
+            if mask_img.shape != overlay_img.shape or not np.allclose(mask_img.affine, overlay_img.affine):
+                mask_img = resample_from_to(mask_img, overlay_img, order=0)
+            mask = np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
+            radius = _voxel_radius(overlay_img, ICV_ERODE_MM if ICV_ERODE_MM > 0 else 1.0)
+            head = binary_dilation(mask, ball(max(1, radius)))
+            head = binary_fill_holes(head)
+            head = _largest_component(head)
+            print("[montage] Using FSL BET-derived ICV and grown HEAD.")
+            return head.astype(bool), mask.astype(bool)
+    except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
+        print("[montage] FSL BET path failed:", exc)
+    return None, None
 
 
 def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
@@ -1159,6 +1431,7 @@ def _render_montage(
             ax.imshow(
                 overlay_arr,
                 cmap="gray",
+                # underlay: keep sharp-ish skull edges; avoid “holes” by preferring bilinear
                 interpolation="bilinear",
                 origin="upper",
                 vmin=overlay_vmin,
@@ -1206,6 +1479,8 @@ def _render_montage(
             slc_render,
             mask=(~valid_mask) | (~np.isfinite(slc_render)),
         )
+        # If the slice is entirely below global vmin (e.g., FA in cortex),
+        # use a local min/max so low-but-real values remain visible.
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
         if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
             loc_vmin = float(np.nanmin(finite_vals))
