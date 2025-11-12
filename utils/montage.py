@@ -736,7 +736,7 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
 def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
     target_shape = (int(target_shape[0]), int(target_shape[1]))
     if mask.shape == target_shape:
-        return mask.astype(bool, copy=False)
+        return mask.astype(bool)
 
     resized = resize(
         mask.astype(np.float32),
@@ -922,7 +922,7 @@ def _render_montage(
 
         slc_filled = np.array(slc, copy=True)
         slc_filled[~mask_slice] = 0.0
-        slc_render = slc_filled.astype(np.float32, copy=False)
+        slc_render = slc_filled.astype(np.float32)
         mask_render = mask_slice
         union_render = overlay_union_crop if overlay_volume is not None else union_crop
         if render_shape != slc.shape:
@@ -932,7 +932,7 @@ def _render_montage(
                 order=1,
                 preserve_range=True,
                 anti_aliasing=True,
-            ).astype(np.float32, copy=False)
+            ).astype(np.float32)
             mask_render = _resize_mask(mask_slice, render_shape)
             union_render = overlay_union_crop
         valid_mask = union_render & mask_render

@@ -186,7 +186,7 @@ def _maybe_resample_to_dce(
     has_nans = np.logical_not(finite_original).any()
     if has_nans:
         filled_data = np.where(finite_original, original_data, 0.0).astype(
-            np.float32, copy=False
+            np.float32
         )
         filled_header = img.header.copy()
         filled_header.set_data_dtype(np.float32)
@@ -1071,7 +1071,7 @@ def compute_fa(
         # Apply masking
         metric_data = np.where(metric_mask, raw_metric_data, np.float32(np.nan))
 
-        metric_data = np.asarray(metric_data, dtype=np.float32, copy=False)
+        metric_data = np.asarray(metric_data, dtype=np.float32)
 
         # Native-space debug artifact to inspect last-slice coverage when needed
         native_dbg = os.path.join(
