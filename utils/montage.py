@@ -486,10 +486,15 @@ def _mk_specthl() -> LinearSegmentedColormap:
     return LinearSegmentedColormap.from_list("specthl", list(zip(xs, cols)), N=256)
 
 
-def _get_cmap(name: str) -> mpl.colors.Colormap:
-    if name.lower() == "specthl":
-        return _mk_specthl()
-    return mpl.colormaps[name].copy()
+def _get_cmap(name: str | None) -> mpl.colors.Colormap:
+    key = name or "specthl"
+    try:
+        if key.lower() == "specthl":
+            return _mk_specthl()
+        return mpl.colormaps[key].copy()
+    except Exception:
+        # last-ditch fallback so a bad/None name never kills the montage
+        return mpl.colormaps["viridis"].copy()
 
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
@@ -910,7 +915,7 @@ def _render_montage(
         slc_filled[~mask_slice] = 0.0
         slc_render = slc_filled.astype(np.float32)
         mask_render = mask_slice
-        union_render = overlay_union_crop if overlay_data is not None else union_crop
+        union_render = union_crop
         if render_shape != slc.shape:
             slc_render = resize(
                 slc_render,
@@ -920,7 +925,7 @@ def _render_montage(
                 anti_aliasing=True,
             ).astype(np.float32)
             mask_render = _resize_mask(mask_slice, render_shape)
-            union_render = overlay_union_crop
+            union_render = _resize_mask(union_crop, render_shape)
         valid_mask = union_render & mask_render
         arr = np.ma.array(
             slc_render,
