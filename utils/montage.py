@@ -958,9 +958,9 @@ def _render_montage(
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+    # Sub-vmin voxels stay faint instead of disappearing; NaNs stay invisible
     under_rgba = list(cmap(0.0))
-    # Full transparency below vmin when a brain mask exists
-    under_rgba[-1] = 0.0 if brain_mask is not None else 0.35
+    under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
@@ -1226,7 +1226,7 @@ def _render_projection_montage(
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     under_rgba = list(cmap(0.0))
-    under_rgba[-1] = 0.35
+    under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
