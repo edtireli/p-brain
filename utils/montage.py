@@ -21,6 +21,7 @@ from skimage.morphology import (
     ball,
     binary_closing,
     binary_dilation,
+    binary_erosion,
     remove_small_objects,
 )
 
@@ -34,6 +35,7 @@ EPS = 1e-8
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
+ICV_ERODE_MM = 3.0        # approximate skull thickness to peel head -> ICV
 
 
 @dataclass
@@ -603,7 +605,10 @@ def _prepare_anatomical_overlay(
 
     try:
         mask_head, mask_brain = _build_head_mask(
-            overlay_img, segmentation_img, dilate_mm=HEAD_DILATE_MM
+            overlay_img,
+            segmentation_img,
+            dilate_mm=HEAD_DILATE_MM,
+            erode_mm=ICV_ERODE_MM,
         )
     except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
         mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
@@ -686,9 +691,12 @@ def _build_head_mask(
     segmentation_img: nib.Nifti1Image | None,
     *,
     dilate_mm: float = 8.0,
+    erode_mm: float = 3.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
+    # Envelope of all head tissues (no air)
     head = _t1_envelope(overlay_img)
-    brain_mask: np.ndarray | None = None
+
+    icv_prior: np.ndarray | None = None
     if segmentation_img is not None:
         from nibabel.processing import resample_from_to
 
@@ -702,13 +710,25 @@ def _build_head_mask(
         if brain.any():
             brain = binary_fill_holes(brain)
             brain = _largest_component(brain)
-            brain_mask = brain.astype(bool)
+            icv_prior = brain.astype(bool)
             r = _voxel_radius(overlay_img, dilate_mm)
-            grown = binary_dilation(brain_mask, ball(r))
+            grown = binary_dilation(icv_prior, ball(r))
             head = np.asarray(head | grown, dtype=bool)
+    r_erode = _voxel_radius(overlay_img, erode_mm)
+    icv_from_head = binary_erosion(head, ball(r_erode))
+    icv_from_head = binary_fill_holes(icv_from_head)
+    icv_from_head = _largest_component(icv_from_head)
+
+    if icv_prior is not None:
+        from skimage.morphology import binary_closing as _bclose
+
+        icv = _bclose(icv_from_head | icv_prior, ball(1))
+    else:
+        icv = icv_from_head
+
     head = binary_fill_holes(head)
     head = _largest_component(head)
-    return head.astype(bool), brain_mask
+    return head.astype(bool), icv.astype(bool)
 
 
 def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
