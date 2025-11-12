@@ -22,7 +22,12 @@ import subprocess
 import tempfile
 from matplotlib.colors import LinearSegmentedColormap
 from nibabel.processing import resample_from_to
-from scipy.ndimage import gaussian_filter, binary_fill_holes, label
+from scipy.ndimage import (
+    gaussian_filter,
+    binary_fill_holes,
+    label,
+    distance_transform_edt,
+)
 from skimage.transform import resize
 from skimage.filters import threshold_otsu
 from skimage.morphology import (
@@ -41,6 +46,7 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
+FEATHER_MM = 3.0  # width of soft edge for T1 underlay
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
@@ -720,6 +726,8 @@ def _prepare_anatomical_overlay(
     overlay_for_range[~mask_head] = np.nan
     vmin, vmax = _estimate_intensity_range(overlay_for_range)
 
+    alpha_map = _alpha_feather_from_mask(mask_head, overlay_img, FEATHER_MM)
+
     clean_overlay_img = nib.Nifti1Image(
         masked_overlay,
         np.array(overlay_img.affine, copy=True),
@@ -732,6 +740,7 @@ def _prepare_anatomical_overlay(
         "vmin": vmin,
         "vmax": vmax,
         "mask_head": mask_head,    # for underlay display and cropping
+        "alpha_map": alpha_map,    # per-pixel alpha to feather the rim
         "mask_brain": mask_brain,  # for parametric overlays
         "mask": mask_head,         # keep legacy key pointing to head mask
         "affine": np.array(clean_overlay_img.affine, copy=True),
@@ -819,6 +828,25 @@ def _build_head_mask(
     head = binary_fill_holes(head)
     head = _largest_component(head)
     return head.astype(bool), icv.astype(bool)
+
+
+def _alpha_feather_from_mask(
+    head_mask: np.ndarray, img: nib.Nifti1Image, feather_mm: float
+) -> np.ndarray:
+    """Per-pixel alpha in [0,1] that ramps up inside the head over ``feather_mm``."""
+
+    mask = np.asarray(head_mask, dtype=bool)
+    if mask.shape != img.shape:
+        raise ValueError("alpha feather mask shape mismatch")
+
+    r = max(1, _voxel_radius(img, float(feather_mm)))
+    # distance to boundary inside the mask
+    d_in = distance_transform_edt(mask)
+    alpha = np.clip(d_in / float(r), 0.0, 1.0).astype(np.float32)
+    alpha[~mask] = 0.0
+    # light smoothing keeps the ramp silky
+    alpha = gaussian_filter(alpha, sigma=0.6, mode="nearest")
+    return alpha
 
 
 def _load_binary_mask(path: str, reference_img: nib.Nifti1Image) -> np.ndarray | None:
@@ -1311,10 +1339,12 @@ def _render_montage(
     overlay_affine = overlay.get("affine") if overlay else None
     overlay_header = overlay.get("header") if overlay else None
     overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
+    overlay_alpha_map = overlay.get("alpha_map") if overlay else None
     overlay_vmin = overlay.get("vmin") if overlay else None
     overlay_vmax = overlay.get("vmax") if overlay else None
     overlay_data = None
     overlay_mask_data = None
+    overlay_alpha_data = None
     overlay_z_indices = None
     if overlay_volume is not None:
         ovl_img = None
@@ -1328,10 +1358,24 @@ def _render_montage(
             ovl_img = nib.Nifti1Image(overlay_volume, affine, header)
         if ovl_img is not None:
             from nibabel.processing import resample_from_to
+
             target = (data.shape[:3], img.affine)  # already equals reference grid
-            if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_img.affine, img.affine):
+            ovl_affine = ovl_img.affine
+            alpha_img = None
+            if overlay_alpha_map is not None:
+                alpha_img = nib.Nifti1Image(
+                    np.asarray(overlay_alpha_map, dtype=np.float32),
+                    overlay_affine if overlay_affine is not None else ovl_affine,
+                )
+            if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_affine, img.affine):
                 ovl_img = resample_from_to(ovl_img, target, order=1)
             overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
+            if alpha_img is not None:
+                if alpha_img.shape[:3] != data.shape[:3] or not np.allclose(
+                    alpha_img.affine, img.affine
+                ):
+                    alpha_img = resample_from_to(alpha_img, target, order=1)
+                overlay_alpha_data = np.asarray(alpha_img.get_fdata(), dtype=np.float32)
             if overlay_mask_volume is not None:
                 mask_img = None
                 if isinstance(overlay_mask_volume, str):
@@ -1410,6 +1454,7 @@ def _render_montage(
             )
             overlay_crop = overlay_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             # Underlay visibility follows HEAD mask, not the brain union
+            overlay_alpha_crop = None
             if overlay_mask_data is not None:
                 mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
                 mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
@@ -1419,6 +1464,14 @@ def _render_montage(
             overlay_union_crop = overlay_union[
                 overlay_r0:overlay_r1, overlay_c0:overlay_c1
             ]
+            if overlay_alpha_data is not None:
+                alpha_slice = overlay_alpha_data[:, :, index_for_overlay]
+                alpha_rot = np.rot90(alpha_slice, ref_info["rotate"])
+                overlay_alpha_crop = alpha_rot[
+                    overlay_r0:overlay_r1, overlay_c0:overlay_c1
+                ]
+                overlay_alpha_crop = overlay_alpha_crop * overlay_union_crop.astype(np.float32)
+                overlay_alpha_crop = np.clip(overlay_alpha_crop, 0.0, 1.0)
             overlay_mask_slice = None
             if overlay_mask_data is not None:
                 mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
@@ -1437,6 +1490,11 @@ def _render_montage(
                 vmin=overlay_vmin,
                 vmax=overlay_vmax,
                 extent=extent,
+                alpha=(
+                    overlay_alpha * overlay_alpha_crop
+                    if overlay_alpha_crop is not None
+                    else overlay_alpha
+                ),
             )
             render_shape = overlay_crop.shape
 
