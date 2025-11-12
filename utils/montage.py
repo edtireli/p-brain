@@ -14,14 +14,13 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, binary_fill_holes, label
 from skimage.transform import resize
 from skimage.filters import threshold_otsu
 from skimage.morphology import (
     ball,
-    binary_opening,
     binary_closing,
-    remove_small_holes,
+    binary_dilation,
     remove_small_objects,
 )
 
@@ -32,6 +31,9 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
+HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
+HEAD_EXTRA_MM = 2.0       # tiny extra cushion
+HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
 
 
 @dataclass
@@ -596,46 +598,23 @@ def _prepare_anatomical_overlay(
     if overlay_data.ndim != 3:
         return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
 
-    # Build a HEAD mask from the T1 to keep skull/scalp/CSF and remove air
-    finite = np.isfinite(overlay_data)
-    vals = overlay_data[finite]
-    if vals.size == 0:
+    if not np.isfinite(overlay_data).any():
         return None, "Anatomical overlay has no finite voxels"
+
     try:
-        otsu = float(threshold_otsu(vals))
-    except Exception:
-        otsu = float(np.percentile(vals, 50))
-    thr = max(otsu * 0.6, float(np.percentile(vals, 15)))
-    mask_head = finite & (overlay_data > thr)
-    mask_head = binary_opening(mask_head, ball(1))
-    mask_head = binary_closing(mask_head, ball(2))
-    mask_head = remove_small_holes(mask_head, area_threshold=5000)
-    mask_head = remove_small_objects(mask_head, min_size=5000)
+        mask_head, mask_brain = _build_head_mask(
+            overlay_img, segmentation_img, dilate_mm=HEAD_DILATE_MM
+        )
+    except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
+        mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
+        mask_brain = None
+        print(
+            "[montage] Failed to build anatomical head mask – falling back to "
+            f"finite voxels only: {exc}"
+        )
 
-    # Optional brain mask from atlas for parametric overlays
-    overlay_mask = finite
-    mask_brain = None
-    if segmentation_img is not None:
-        try:
-            from nibabel.processing import resample_from_to
-
-            seg_img = segmentation_img
-            if (
-                segmentation_img.shape != overlay_data.shape
-                or not np.allclose(segmentation_img.affine, overlay_img.affine)
-            ):
-                seg_img = resample_from_to(segmentation_img, overlay_img, order=0)
-            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
-            mask_brain = np.isfinite(seg_data) & (seg_data > 0.5)
-            overlay_mask &= mask_brain
-        except Exception as exc:  # noqa: BLE001 - surface helpful context
-            return (
-                None,
-                "Failed to resample segmentation into anatomical space: "
-                f"{exc}",
-            )
-    else:
-        overlay_mask &= overlay_data > 0
+    if mask_head is None or not np.any(mask_head):
+        mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
 
     # Use head mask for the underlay, so air is gone though head tissue remains
     masked_overlay = np.array(overlay_data, copy=True)
@@ -663,6 +642,73 @@ def _prepare_anatomical_overlay(
         if clean_overlay_img.header is not None
         else None,
     }, None
+
+
+def _voxel_radius(img: nib.Nifti1Image, mm: float) -> int:
+    zoom = np.array(img.header.get_zooms()[:3], dtype=float)
+    r = int(np.ceil(mm / max(1e-6, min(zoom))))
+    return max(1, r)
+
+
+def _largest_component(mask: np.ndarray) -> np.ndarray:
+    lab, n = label(mask.astype(np.uint8))
+    if n <= 1:
+        return mask.astype(bool)
+    counts = np.bincount(lab.ravel())
+    if counts.size <= 1:
+        return mask.astype(bool)
+    counts[0] = 0
+    idx = int(np.argmax(counts))
+    return lab == idx
+
+
+def _t1_envelope(img: nib.Nifti1Image) -> np.ndarray:
+    vol = np.asarray(img.get_fdata(), dtype=np.float32)
+    finite = np.isfinite(vol)
+    vals = vol[finite]
+    if vals.size == 0:
+        return finite
+    try:
+        thr = float(threshold_otsu(vals))
+    except Exception:
+        thr = float(np.percentile(vals, 2.0))
+    soft = finite & (vol > thr)
+    soft = binary_closing(soft, ball(1))
+    soft = binary_fill_holes(soft)
+    soft = remove_small_objects(soft, min_size=HEAD_MIN_VOXELS, connectivity=2)
+    soft = _largest_component(soft)
+    soft = binary_dilation(soft, ball(_voxel_radius(img, HEAD_EXTRA_MM)))
+    return soft.astype(bool)
+
+
+def _build_head_mask(
+    overlay_img: nib.Nifti1Image,
+    segmentation_img: nib.Nifti1Image | None,
+    *,
+    dilate_mm: float = 8.0,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    head = _t1_envelope(overlay_img)
+    brain_mask: np.ndarray | None = None
+    if segmentation_img is not None:
+        from nibabel.processing import resample_from_to
+
+        seg_img = segmentation_img
+        if seg_img.shape != overlay_img.shape or not np.allclose(
+            seg_img.affine, overlay_img.affine
+        ):
+            seg_img = resample_from_to(seg_img, overlay_img, order=0)
+        seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+        brain = np.isfinite(seg_data) & (seg_data > 0.5)
+        if brain.any():
+            brain = binary_fill_holes(brain)
+            brain = _largest_component(brain)
+            brain_mask = brain.astype(bool)
+            r = _voxel_radius(overlay_img, dilate_mm)
+            grown = binary_dilation(brain_mask, ball(r))
+            head = np.asarray(head | grown, dtype=bool)
+    head = binary_fill_holes(head)
+    head = _largest_component(head)
+    return head.astype(bool), brain_mask
 
 
 def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
@@ -958,9 +1004,8 @@ def _render_montage(
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    # Sub-vmin voxels stay faint instead of disappearing; NaNs stay invisible
-    under_rgba = list(cmap(0.0))
-    under_rgba[-1] = 0.45
+    # Keep sub-vmin faint so low values remain visible; NaNs remain invisible
+    under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
@@ -1130,7 +1175,13 @@ def _render_montage(
             ).astype(np.float32)
             mask_render = _resize_mask(mask_slice_crop, render_shape)
             union_render = _resize_mask(union_crop, render_shape)
-        valid_mask = union_render & mask_render
+        # seal tiny pinholes from resampling
+        try:
+            from skimage.morphology import binary_closing as _bclose
+
+            valid_mask = _bclose(union_render & mask_render, footprint=np.ones((2, 2), bool))
+        except Exception:
+            valid_mask = union_render & mask_render
         arr = np.ma.array(
             slc_render,
             mask=(~valid_mask) | (~np.isfinite(slc_render)),
@@ -1225,8 +1276,7 @@ def _render_projection_montage(
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    under_rgba = list(cmap(0.0))
-    under_rgba[-1] = 0.45
+    under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
