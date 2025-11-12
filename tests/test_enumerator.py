@@ -70,6 +70,7 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
             *,
             anatomical_overlay=None,
             segmentation_path=None,
+            **kwargs,
         ):
             called["args"] = (
                 analysis_directory,
@@ -78,6 +79,7 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
                 anatomical_overlay,
                 segmentation_path,
             )
+            called["kwargs"] = kwargs
 
         class DummyParameters:
             @staticmethod
@@ -100,6 +102,7 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
         None,
         None,
     )
+    assert called["kwargs"] == {}
 
 
 def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
@@ -128,6 +131,7 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
             *,
             anatomical_overlay=None,
             segmentation_path=None,
+            **kwargs,
         ):
             called["args"] = (
                 analysis_directory,
@@ -136,6 +140,7 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
                 anatomical_overlay,
                 segmentation_path,
             )
+            called["kwargs"] = kwargs
 
         class DummyParameters:
             @staticmethod
@@ -163,6 +168,7 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
         str(overlay_file),
         str(segmentation_file),
     )
+    assert called["kwargs"] == {}
 
 
 def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkeypatch):
@@ -193,6 +199,7 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
             *,
             anatomical_overlay=None,
             segmentation_path=None,
+            **kwargs,
         ):
             called["args"] = (
                 analysis_directory,
@@ -201,6 +208,7 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
                 anatomical_overlay,
                 segmentation_path,
             )
+            called["kwargs"] = kwargs
 
         class DummyParameters:
             @staticmethod
@@ -228,6 +236,7 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
         str(overlay_file),
         str(segmentation_file),
     )
+    assert called["kwargs"] == {}
 
 
 def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
@@ -261,6 +270,7 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
             *,
             anatomical_overlay=None,
             segmentation_path=None,
+            **kwargs,
         ):
             called["args"] = (
                 analysis_directory,
@@ -269,6 +279,7 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
                 anatomical_overlay,
                 segmentation_path,
             )
+            called["kwargs"] = kwargs
 
         class DummyParameters:
             @staticmethod
@@ -300,6 +311,7 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
         str(overlay_path),
         str(segmentation_file),
     )
+    assert called.get("kwargs", {}) == {}
 
 
 def test_run_montage_for_dataset_missing_dce(tmp_path, monkeypatch):
@@ -395,6 +407,7 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
         use_projection=False,
         projection_stats=None,
         use_anatomical=False,
+        montage_options=None,
     ):
         montage_calls.append(
             (
@@ -404,6 +417,7 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
                 use_projection,
                 projection_stats,
                 use_anatomical,
+                montage_options,
             )
         )
         return True
@@ -432,16 +446,25 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
 
     assert exc.value.code == 0
     assert diffusion_calls == [(str(tmp_path), "001", False)]
-    assert montage_calls == [
-        (
-            str(tmp_path),
-            "001",
-            False,
-            False,
-            None,
-            False,
-        )
-    ]
+    assert len(montage_calls) == 1
+    call = montage_calls[0]
+    assert call[:6] == (
+        str(tmp_path),
+        "001",
+        False,
+        False,
+        None,
+        False,
+    )
+    assert call[6] == {
+        "pct_lo": 2.0,
+        "pct_hi": 98.0,
+        "median_size": 3,
+        "sigma_vox": 0.6,
+        "smooth": True,
+        "n_slices": None,
+        "axis": 2,
+    }
 
 
 def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
@@ -464,6 +487,7 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
         use_projection=False,
         projection_stats=None,
         use_anatomical=False,
+        montage_options=None,
     ):
         montage_calls.append(
             (
@@ -473,6 +497,7 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
                 use_projection,
                 projection_stats,
                 use_anatomical,
+                montage_options,
             )
         )
         return True
@@ -497,14 +522,23 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
         enumerator.main()
 
     assert exc.value.code == 0
-    assert montage_calls == [
-        (
-            str(tmp_path),
-            "001",
-            False,
-            False,
-            None,
-            True,
-        )
-    ]
+    assert len(montage_calls) == 1
+    call = montage_calls[0]
+    assert call[:6] == (
+        str(tmp_path),
+        "001",
+        False,
+        False,
+        None,
+        True,
+    )
+    assert call[6] == {
+        "pct_lo": 2.0,
+        "pct_hi": 98.0,
+        "median_size": 3,
+        "sigma_vox": 0.6,
+        "smooth": True,
+        "n_slices": None,
+        "axis": 2,
+    }
     assert diffusion_calls == [(str(tmp_path), "001", False)]
