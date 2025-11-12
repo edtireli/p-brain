@@ -148,7 +148,7 @@ def generate_parametric_montages(
     image_directory: str,
     dce_path: str,
     *,
-    anatomical_overlay: str | None = None,
+    anatomical_overlay: str | Mapping[str, str] | None = None,
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
@@ -164,9 +164,11 @@ def generate_parametric_montages(
     dce_path:
         Path to the native-space DCE reference volume used to select slices.
     anatomical_overlay:
-        Optional path to a T1-weighted anatomical volume already aligned to the
-        DCE reference. When provided, montage values will be rendered atop the
-        grayscale anatomical background.
+        Optional path or configuration mapping describing a T1-weighted
+        anatomical volume. When provided, montage values will be rendered atop
+        the grayscale anatomical background. When a high-resolution anatomical
+        volume is supplied via ``{"path": ...}``, parametric maps will be
+        resampled to match that resolution before rendering.
     rows, cols:
         Layout of the montage grid.
     dpi:
@@ -179,7 +181,13 @@ def generate_parametric_montages(
         print(f"[montage] DCE reference not found – skipping montage rendering: {dce_path}")
         return
 
-    reference = _load_reference_volume(dce_path)
+    try:
+        reference_img = nib.load(dce_path)
+    except Exception as exc:  # noqa: BLE001 - expose helpful context to CLI users
+        print(f"[montage] Unable to load DCE reference volume: {exc}")
+        return
+
+    reference = _load_reference_volume(reference_img)
     if reference is None:
         print("[montage] Unable to load DCE reference volume – skipping montages.")
         return
@@ -191,7 +199,8 @@ def generate_parametric_montages(
 
     overlay = None
     if anatomical_overlay:
-        overlay, overlay_error = _prepare_anatomical_overlay(anatomical_overlay, reference)
+        overlay_spec = _normalize_overlay_spec(anatomical_overlay)
+        overlay, overlay_error = _prepare_anatomical_overlay(overlay_spec, reference)
         if overlay_error:
             print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
             overlay = None
@@ -488,8 +497,11 @@ def _get_cmap(name: str) -> mpl.colors.Colormap:
     return mpl.colormaps[name].copy()
 
 
-def _load_reference_volume(dce_path: str) -> np.ndarray | None:
-    img = nib.load(dce_path)
+def _load_reference_volume(dce: str | nib.spatialimages.SpatialImage) -> np.ndarray | None:
+    if isinstance(dce, str):
+        img = nib.load(dce)
+    else:
+        img = dce
     data = np.asarray(img.get_fdata(), dtype=np.float32)
     if data.ndim == 4:
         data = np.nanmean(data, axis=-1)
@@ -498,35 +510,71 @@ def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     return data
 
 
+def _normalize_overlay_spec(overlay: str | Mapping[str, str]) -> dict[str, str]:
+    if isinstance(overlay, Mapping):
+        primary = overlay.get("path") or overlay.get("volume") or overlay.get("primary")
+        fallback = overlay.get("fallback") or overlay.get("fallback_path")
+    else:
+        primary = overlay
+        fallback = None
+
+    config: dict[str, str] = {}
+    if primary:
+        config["path"] = str(primary)
+    if fallback and fallback != primary:
+        config["fallback"] = str(fallback)
+    return config
+
+
 def _prepare_anatomical_overlay(
-    overlay_path: str, reference: np.ndarray
+    overlay_spec: Mapping[str, str] | None,
+    reference_volume: np.ndarray,
 ) -> tuple[Dict[str, Any] | None, str | None]:
-    try:
-        overlay = _load_reference_volume(overlay_path)
-    except FileNotFoundError:
-        return None, f"Anatomical overlay not found: {overlay_path}"
-    except Exception as exc:  # noqa: BLE001 - report to CLI users
-        return None, f"Failed to load anatomical overlay {overlay_path}: {exc}"
+    if not overlay_spec:
+        return None, "Anatomical overlay path not provided"
 
-    if overlay is None:
-        return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
+    primary = overlay_spec.get("path")
+    fallback = overlay_spec.get("fallback")
+    candidates: list[tuple[str, bool]] = []
+    if primary:
+        candidates.append((primary, True))
+    if fallback and fallback != primary:
+        candidates.append((fallback, False))
 
-    if overlay.shape != reference.shape:
-        return (
-            None,
-            "Anatomical overlay shape does not match the DCE reference volume "
-            f"({overlay.shape} vs {reference.shape})",
-        )
+    last_error: str | None = None
+    for path, is_primary in candidates:
+        try:
+            overlay_img = nib.load(path)
+        except FileNotFoundError:
+            last_error = f"Anatomical overlay not found: {path}"
+            continue
+        except Exception as exc:  # noqa: BLE001 - surface helpful context to CLI users
+            last_error = f"Failed to load anatomical overlay {path}: {exc}"
+            continue
 
-    vmin, vmax = _estimate_intensity_range(overlay)
-    overlay_mask = np.isfinite(overlay) & (overlay > 0)
-    return {
-        "volume": overlay,
-        "alpha": 0.65,
-        "vmin": vmin,
-        "vmax": vmax,
-        "mask": overlay_mask,
-    }, None
+        overlay = _load_reference_volume(overlay_img)
+        if overlay is None:
+            last_error = f"Anatomical overlay {path} is not a 3D volume"
+            continue
+
+        vmin, vmax = _estimate_intensity_range(overlay)
+        overlay_mask = np.isfinite(overlay) & (overlay > 0)
+        should_resample = overlay_img.shape != reference_volume.shape
+
+        return {
+            "volume": overlay,
+            "alpha": 0.65,
+            "vmin": vmin,
+            "vmax": vmax,
+            "mask": overlay_mask,
+            "image": overlay_img,
+            "should_resample": bool(should_resample and is_primary),
+        }, None
+
+    if last_error:
+        return None, last_error
+
+    return None, "Anatomical overlay not found"
 
 
 def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
@@ -766,7 +814,19 @@ def _render_montage(
     overlay: Dict[str, Any] | None = None,
 ) -> None:
     img = nib.load(map_path)
-    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    overlay_image = overlay.get("image") if overlay else None
+    should_resample = bool(overlay.get("should_resample")) if overlay else False
+
+    if should_resample and overlay_image is not None:
+        try:
+            from nibabel.processing import resample_from_to
+
+            resampled = resample_from_to(img, overlay_image, order=3)
+            data = np.asarray(resampled.get_fdata(), dtype=np.float32)
+        except Exception:  # noqa: BLE001 - fall back to native sampling
+            data = np.asarray(img.get_fdata(), dtype=np.float32)
+    else:
+        data = np.asarray(img.get_fdata(), dtype=np.float32)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 

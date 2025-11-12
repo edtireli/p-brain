@@ -144,12 +144,14 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
         )
         is True
     )
-    assert called["args"] == (
+    assert called["args"][:3] == (
         str(dataset / "Analysis"),
         str(dataset / "Images"),
         str(dce_file),
-        str(overlay_file),
     )
+    overlay_arg = called["args"][3]
+    assert isinstance(overlay_arg, dict)
+    assert overlay_arg == {"path": str(overlay_file)}
 
 
 def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkeypatch):
@@ -202,12 +204,14 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
         )
         is True
     )
-    assert called["args"] == (
+    assert called["args"][:3] == (
         str(dataset / "Analysis"),
         str(dataset / "Images"),
         str(dce_file),
-        str(overlay_file),
     )
+    overlay_arg = called["args"][3]
+    assert isinstance(overlay_arg, dict)
+    assert overlay_arg == {"path": str(overlay_file)}
 
 
 def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
@@ -269,12 +273,17 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
 
     overlay_path = overlay_dir / "T1w_conformed_in_DCE.nii.gz"
     assert overlay_path.exists()
-    assert called["args"] == (
+    assert called["args"][:3] == (
         str(dataset / "Analysis"),
         str(dataset / "Images"),
         str(dce_file),
-        str(overlay_path),
     )
+    overlay_arg = called["args"][3]
+    assert isinstance(overlay_arg, dict)
+    assert overlay_arg == {
+        "path": str(t1_candidate),
+        "fallback": str(overlay_path),
+    }
 
 
 def test_run_montage_for_dataset_missing_dce(tmp_path, monkeypatch):
