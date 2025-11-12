@@ -1,9 +1,34 @@
 import json
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 
-from modules import opt08_fa as diffusion
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+modules_pkg = sys.modules.get("modules")
+if modules_pkg is None:
+    modules_pkg = types.ModuleType("modules")
+    modules_pkg.__path__ = [str(ROOT / "modules")]
+    sys.modules["modules"] = modules_pkg
+elif not hasattr(modules_pkg, "__path__"):
+    modules_pkg.__path__ = [str(ROOT / "modules")]
+
+spec = importlib.util.spec_from_file_location(
+    "modules.opt08_fa",
+    ROOT / "modules" / "opt08_fa.py",
+    submodule_search_locations=[str(ROOT / "modules")],
+)
+diffusion = importlib.util.module_from_spec(spec)
+sys.modules["modules.opt08_fa"] = diffusion
+assert spec.loader is not None
+spec.loader.exec_module(diffusion)
 
 
 class _FakeTensorFit:
@@ -123,6 +148,7 @@ def test_compute_fa_includes_all_brain_tissues(monkeypatch, tmp_path):
     monkeypatch.setattr(diffusion, "_ensure_image_directory", lambda *_args: None)
     monkeypatch.setattr(diffusion, "_plot_metric_histogram", lambda *_args: None)
     monkeypatch.setattr(diffusion, "_load_atlas_segmentation", lambda *_args: None)
+    monkeypatch.setattr(diffusion, "_load_atlas_segmentation_dce", lambda *_args: None)
     monkeypatch.setattr(diffusion, "_maybe_resample_to_dce", lambda img, *_args, **_kwargs: img)
 
     monkeypatch.setattr(diffusion.nib, "load", lambda _path: _FakeLoadedImage(diffusion_data))

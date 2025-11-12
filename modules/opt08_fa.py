@@ -490,6 +490,30 @@ def _load_atlas_segmentation(
     return atlas_data.astype(np.int32), atlas_labels.astype(np.int32)
 
 
+def _load_atlas_segmentation_dce(
+    nifti_directory: str,
+) -> Optional[Tuple[np.ndarray, nib.Nifti1Image]]:
+    """Load the atlas segmentation in DCE space without resampling."""
+
+    atlas_path = _atlas_segmentation_path(nifti_directory)
+    if not os.path.isfile(atlas_path):
+        return None
+
+    atlas_img = nib.load(atlas_path)
+    atlas_data = np.asarray(atlas_img.get_fdata(), dtype=np.float32)
+
+    if atlas_data.ndim > 3:
+        atlas_data = np.squeeze(atlas_data)
+        if atlas_data.ndim > 3:
+            return None
+        atlas_img = nib.Nifti1Image(atlas_data, atlas_img.affine, atlas_img.header)
+
+    if atlas_data.ndim != 3:
+        return None
+
+    return atlas_data.astype(np.int32), atlas_img
+
+
 def _parcel_metadata(
     atlas_data: np.ndarray,
     atlas_labels: np.ndarray,
@@ -523,6 +547,48 @@ def _parcel_metadata(
         }
 
     return metadata
+
+
+def _is_white_matter_label(name: str) -> bool:
+    lower_name = name.lower()
+    return any(
+        token in lower_name for token in ("white", "wm", "callosum", "corpus")
+    )
+
+
+def _parcel_means_dce(
+    metric_data: np.ndarray,
+    atlas_data: np.ndarray,
+    label_lookup: Dict[int, str],
+    *,
+    restrict_to_wm: bool = False,
+) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
+    parcel_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
+    parcels: Dict[str, Dict[str, float]] = {}
+
+    unique_labels = np.unique(atlas_data)
+    unique_labels = unique_labels[unique_labels != 0]
+
+    for label in unique_labels:
+        mask = atlas_data == int(label)
+        values = metric_data[mask]
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            continue
+
+        name = label_lookup.get(int(label), str(int(label)))
+        if restrict_to_wm and not _is_white_matter_label(name):
+            continue
+
+        mean_value = float(np.mean(values, dtype=np.float32))
+        parcel_map[mask] = np.float32(mean_value)
+        parcels[name] = {
+            "label": int(label),
+            "mean": mean_value,
+            "voxel_count": int(mask.sum()),
+        }
+
+    return parcel_map, parcels
 
 
 def _parcel_means(
@@ -936,7 +1002,15 @@ def compute_fa(
     stats_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
     atlas_summary: Dict[str, Dict[str, object]] = {}
 
+    label_lookup = _load_label_lookup()
+
     atlas_loaded = _load_atlas_segmentation(nifti_directory, img)
+    atlas_loaded_dce = _load_atlas_segmentation_dce(nifti_directory)
+    atlas_dce_data: Optional[np.ndarray] = None
+    atlas_dce_img: Optional[nib.Nifti1Image] = None
+    if atlas_loaded_dce is not None:
+        atlas_dce_data, atlas_dce_img = atlas_loaded_dce
+        atlas_dce_data = np.asarray(atlas_dce_data, dtype=np.int32)
     parcel_metadata: Dict[int, Dict[str, object]] = {}
     atlas_brain_mask: Optional[np.ndarray] = None
     if atlas_loaded is not None:
@@ -945,7 +1019,6 @@ def compute_fa(
         wm_mask = None
         if "white_matter" in masks:
             wm_mask = np.asarray(masks["white_matter"][0], dtype=bool)
-        label_lookup = _load_label_lookup()
         derived_tissues = _derive_tissue_masks_from_atlas(atlas_data, atlas_labels, label_lookup)
         for tissue, derived_mask in derived_tissues.items():
             info = _TISSUE_PATTERNS.get(tissue)
@@ -1047,23 +1120,61 @@ def compute_fa(
 
         _plot_metric_histogram(metric_name, metric_data, masks, image_directory)
 
-        if payload.get("include_parcels", True) and parcel_metadata:
-            parcel_map, parcels = _parcel_means(
-                metric_data,
-                parcel_metadata,
-                restrict_to_wm=payload.get("restrict_parcels_to_wm", False),
-            )
+        if payload.get("include_parcels", True):
+            restrict = payload.get("restrict_parcels_to_wm", False)
+            atlas_img = None
+            parcels: Optional[Dict[str, Dict[str, float]]] = None
+
+            if (
+                atlas_dce_data is not None
+                and dce_resample_target is not None
+                and metric_img.shape[:3] == atlas_dce_data.shape
+            ):
+                metric_resampled = metric_img.get_fdata(dtype=np.float32)
+                parcel_map, dce_parcels = _parcel_means_dce(
+                    metric_resampled,
+                    atlas_dce_data,
+                    label_lookup,
+                    restrict_to_wm=restrict,
+                )
+                if dce_parcels:
+                    header = (
+                        atlas_dce_img.header.copy()
+                        if atlas_dce_img is not None
+                        else None
+                    )
+                    affine = (
+                        atlas_dce_img.affine
+                        if atlas_dce_img is not None
+                        else metric_img.affine
+                    )
+                    atlas_img = nib.Nifti1Image(
+                        parcel_map.astype(np.float32), affine, header
+                    )
+                    atlas_img.set_data_dtype(np.float32)
+                    parcels = dce_parcels
+
+            if parcels is None and parcel_metadata:
+                parcel_map, parcels = _parcel_means(
+                    metric_data,
+                    parcel_metadata,
+                    restrict_to_wm=restrict,
+                )
+                if parcels:
+                    atlas_img = nib.Nifti1Image(
+                        parcel_map.astype(np.float32), img.affine, img.header
+                    )
+                    atlas_img.set_data_dtype(np.float32)
+                    atlas_img = _maybe_resample_to_dce(
+                        atlas_img,
+                        dce_resample_target,
+                        f"{metric_name.upper()} atlas map",
+                    )
+
             if parcels:
-                atlas_img = nib.Nifti1Image(
-                    parcel_map.astype(np.float32), img.affine, img.header
+                atlas_path = os.path.join(
+                    diffusion_dir, f"{metric_name}_map_atlas.nii.gz"
                 )
-                atlas_img.set_data_dtype(np.float32)
-                atlas_img = _maybe_resample_to_dce(
-                    atlas_img,
-                    dce_resample_target,
-                    f"{metric_name.upper()} atlas map",
-                )
-                atlas_path = os.path.join(diffusion_dir, f"{metric_name}_map_atlas.nii.gz")
                 nib.save(atlas_img, atlas_path)
                 print(f"[!] Saved {metric_name.upper()} atlas map to {atlas_path}")
                 atlas_summary[metric_name] = {
