@@ -17,6 +17,9 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+import shutil
+import subprocess
+import tempfile
 from matplotlib.colors import LinearSegmentedColormap
 from nibabel.processing import resample_from_to
 from scipy.ndimage import gaussian_filter, binary_fill_holes, label
@@ -42,8 +45,23 @@ HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
 ICV_ERODE_MM = 3.0        # approximate skull thickness to peel head -> ICV
-MASK_CANDIDATES_HEAD = ("head_mask_in_DCE.nii.gz", "head_mask.nii.gz", "mask_head.nii.gz")
-MASK_CANDIDATES_ICV = ("icv_mask_in_DCE.nii.gz", "icv_mask.nii.gz", "mask_icv.nii.gz")
+MASK_CANDIDATES_HEAD = (
+    "head_mask_in_DCE.nii.gz",
+    "head_mask.nii.gz",
+    "mask_head.nii.gz",
+    "head_in_DCE.nii.gz",
+    "skull_mask_in_DCE.nii.gz",
+    "skull_mask.nii.gz",
+)
+MASK_CANDIDATES_ICV = (
+    "icv_mask_in_DCE.nii.gz",
+    "icv_mask.nii.gz",
+    "mask_icv.nii.gz",
+    "brainmask_in_DCE.nii.gz",
+    "brainmask.nii.gz",
+    "brainmask.mgz",
+)
+FREESURFER_BRAINMASK = ("brainmask.mgz", "brainmask.nii.gz")
 
 
 @dataclass
@@ -640,10 +658,23 @@ def _prepare_anatomical_overlay(
         return None, "Anatomical overlay has no finite voxels"
 
     # Prefer explicit/external masks if provided; otherwise derive from T1 (+atlas)
-    if head_mask_override is not None or icv_mask_override is not None:
-        mask_head = head_mask_override
-        mask_brain = icv_mask_override
-        # If only one provided, derive the other with light morphology
+    mask_head = head_mask_override
+    mask_brain = icv_mask_override
+
+    if mask_head is None and mask_brain is None:
+        ref_filename = reference_img.get_filename() if hasattr(reference_img, "get_filename") else None
+        if ref_filename:
+            fs_icv = _try_freesurfer_icv_from_nearby(ref_filename, reference_img)
+            if fs_icv is not None:
+                mask_brain = fs_icv
+        if mask_brain is None and isinstance(overlay_path, str) and os.path.isfile(overlay_path):
+            fsl_head, fsl_icv = _try_fsl_bet_masks(overlay_path, overlay_img)
+            if fsl_icv is not None:
+                mask_brain = fsl_icv
+            if fsl_head is not None:
+                mask_head = fsl_head
+
+    if mask_head is not None or mask_brain is not None:
         try:
             if mask_head is None and mask_brain is not None:
                 r = _voxel_radius(overlay_img, ICV_ERODE_MM)
@@ -655,17 +686,24 @@ def _prepare_anatomical_overlay(
                 mask_brain = binary_fill_holes(mask_brain)
         except Exception:
             pass
-    else:
+
+    if mask_head is None or mask_brain is None:
         try:
-            mask_head, mask_brain = _build_head_mask(
+            derived_head, derived_brain = _build_head_mask(
                 overlay_img,
                 segmentation_img,
                 dilate_mm=HEAD_DILATE_MM,
                 erode_mm=ICV_ERODE_MM,
             )
+            if mask_head is None:
+                mask_head = derived_head
+            if mask_brain is None:
+                mask_brain = derived_brain
         except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
-            mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
-            mask_brain = None
+            if mask_head is None:
+                mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
+            if mask_brain is None:
+                mask_brain = None
             print(
                 "[montage] Failed to build anatomical head mask – falling back to "
                 "finite voxels only:",
@@ -854,16 +892,115 @@ def _load_external_masks(
 
     head_mask = None
     icv_mask = None
+    head_source = None
+    icv_source = None
     for path in head_candidates:
-        head_mask = _load_binary_mask(path, reference_img)
-        if head_mask is not None:
+        candidate = _load_binary_mask(path, reference_img)
+        if candidate is not None:
+            head_mask = candidate
+            head_source = path
             break
     for path in icv_candidates:
-        icv_mask = _load_binary_mask(path, reference_img)
-        if icv_mask is not None:
+        candidate = _load_binary_mask(path, reference_img)
+        if candidate is not None:
+            icv_mask = candidate
+            icv_source = path
             break
 
+    if head_mask is not None:
+        print(f"[montage] Using external head mask: {head_source}")
+    else:
+        print("[montage] No external head mask engaged.")
+    if icv_mask is not None:
+        print(f"[montage] Using external ICV mask: {icv_source}")
+    else:
+        print("[montage] No external ICV mask engaged.")
+
     return head_mask, icv_mask
+
+
+def _has_cmd(cmd: str) -> bool:
+    try:
+        return shutil.which(cmd) is not None
+    except Exception:
+        return False
+
+
+def _try_freesurfer_icv_from_nearby(
+    dce_path: str, reference_img: nib.Nifti1Image
+) -> np.ndarray | None:
+    """Look for FreeSurfer brainmask.* near the DCE and load as ICV."""
+
+    dce_dir = os.path.abspath(os.path.dirname(dce_path))
+    candidates: list[str] = []
+    siblings = [
+        dce_dir,
+        os.path.abspath(os.path.join(dce_dir, "..", "NIfTI")),
+        os.path.abspath(os.path.join(dce_dir, "..", "segmentation", "segmentation", "mri")),
+    ]
+    for root in siblings:
+        for name in FREESURFER_BRAINMASK:
+            path = os.path.join(root, name)
+            if os.path.isfile(path):
+                candidates.append(path)
+    if candidates:
+        print("[montage] FreeSurfer brainmask candidates:", candidates)
+    for path in candidates:
+        try:
+            img = nib.load(path)
+            if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+                img = resample_from_to(img, (reference_img.shape, reference_img.affine), order=0)
+            data = np.asarray(img.get_fdata(), dtype=np.float32)
+            mask = np.isfinite(data) & (data > 0.5)
+            mask = binary_fill_holes(mask)
+            mask = _largest_component(mask)
+            if mask.any():
+                print("[montage] Using FreeSurfer ICV:", path)
+                return mask.astype(bool)
+        except Exception:
+            continue
+    return None
+
+
+def _try_fsl_bet_masks(
+    overlay_path: str, overlay_img: nib.Nifti1Image
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Use FSL BET on the underlay to get ICV, then grow to head."""
+
+    if not _has_cmd("bet"):
+        return None, None
+    try:
+        with tempfile.TemporaryDirectory(prefix="pbrain_bet_") as td:
+            prefix = os.path.join(td, "ovl")
+            cmd = ["bet", overlay_path, prefix, "-m", "-R", "-f", "0.20"]
+            print("[montage] Running FSL BET:", " ".join(cmd))
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                print("[montage] FSL BET failed:", result.stderr.strip()[:240])
+                return None, None
+            mask_path = prefix + "_mask.nii.gz"
+            if not os.path.isfile(mask_path):
+                print("[montage] FSL BET produced no _mask.nii.gz")
+                return None, None
+            mask_img = nib.load(mask_path)
+            if mask_img.shape != overlay_img.shape or not np.allclose(mask_img.affine, overlay_img.affine):
+                mask_img = resample_from_to(mask_img, overlay_img, order=0)
+            mask = np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
+            radius = _voxel_radius(overlay_img, ICV_ERODE_MM if ICV_ERODE_MM > 0 else 1.0)
+            head = binary_dilation(mask, ball(max(1, radius)))
+            head = binary_fill_holes(head)
+            head = _largest_component(head)
+            print("[montage] Using FSL BET-derived ICV and grown HEAD.")
+            return head.astype(bool), mask.astype(bool)
+    except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
+        print("[montage] FSL BET path failed:", exc)
+    return None, None
 
 
 def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float | None]:
