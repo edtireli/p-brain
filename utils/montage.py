@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import matplotlib as mpl
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
@@ -38,6 +39,7 @@ class MapJob:
     output_ext: str = ".png"
     patterns: Sequence[str] = field(default_factory=tuple)
     search_directories: Sequence[str] = ("",)
+    metric: str | None = None
 
     def candidate_patterns(self) -> Sequence[str]:
         if self.patterns:
@@ -67,6 +69,7 @@ MAP_JOBS: Sequence[MapJob] = (
         vmin=0.0,
         vmax=1.0,
         search_directories=("", "diffusion"),
+        metric="fa",
     ),
     MapJob(
         "fa_map_atlas",
@@ -74,6 +77,7 @@ MAP_JOBS: Sequence[MapJob] = (
         vmin=0.0,
         vmax=1.0,
         search_directories=("", "diffusion"),
+        metric="fa",
     ),
     MapJob("md_map", "md_montage", search_directories=("", "diffusion")),
     MapJob("md_map_atlas", "md_parcel_montage", search_directories=("", "diffusion")),
@@ -482,10 +486,15 @@ def _mk_specthl() -> LinearSegmentedColormap:
     return LinearSegmentedColormap.from_list("specthl", list(zip(xs, cols)), N=256)
 
 
-def _get_cmap(name: str) -> mpl.colors.Colormap:
-    if name.lower() == "specthl":
-        return _mk_specthl()
-    return mpl.colormaps[name].copy()
+def _get_cmap(name: str | None) -> mpl.colors.Colormap:
+    key = name or "specthl"
+    try:
+        if key.lower() == "specthl":
+            return _mk_specthl()
+        return mpl.colormaps[key].copy()
+    except Exception:
+        # last-ditch fallback so a bad/None name never kills the montage
+        return mpl.colormaps["viridis"].copy()
 
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
@@ -502,13 +511,16 @@ def _prepare_anatomical_overlay(
     overlay_path: str, reference: np.ndarray
 ) -> tuple[Dict[str, Any] | None, str | None]:
     try:
-        overlay = _load_reference_volume(overlay_path)
+        overlay_img = nib.load(overlay_path)
     except FileNotFoundError:
         return None, f"Anatomical overlay not found: {overlay_path}"
     except Exception as exc:  # noqa: BLE001 - report to CLI users
         return None, f"Failed to load anatomical overlay {overlay_path}: {exc}"
 
-    if overlay is None:
+    overlay = np.asarray(overlay_img.get_fdata(), dtype=np.float32)
+    if overlay.ndim == 4:
+        overlay = np.nanmean(overlay, axis=-1, dtype=np.float32)
+    if overlay.ndim != 3:
         return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
 
     if overlay.shape != reference.shape:
@@ -526,6 +538,8 @@ def _prepare_anatomical_overlay(
         "vmin": vmin,
         "vmax": vmax,
         "mask": overlay_mask,
+        "affine": np.array(overlay_img.affine, copy=True),
+        "header": overlay_img.header.copy() if overlay_img.header is not None else None,
     }, None
 
 
@@ -659,30 +673,12 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
 
 
 def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
-    if nz <= 1:
-        return np.zeros_like(z_fracs, dtype=int)
-
     z = np.asarray(z_fracs, dtype=np.float64)
-    if z.size == 0:
-        return np.zeros(0, dtype=int)
+    if nz <= 0 or z.size == 0:
+        return np.zeros(z.size, dtype=np.intp)
 
-    # Numerical precision issues can occasionally push the fractional
-    # positions slightly outside the expected [0, 1] range which, once
-    # rescaled, leads to out-of-bounds slice indices. Clip the fractions
-    # before converting to discrete indices to guarantee they fall within
-    # the valid extent of the target volume.
-    z = np.clip(z, 0.0, 1.0)
-    z = np.rint(z * (nz - 1)).astype(int)
-
-    # Ensure monotonically increasing slice selection so that repeated
-    # fractions still walk forward through the target volume.  Perform the
-    # adjustment before a final clip in case the increment would otherwise
-    # exceed the upper bound.
-    for i in range(1, len(z)):
-        if z[i] <= z[i - 1]:
-            z[i] = z[i - 1] + 1
-
-    return np.clip(z, 0, nz - 1)
+    idx = np.rint(z * (nz - 1)).astype(np.intp, copy=False)
+    return np.clip(idx, 0, nz - 1)
 
 
 def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
@@ -784,7 +780,12 @@ def _render_montage(
 
     cmap = _get_cmap(job.cmap_name)
     norm, tick_values = _build_normalizer(data, job)
-    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
+    if getattr(job, "metric", "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+    under_rgba = list(cmap(0.0))
+    under_rgba[-1] = 0.35
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
@@ -793,9 +794,58 @@ def _render_montage(
     axes = axes.ravel()
 
     overlay_volume = overlay.get("volume") if overlay else None
+    overlay_mask_volume = overlay.get("mask") if overlay else None
+    overlay_affine = overlay.get("affine") if overlay else None
+    overlay_header = overlay.get("header") if overlay else None
     overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
     overlay_vmin = overlay.get("vmin") if overlay else None
     overlay_vmax = overlay.get("vmax") if overlay else None
+    overlay_data = None
+    overlay_mask_data = None
+    if overlay_volume is not None:
+        ovl_img = None
+        if isinstance(overlay_volume, str):
+            ovl_img = nib.load(overlay_volume)
+        elif hasattr(overlay_volume, "shape") and hasattr(overlay_volume, "affine"):
+            ovl_img = overlay_volume
+        elif isinstance(overlay_volume, np.ndarray):
+            affine = overlay_affine if overlay_affine is not None else img.affine
+            header = overlay_header if overlay_header is not None else img.header
+            ovl_img = nib.Nifti1Image(overlay_volume, affine, header)
+        if ovl_img is not None:
+            from nibabel.processing import resample_from_to
+
+            target = (data.shape[:3], img.affine)
+            if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_img.affine, img.affine):
+                ovl_img = resample_from_to(ovl_img, target, order=1)
+            overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
+            if overlay_mask_volume is not None:
+                mask_img = None
+                if isinstance(overlay_mask_volume, str):
+                    mask_img = nib.load(overlay_mask_volume)
+                elif hasattr(overlay_mask_volume, "shape") and hasattr(
+                    overlay_mask_volume, "affine"
+                ):
+                    mask_img = overlay_mask_volume
+                elif isinstance(overlay_mask_volume, np.ndarray):
+                    mask_affine = overlay_affine if overlay_affine is not None else ovl_img.affine
+                    mask_img = nib.Nifti1Image(overlay_mask_volume.astype(np.float32), mask_affine)
+                if mask_img is not None:
+                    if mask_img.shape[:3] != data.shape[:3] or not np.allclose(
+                        mask_img.affine, img.affine
+                    ):
+                        mask_img = resample_from_to(mask_img, target, order=0)
+                    overlay_mask_data = (
+                        np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
+                    )
+            if overlay_mask_data is None and overlay_data is not None:
+                overlay_mask_data = np.isfinite(overlay_data)
+
+    nz = data.shape[2]
+    if nz == 0:
+        raise ValueError("volume has zero z-extent")
+    if z_indices.size and z_indices.max() >= nz:
+        raise RuntimeError(f"z mapping produced {int(z_indices.max())} with nz={nz}")
 
     for ax, z in zip(axes, z_indices):
         zi = int(np.clip(z, 0, data.shape[2] - 1))
@@ -809,13 +859,15 @@ def _render_montage(
         sl = data[:, :, zi]
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
+        if np.isfinite(slc).sum() == 0:
+            print(f"[montage] z={zi}: all NaN after mask/crop")
 
         union_crop = union_xy_r[r0:r1, c0:c1]
         extent = (0.0, 1.0, 1.0, 0.0)
         overlay_union_crop = union_crop
         render_shape = slc.shape
-        if overlay_volume is not None:
-            overlay_slice = overlay_volume[:, :, zi]
+        if overlay_data is not None:
+            overlay_slice = overlay_data[:, :, zi]
             overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
             overlay_r0, overlay_r1, overlay_c0, overlay_c1 = _map_bbox_from_ref(
                 ref_info["bbox_fracs"], overlay_rot.shape
@@ -828,10 +880,9 @@ def _render_montage(
             overlay_union_crop = overlay_union[
                 overlay_r0:overlay_r1, overlay_c0:overlay_c1
             ]
-            overlay_mask_volume = overlay.get("mask") if overlay else None
             overlay_mask_slice = None
-            if overlay_mask_volume is not None:
-                mask_slice_raw = overlay_mask_volume[:, :, zi]
+            if overlay_mask_data is not None:
+                mask_slice_raw = overlay_mask_data[:, :, zi]
                 mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
                 overlay_mask_slice = mask_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
@@ -864,7 +915,7 @@ def _render_montage(
         slc_filled[~mask_slice] = 0.0
         slc_render = slc_filled.astype(np.float32)
         mask_render = mask_slice
-        union_render = overlay_union_crop if overlay_volume is not None else union_crop
+        union_render = union_crop
         if render_shape != slc.shape:
             slc_render = resize(
                 slc_render,
@@ -874,21 +925,47 @@ def _render_montage(
                 anti_aliasing=True,
             ).astype(np.float32)
             mask_render = _resize_mask(mask_slice, render_shape)
-            union_render = overlay_union_crop
+            union_render = _resize_mask(union_crop, render_shape)
         valid_mask = union_render & mask_render
         arr = np.ma.array(
             slc_render,
             mask=(~valid_mask) | (~np.isfinite(slc_render)),
         )
-        ax.imshow(
-            arr,
-            cmap=cmap,
-            norm=norm,
-            interpolation="bilinear",
-            origin="upper",
-            alpha=overlay_alpha,
-            extent=extent,
-        )
+        finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
+        if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
+            loc_vmin = float(np.nanmin(finite_vals))
+            loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
+            if loc_vmax > loc_vmin:
+                local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
+                ax.imshow(
+                    arr,
+                    cmap=cmap,
+                    norm=local_norm,
+                    interpolation="bilinear",
+                    origin="upper",
+                    alpha=overlay_alpha,
+                    extent=extent,
+                )
+            else:
+                ax.imshow(
+                    arr,
+                    cmap=cmap,
+                    norm=norm,
+                    interpolation="bilinear",
+                    origin="upper",
+                    alpha=overlay_alpha,
+                    extent=extent,
+                )
+        else:
+            ax.imshow(
+                arr,
+                cmap=cmap,
+                norm=norm,
+                interpolation="bilinear",
+                origin="upper",
+                alpha=overlay_alpha,
+                extent=extent,
+            )
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
@@ -941,13 +1018,24 @@ def _render_projection_montage(
 
     cmap = _get_cmap(job.cmap_name)
     norm, tick_values = _build_projection_normalizer(data, job)
-    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=(0, 0, 0, 0))
+    if getattr(job, "metric", "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+    under_rgba = list(cmap(0.0))
+    under_rgba[-1] = 0.35
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
     )
     fig.patch.set_alpha(0.0)
     axes = axes.ravel()
+
+    nz = data.shape[2]
+    if nz == 0:
+        raise ValueError("volume has zero z-extent")
+    if z_indices.size and z_indices.max() >= nz:
+        raise RuntimeError(f"z mapping produced {int(z_indices.max())} with nz={nz}")
 
     for ax, z in zip(axes, z_indices):
         zi = int(np.clip(z, 0, data.shape[2] - 1))
@@ -961,6 +1049,8 @@ def _render_projection_montage(
         sl = data[:, :, zi]
         slr = np.rot90(sl, ref_info["rotate"])
         slc = slr[r0:r1, c0:c1]
+        if np.isfinite(slc).sum() == 0:
+            print(f"[montage] z={zi}: all NaN after mask/crop")
 
         union_crop = union_xy_r[r0:r1, c0:c1]
         if job.mask_zero:
