@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
 
 ROWS = 2
@@ -518,11 +519,13 @@ def _prepare_anatomical_overlay(
         )
 
     vmin, vmax = _estimate_intensity_range(overlay)
+    overlay_mask = np.isfinite(overlay) & (overlay > 0)
     return {
         "volume": overlay,
         "alpha": 0.65,
         "vmin": vmin,
         "vmax": vmax,
+        "mask": overlay_mask,
     }, None
 
 
@@ -690,10 +693,12 @@ def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
     resized = resize(
         mask.astype(np.float32),
         target_shape,
-        order=0,
+        order=1,
         preserve_range=True,
-        anti_aliasing=False,
+        anti_aliasing=True,
     )
+    if resized.size:
+        resized = gaussian_filter(resized, sigma=0.5, mode="reflect")
     return resized >= 0.5
 
 
@@ -807,6 +812,8 @@ def _render_montage(
 
         union_crop = union_xy_r[r0:r1, c0:c1]
         extent = (0.0, 1.0, 1.0, 0.0)
+        overlay_union_crop = union_crop
+        render_shape = slc.shape
         if overlay_volume is not None:
             overlay_slice = overlay_volume[:, :, zi]
             overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
@@ -821,17 +828,26 @@ def _render_montage(
             overlay_union_crop = overlay_union[
                 overlay_r0:overlay_r1, overlay_c0:overlay_c1
             ]
+            overlay_mask_volume = overlay.get("mask") if overlay else None
+            overlay_mask_slice = None
+            if overlay_mask_volume is not None:
+                mask_slice_raw = overlay_mask_volume[:, :, zi]
+                mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
+                overlay_mask_slice = mask_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
+            if overlay_mask_slice is not None:
+                overlay_mask |= ~overlay_mask_slice
             overlay_arr = np.ma.array(overlay_crop, mask=overlay_mask)
             ax.imshow(
                 overlay_arr,
                 cmap="gray",
-                interpolation="nearest",
+                interpolation="bilinear",
                 origin="upper",
                 vmin=overlay_vmin,
                 vmax=overlay_vmax,
                 extent=extent,
             )
+            render_shape = overlay_crop.shape
 
         if job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
@@ -844,12 +860,31 @@ def _render_montage(
         else:
             mask_slice = np.isfinite(slc)
 
-        arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
+        slc_filled = np.array(slc, copy=True)
+        slc_filled[~mask_slice] = 0.0
+        slc_render = slc_filled.astype(np.float32, copy=False)
+        mask_render = mask_slice
+        union_render = overlay_union_crop if overlay_volume is not None else union_crop
+        if render_shape != slc.shape:
+            slc_render = resize(
+                slc_render,
+                render_shape,
+                order=1,
+                preserve_range=True,
+                anti_aliasing=True,
+            ).astype(np.float32, copy=False)
+            mask_render = _resize_mask(mask_slice, render_shape)
+            union_render = overlay_union_crop
+        valid_mask = union_render & mask_render
+        arr = np.ma.array(
+            slc_render,
+            mask=(~valid_mask) | (~np.isfinite(slc_render)),
+        )
         ax.imshow(
             arr,
             cmap=cmap,
             norm=norm,
-            interpolation="nearest",
+            interpolation="bilinear",
             origin="upper",
             alpha=overlay_alpha,
             extent=extent,
