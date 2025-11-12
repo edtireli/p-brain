@@ -46,7 +46,7 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
-FEATHER_MM = 6.0  # wider feather for a silkier rim
+FEATHER_MM = 3.0  # softer edge, tighter than 6 mm
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
@@ -57,7 +57,7 @@ UNDERLAY_ALPHA = 0.95      # T1 visibility in the interior
 PARAM_ALPHA    = 1.00      # colour overlay opacity
 
 # Mask filling behaviour
-FILL_TO_HEAD = True        # True => fill within head, False => stick to ICV
+FILL_TO_HEAD = False       # brain-only overlay
 FILL_PINHOLES_MM = 2.0     # close tiny gaps in the 3D mask
 MASK_CANDIDATES_HEAD = (
     "head_mask_in_DCE.nii.gz",
@@ -1288,8 +1288,7 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    # If we have a head mask from the underlay, resample it now so we can
-    # optionally fill to head before we pick slices and bbox.
+    # Head mask for T1 underlay and cropping
     head_mask_resampled = None
     if overlay is not None and overlay.get("mask_head") is not None:
         try:
@@ -1328,15 +1327,13 @@ def _render_montage(
                     ) from exc
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
             mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
-        # Close tiny gaps and optionally expand to head to ensure full in-skull coverage
+        # Close tiny gaps in brain mask
         mask_data = binary_fill_holes(mask_data)
         try:
             r_close = max(1, _voxel_radius(img, FILL_PINHOLES_MM))
             mask_data = binary_closing(mask_data, ball(r_close))
         except Exception:
             pass
-        if FILL_TO_HEAD and head_mask_resampled is not None:
-            mask_data = mask_data | (head_mask_resampled & np.isfinite(data))
         brain_mask = mask_data
         valmask3d = np.isfinite(data) & mask_data
     else:
