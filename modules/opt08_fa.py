@@ -5,6 +5,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import nibabel as nib
+from nibabel.nifti1 import Nifti1Header
 from dipy.core.gradients import gradient_table
 from dipy.reconst.dti import TensorModel
 
@@ -132,13 +133,21 @@ def _find_file_with_patterns(search_roots: Iterable[str], patterns: Iterable[str
     return None
 
 
-def _reference_grid(img: nib.Nifti1Image) -> Tuple[Tuple[int, ...], np.ndarray]:
+ResampleTarget = Tuple[Tuple[int, ...], np.ndarray, Optional[Nifti1Header]]
+
+
+def _reference_grid(img: nib.Nifti1Image) -> ResampleTarget:
     """Return a resampling target limited to the spatial dimensions of ``img``."""
 
     shape = img.shape
     if len(shape) > 3:
         shape = shape[:3]
-    return shape, img.affine
+    header: Optional[Nifti1Header]
+    try:
+        header = img.header.copy()
+    except AttributeError:  # pragma: no cover - fallback for header-less objects
+        header = None
+    return shape, np.array(img.affine, copy=True), header
 
 
 def _dwi_signal_mask(
@@ -161,7 +170,7 @@ def _dwi_signal_mask(
 
 def _maybe_resample_to_dce(
     img: nib.Nifti1Image,
-    target: Optional[Tuple[Tuple[int, ...], np.ndarray]],
+    target: Optional[ResampleTarget],
     label: str,
 ) -> nib.Nifti1Image:
     """Resample ``img`` to ``target`` when provided, preserving float32 storage."""
@@ -206,7 +215,7 @@ def _maybe_resample_to_dce(
         resample_source = img
         nan_mask_img = None
 
-    ref_shape, ref_affine = target
+    ref_shape, ref_affine, ref_header = target
     original_shape = tuple(int(dim) for dim in original_data.shape[: len(ref_shape)])
     target_shape = tuple(int(dim) for dim in ref_shape)
     if any(t_dim < o_dim for t_dim, o_dim in zip(target_shape, original_shape)):
@@ -225,7 +234,7 @@ def _maybe_resample_to_dce(
         return img
 
     try:
-        resampled = resample_from_to(resample_source, target)
+        resampled = resample_from_to(resample_source, (ref_shape, ref_affine))
     except Exception as exc:  # noqa: BLE001 - expose runtime issues to CLI users
         print(f"[!] Failed to resample {label} to DCE space: {exc}")
         return img
@@ -233,7 +242,9 @@ def _maybe_resample_to_dce(
     data = resampled.get_fdata(dtype=np.float32)
     if nan_mask_img is not None:
         try:
-            resampled_mask = resample_from_to(nan_mask_img, target, order=0)
+            resampled_mask = resample_from_to(
+                nan_mask_img, (ref_shape, ref_affine), order=0
+            )
             mask_data = resampled_mask.get_fdata(dtype=np.float32)
             valid_mask = mask_data > 0.5
             data = np.where(valid_mask, data, np.float32(np.nan))
@@ -282,9 +293,33 @@ def _maybe_resample_to_dce(
         with np.errstate(invalid="ignore"):
             header["scl_slope"] = 1.0
             header["scl_inter"] = 0.0
+    if ref_header is not None:
+        try:
+            qform, qcode = ref_header.get_qform(coded=True)
+        except AttributeError:
+            qform = None
+            qcode = 0
+        else:
+            if qcode:
+                try:
+                    header.set_qform(qform, int(qcode))
+                except Exception:  # pragma: no cover - best-effort geometry sync
+                    pass
+        try:
+            sform, scode = ref_header.get_sform(coded=True)
+        except AttributeError:
+            sform = None
+            scode = 0
+        else:
+            if scode:
+                try:
+                    header.set_sform(sform, int(scode))
+                except Exception:  # pragma: no cover - best-effort geometry sync
+                    pass
+
     resampled = nib.Nifti1Image(
         np.asarray(data, dtype=np.float32, order="C"),
-        resampled.affine,
+        np.array(resampled.affine, copy=True),
         header,
     )
     resampled.set_data_dtype(np.float32)
@@ -305,7 +340,7 @@ def _load_mask(mask_path: str, reference_img: nib.Nifti1Image) -> Optional[np.nd
         mask_img = nib.Nifti1Image(spatial, mask_img.affine)
         mask_shape = mask_img.shape
 
-    ref_shape, ref_affine = _reference_grid(reference_img)
+    ref_shape, ref_affine, _ = _reference_grid(reference_img)
     if mask_shape != ref_shape or not np.allclose(mask_img.affine, ref_affine):
         if resample_from_to is None:
             print(f"[!] Cannot resample {mask_path} – nibabel.processing unavailable")
@@ -462,7 +497,7 @@ def _load_atlas_segmentation(
     if atlas_data.ndim != 3:
         return None
 
-    ref_shape, ref_affine = _reference_grid(reference_img)
+    ref_shape, ref_affine, _ = _reference_grid(reference_img)
 
     if atlas_img.shape != ref_shape or not np.allclose(
         atlas_img.affine, ref_affine
