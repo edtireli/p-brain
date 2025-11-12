@@ -3586,7 +3586,21 @@ def tissue_function_AI(
         dce_path = os.path.join(nifti_directory, dce_filename)
         if os.path.exists(dce_path):
             try:
-                generate_parametric_montages(analysis_directory, image_directory, dce_path)
+                segmentation_path = os.path.join(
+                    nifti_directory,
+                    "segmentation",
+                    "segmentation",
+                    "mri",
+                    "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+                )
+                if not os.path.isfile(segmentation_path):
+                    segmentation_path = None
+                generate_parametric_montages(
+                    analysis_directory,
+                    image_directory,
+                    dce_path,
+                    segmentation_path=segmentation_path,
+                )
             except Exception as exc:
                 print(f"[montage] Unexpected error during montage rendering: {exc}")
         else:

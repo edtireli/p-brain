@@ -9,6 +9,14 @@ import utils.settings as settings
 import utils.parameters as parameters
 
 
+_SEGMENTATION_COMPONENTS = (
+    "segmentation",
+    "segmentation",
+    "mri",
+    "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+)
+
+
 def _load_montage_dependencies():
     """Import heavy montage modules lazily."""
 
@@ -25,6 +33,10 @@ def _load_montage_dependencies():
         parameters,
         build_population_projection_stats,
     )
+
+
+def _expected_segmentation_path(nifti_directory: str) -> str:
+    return os.path.join(nifti_directory, *_SEGMENTATION_COMPONENTS)
 
 
 def _prepare_projection_stats(data_root: str):
@@ -379,11 +391,15 @@ def _run_montage_for_dataset(
     print(f"[montage] Generating montages for {dataset_id}")
     overall_success = True
     try:
+        segmentation_path = _expected_segmentation_path(nifti_directory)
+        if not os.path.isfile(segmentation_path):
+            segmentation_path = None
         generate_parametric_montages(
             analysis_directory,
             image_directory,
             dce_path,
             anatomical_overlay=anatomical_overlay,
+            segmentation_path=segmentation_path,
         )
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")

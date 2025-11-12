@@ -153,6 +153,7 @@ def generate_parametric_montages(
     dce_path: str,
     *,
     anatomical_overlay: str | None = None,
+    segmentation_path: str | None = None,
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
@@ -171,6 +172,9 @@ def generate_parametric_montages(
         Optional path to a T1-weighted anatomical volume already aligned to the
         DCE reference. When provided, montage values will be rendered atop the
         grayscale anatomical background.
+    segmentation_path:
+        Optional atlas segmentation aligned to the DCE reference. When provided,
+        montage rendering will restrict overlays to the labelled brain voxels.
     rows, cols:
         Layout of the montage grid.
     dpi:
@@ -188,14 +192,60 @@ def generate_parametric_montages(
         print("[montage] Unable to load DCE reference volume – skipping montages.")
         return
 
-    ref_info = _build_reference(reference, rows * cols)
+    try:
+        raw_reference_img = nib.load(dce_path)
+    except Exception as exc:  # noqa: BLE001 - surface helpful context to CLI users
+        print(f"[montage] Unable to load DCE reference volume – skipping montages: {exc}")
+        return
+
+    reference_img = nib.Nifti1Image(
+        reference,
+        np.array(raw_reference_img.affine, copy=True),
+        raw_reference_img.header.copy() if raw_reference_img.header is not None else None,
+    )
+
+    brain_mask: np.ndarray | None = None
+    segmentation_img: nib.Nifti1Image | None = None
+    if segmentation_path:
+        try:
+            segmentation_img = nib.load(segmentation_path)
+            segmentation_data = np.asarray(segmentation_img.get_fdata(), dtype=np.float32)
+            if segmentation_data.ndim != 3:
+                raise ValueError("Segmentation volume is not 3D")
+            from nibabel.processing import resample_from_to
+
+            target = (reference.shape, reference_img.affine)
+            if (
+                segmentation_img.shape != reference.shape
+                or not np.allclose(segmentation_img.affine, reference_img.affine)
+            ):
+                segmentation_img = resample_from_to(segmentation_img, target, order=0)
+            segmentation_resampled = np.asarray(
+                segmentation_img.get_fdata(), dtype=np.float32
+            )
+            brain_mask = np.isfinite(segmentation_resampled) & (segmentation_resampled > 0.5)
+            if not brain_mask.any():
+                brain_mask = None
+        except FileNotFoundError:
+            segmentation_img = None
+        except Exception as exc:  # noqa: BLE001 - continue without mask when issues arise
+            print(
+                "[montage] Failed to load segmentation mask – continuing without "
+                f"brain mask: {exc}"
+            )
+            segmentation_img = None
+            brain_mask = None
+
+    ref_info = _build_reference(reference, rows * cols, mask=brain_mask)
     if ref_info is None:
         print("[montage] Reference volume contained no finite voxels – skipping montages.")
         return
 
     overlay = None
     if anatomical_overlay:
-        overlay, overlay_error = _prepare_anatomical_overlay(anatomical_overlay, reference)
+        overlay, overlay_error = _prepare_anatomical_overlay(
+            anatomical_overlay, reference_img, segmentation_img
+        )
         if overlay_error:
             print(f"[montage] {overlay_error} – continuing without anatomical overlay.")
             overlay = None
@@ -218,6 +268,8 @@ def generate_parametric_montages(
                     cols=cols,
                     dpi=dpi,
                     overlay=overlay,
+                    brain_mask=brain_mask,
+                    segmentation_img=segmentation_img,
                 )
                 generated_any = True
                 print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -264,7 +316,8 @@ def generate_projection_montages(
         print("[projection] Unable to load DCE reference volume – skipping projections.")
         return False
 
-    ref_info = _build_reference(reference, rows * cols)
+    brain_mask = np.isfinite(atlas_data) & (atlas_data > 0)
+    ref_info = _build_reference(reference, rows * cols, mask=brain_mask)
     if ref_info is None:
         print("[projection] Reference volume contained no finite voxels – skipping projections.")
         return False
@@ -508,7 +561,9 @@ def _load_reference_volume(dce_path: str) -> np.ndarray | None:
 
 
 def _prepare_anatomical_overlay(
-    overlay_path: str, reference: np.ndarray
+    overlay_path: str,
+    reference_img: nib.Nifti1Image,
+    segmentation_img: nib.Nifti1Image | None = None,
 ) -> tuple[Dict[str, Any] | None, str | None]:
     try:
         overlay_img = nib.load(overlay_path)
@@ -517,29 +572,57 @@ def _prepare_anatomical_overlay(
     except Exception as exc:  # noqa: BLE001 - report to CLI users
         return None, f"Failed to load anatomical overlay {overlay_path}: {exc}"
 
-    overlay = np.asarray(overlay_img.get_fdata(), dtype=np.float32)
-    if overlay.ndim == 4:
-        overlay = np.nanmean(overlay, axis=-1, dtype=np.float32)
-    if overlay.ndim != 3:
+    overlay_data = np.asarray(overlay_img.get_fdata(), dtype=np.float32)
+    if overlay_data.ndim == 4:
+        overlay_data = np.nanmean(overlay_data, axis=-1, dtype=np.float32)
+    if overlay_data.ndim != 3:
         return None, f"Anatomical overlay {overlay_path} is not a 3D volume"
 
-    if overlay.shape != reference.shape:
-        return (
-            None,
-            "Anatomical overlay shape does not match the DCE reference volume "
-            f"({overlay.shape} vs {reference.shape})",
-        )
+    overlay_mask = np.isfinite(overlay_data)
 
-    vmin, vmax = _estimate_intensity_range(overlay)
-    overlay_mask = np.isfinite(overlay) & (overlay > 0)
+    if segmentation_img is not None:
+        try:
+            from nibabel.processing import resample_from_to
+
+            seg_img = segmentation_img
+            if (
+                segmentation_img.shape != overlay_data.shape
+                or not np.allclose(segmentation_img.affine, overlay_img.affine)
+            ):
+                seg_img = resample_from_to(segmentation_img, overlay_img, order=0)
+            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+            overlay_mask &= np.isfinite(seg_data) & (seg_data > 0.5)
+        except Exception as exc:  # noqa: BLE001 - surface helpful context
+            return (
+                None,
+                "Failed to resample segmentation into anatomical space: "
+                f"{exc}",
+            )
+    else:
+        overlay_mask &= overlay_data > 0
+
+    masked_overlay = np.array(overlay_data, copy=True)
+    masked_overlay[~overlay_mask] = 0.0
+    overlay_for_range = np.array(overlay_data, copy=True)
+    overlay_for_range[~overlay_mask] = np.nan
+    vmin, vmax = _estimate_intensity_range(overlay_for_range)
+
+    clean_overlay_img = nib.Nifti1Image(
+        masked_overlay,
+        np.array(overlay_img.affine, copy=True),
+        overlay_img.header.copy() if overlay_img.header is not None else None,
+    )
+
     return {
-        "volume": overlay,
+        "volume": clean_overlay_img,
         "alpha": 0.65,
         "vmin": vmin,
         "vmax": vmax,
         "mask": overlay_mask,
-        "affine": np.array(overlay_img.affine, copy=True),
-        "header": overlay_img.header.copy() if overlay_img.header is not None else None,
+        "affine": np.array(clean_overlay_img.affine, copy=True),
+        "header": clean_overlay_img.header.copy()
+        if clean_overlay_img.header is not None
+        else None,
     }, None
 
 
@@ -559,8 +642,16 @@ def _estimate_intensity_range(volume: np.ndarray) -> tuple[float | None, float |
     return float(vmin), float(vmax)
 
 
-def _build_reference(volume: np.ndarray, tiles: int) -> Dict[str, np.ndarray] | None:
-    mask = np.isfinite(volume) & (np.abs(volume) > EPS)
+def _build_reference(
+    volume: np.ndarray, tiles: int, *, mask: np.ndarray | None = None
+) -> Dict[str, np.ndarray] | None:
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != volume.shape:
+            raise ValueError("Brain mask shape does not match reference volume")
+        mask = mask & np.isfinite(volume)
+    else:
+        mask = np.isfinite(volume) & (np.abs(volume) > EPS)
     if not mask.any():
         return None
 
@@ -760,13 +851,39 @@ def _render_montage(
     cols: int,
     dpi: int,
     overlay: Dict[str, Any] | None = None,
+    brain_mask: np.ndarray | None = None,
+    segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
     img = nib.load(map_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
+    if brain_mask is not None:
+        mask_data = np.asarray(brain_mask, dtype=bool)
+        if mask_data.shape != data.shape:
+            if segmentation_img is None:
+                raise ValueError("Brain mask shape does not match parametric map")
+            from nibabel.processing import resample_from_to
+
+            target = (data.shape, img.affine)
+            seg_img = segmentation_img
+            if (
+                segmentation_img.shape != data.shape
+                or not np.allclose(segmentation_img.affine, img.affine)
+            ):
+                try:
+                    seg_img = resample_from_to(segmentation_img, target, order=0)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(
+                        "Failed to resample brain mask to parametric map space"
+                    ) from exc
+            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+            mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
+        brain_mask = mask_data
+        valmask3d = np.isfinite(data) & mask_data
+    else:
+        valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
     union_xy = np.any(valmask3d, axis=2)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
@@ -779,7 +896,10 @@ def _render_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
-    norm, tick_values = _build_normalizer(data, job)
+    norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
+    norm, tick_values = _build_normalizer(
+        norm_data, job, mask_zero_override=False if brain_mask is not None else None
+    )
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
@@ -802,6 +922,7 @@ def _render_montage(
     overlay_vmax = overlay.get("vmax") if overlay else None
     overlay_data = None
     overlay_mask_data = None
+    overlay_z_indices = None
     if overlay_volume is not None:
         ovl_img = None
         if isinstance(overlay_volume, str):
@@ -840,6 +961,10 @@ def _render_montage(
                     )
             if overlay_mask_data is None and overlay_data is not None:
                 overlay_mask_data = np.isfinite(overlay_data)
+            if overlay_data is not None:
+                overlay_z_indices = _map_z_from_ref(
+                    ref_info["z_fracs"], overlay_data.shape[2]
+                )
 
     nz = data.shape[2]
     if nz == 0:
@@ -847,8 +972,26 @@ def _render_montage(
     if z_indices.size and z_indices.max() >= nz:
         raise RuntimeError(f"z mapping produced {int(z_indices.max())} with nz={nz}")
 
-    for ax, z in zip(axes, z_indices):
+    if overlay_data is not None and overlay_z_indices is not None:
+        if overlay_z_indices.size < rows * cols:
+            pad_value = (
+                overlay_z_indices[-1] if overlay_z_indices.size else 0
+            )
+            overlay_z_indices = np.pad(
+                overlay_z_indices,
+                (0, rows * cols - overlay_z_indices.size),
+                constant_values=pad_value,
+            )
+        else:
+            overlay_z_indices = overlay_z_indices[: rows * cols]
+
+    for tile_index, (ax, z) in enumerate(zip(axes, z_indices)):
         zi = int(np.clip(z, 0, data.shape[2] - 1))
+        overlay_zi = None
+        if overlay_z_indices is not None and tile_index < overlay_z_indices.size:
+            overlay_zi = int(
+                np.clip(overlay_z_indices[tile_index], 0, overlay_data.shape[2] - 1)
+            )
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
@@ -867,7 +1010,8 @@ def _render_montage(
         overlay_union_crop = union_crop
         render_shape = slc.shape
         if overlay_data is not None:
-            overlay_slice = overlay_data[:, :, zi]
+            index_for_overlay = zi if overlay_zi is None else overlay_zi
+            overlay_slice = overlay_data[:, :, index_for_overlay]
             overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
             overlay_r0, overlay_r1, overlay_c0, overlay_c1 = _map_bbox_from_ref(
                 ref_info["bbox_fracs"], overlay_rot.shape
@@ -882,7 +1026,7 @@ def _render_montage(
             ]
             overlay_mask_slice = None
             if overlay_mask_data is not None:
-                mask_slice_raw = overlay_mask_data[:, :, zi]
+                mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
                 mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
                 overlay_mask_slice = mask_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
@@ -900,16 +1044,15 @@ def _render_montage(
             )
             render_shape = overlay_crop.shape
 
-        if job.mask_zero:
+        mask_slice = valmask3d[:, :, zi]
+        if brain_mask is None and job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
                 cutoff = np.percentile(finite_vals, 0.1)
                 eps_dyn = max(cutoff, 1e-6)
             else:
                 eps_dyn = 1e-6
-            mask_slice = np.isfinite(slc) & (slc > eps_dyn)
-        else:
-            mask_slice = np.isfinite(slc)
+            mask_slice &= slc > eps_dyn
 
         slc_filled = np.array(slc, copy=True)
         slc_filled[~mask_slice] = 0.0
@@ -1086,14 +1229,18 @@ def _render_projection_montage(
 
 
 def _build_normalizer(
-    data: np.ndarray, job: MapJob
+    data: np.ndarray,
+    job: MapJob,
+    *,
+    mask_zero_override: bool | None = None,
 ) -> tuple[mpl.colors.Normalize, list[float]]:
     vmin = float(job.vmin) if job.vmin is not None else np.nan
     vmax = float(job.vmax) if job.vmax is not None else np.nan
 
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         mask = np.isfinite(data)
-        if job.mask_zero:
+        mask_zero = job.mask_zero if mask_zero_override is None else mask_zero_override
+        if mask_zero:
             mask &= data > EPS
         finite_vals = data[mask]
         if finite_vals.size:
