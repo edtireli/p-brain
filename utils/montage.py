@@ -46,7 +46,7 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
-FEATHER_MM = 3.0  # width of soft edge for T1 underlay
+FEATHER_MM = 1.0  # width of soft edge for T1 underlay
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
@@ -736,7 +736,7 @@ def _prepare_anatomical_overlay(
 
     return {
         "volume": clean_overlay_img,
-        "alpha": 0.65,
+        "alpha": 0.85,
         "vmin": vmin,
         "vmax": vmax,
         "mask_head": mask_head,    # for underlay display and cropping
