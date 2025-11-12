@@ -69,8 +69,15 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
             dce_path,
             *,
             anatomical_overlay=None,
+            segmentation_path=None,
         ):
-            called["args"] = (analysis_directory, image_directory, dce_path, anatomical_overlay)
+            called["args"] = (
+                analysis_directory,
+                image_directory,
+                dce_path,
+                anatomical_overlay,
+                segmentation_path,
+            )
 
         class DummyParameters:
             @staticmethod
@@ -91,6 +98,7 @@ def test_run_montage_for_dataset_generates_images(tmp_path, monkeypatch):
         str(dataset / "Images"),
         str(dce_file),
         None,
+        None,
     )
 
 
@@ -107,6 +115,8 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
     overlay_dir.mkdir(parents=True)
     overlay_file = overlay_dir / "T1w_conformed_in_DCE.nii.gz"
     overlay_file.write_bytes(b"")
+    segmentation_file = overlay_dir / "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz"
+    segmentation_file.write_bytes(b"")
 
     called = {}
 
@@ -117,12 +127,14 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
             dce_path,
             *,
             anatomical_overlay=None,
+            segmentation_path=None,
         ):
             called["args"] = (
                 analysis_directory,
                 image_directory,
                 dce_path,
                 anatomical_overlay,
+                segmentation_path,
             )
 
         class DummyParameters:
@@ -149,6 +161,7 @@ def test_run_montage_for_dataset_with_anatomical_overlay(tmp_path, monkeypatch):
         str(dataset / "Images"),
         str(dce_file),
         str(overlay_file),
+        str(segmentation_file),
     )
 
 
@@ -165,6 +178,10 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
     overlay_dir.mkdir(parents=True)
     overlay_file = overlay_dir / "T1w_conformed_in_DCE.nii.gz"
     overlay_file.write_bytes(b"")
+    segmentation_root = nifti_dir / "segmentation" / "segmentation" / "mri"
+    segmentation_file = segmentation_root / "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz"
+    segmentation_root.mkdir(parents=True, exist_ok=True)
+    segmentation_file.write_bytes(b"")
 
     called = {}
 
@@ -175,12 +192,14 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
             dce_path,
             *,
             anatomical_overlay=None,
+            segmentation_path=None,
         ):
             called["args"] = (
                 analysis_directory,
                 image_directory,
                 dce_path,
                 anatomical_overlay,
+                segmentation_path,
             )
 
         class DummyParameters:
@@ -207,6 +226,7 @@ def test_run_montage_for_dataset_with_nested_anatomical_overlay(tmp_path, monkey
         str(dataset / "Images"),
         str(dce_file),
         str(overlay_file),
+        str(segmentation_file),
     )
 
 
@@ -228,6 +248,8 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
     t1_candidate = overlay_dir / "T1w_conformed.nii.gz"
     t1_image = nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4))
     t1_image.to_filename(str(t1_candidate))
+    segmentation_file = overlay_dir / "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz"
+    segmentation_file.write_bytes(b"")
 
     called = {}
 
@@ -238,12 +260,14 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
             dce_path,
             *,
             anatomical_overlay=None,
+            segmentation_path=None,
         ):
             called["args"] = (
                 analysis_directory,
                 image_directory,
                 dce_path,
                 anatomical_overlay,
+                segmentation_path,
             )
 
         class DummyParameters:
@@ -274,6 +298,7 @@ def test_run_montage_for_dataset_rebuilds_missing_anatomical_overlay(
         str(dataset / "Images"),
         str(dce_file),
         str(overlay_path),
+        str(segmentation_file),
     )
 
 
