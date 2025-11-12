@@ -780,7 +780,7 @@ def _render_montage(
 
     cmap = _get_cmap(job.cmap_name)
     norm, tick_values = _build_normalizer(data, job)
-    if getattr(job, "metric", "").lower() == "fa":
+    if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     under_rgba = list(cmap(0.0))
@@ -1018,7 +1018,7 @@ def _render_projection_montage(
 
     cmap = _get_cmap(job.cmap_name)
     norm, tick_values = _build_projection_normalizer(data, job)
-    if getattr(job, "metric", "").lower() == "fa":
+    if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     under_rgba = list(cmap(0.0))
