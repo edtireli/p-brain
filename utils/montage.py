@@ -205,7 +205,7 @@ def generate_parametric_montages(
     )
 
     brain_mask: np.ndarray | None = None
-    segmentation_img = None
+    segmentation_img: nib.Nifti1Image | None = None
     if segmentation_path:
         try:
             segmentation_img = nib.load(segmentation_path)
@@ -269,6 +269,7 @@ def generate_parametric_montages(
                     dpi=dpi,
                     overlay=overlay,
                     brain_mask=brain_mask,
+                    segmentation_img=segmentation_img,
                 )
                 generated_any = True
                 print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -851,6 +852,7 @@ def _render_montage(
     dpi: int,
     overlay: Dict[str, Any] | None = None,
     brain_mask: np.ndarray | None = None,
+    segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
     img = nib.load(map_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
@@ -858,10 +860,28 @@ def _render_montage(
         raise ValueError("Expected a 3D parametric map")
 
     if brain_mask is not None:
-        brain_mask = np.asarray(brain_mask, dtype=bool)
-        if brain_mask.shape != data.shape:
-            raise ValueError("Brain mask shape does not match parametric map")
-        valmask3d = np.isfinite(data) & brain_mask
+        mask_data = np.asarray(brain_mask, dtype=bool)
+        if mask_data.shape != data.shape:
+            if segmentation_img is None:
+                raise ValueError("Brain mask shape does not match parametric map")
+            from nibabel.processing import resample_from_to
+
+            target = (data.shape, img.affine)
+            seg_img = segmentation_img
+            if (
+                segmentation_img.shape != data.shape
+                or not np.allclose(segmentation_img.affine, img.affine)
+            ):
+                try:
+                    seg_img = resample_from_to(segmentation_img, target, order=0)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(
+                        "Failed to resample brain mask to parametric map space"
+                    ) from exc
+            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+            mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
+        brain_mask = mask_data
+        valmask3d = np.isfinite(data) & mask_data
     else:
         valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
     union_xy = np.any(valmask3d, axis=2)
