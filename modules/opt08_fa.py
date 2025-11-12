@@ -141,6 +141,24 @@ def _reference_grid(img: nib.Nifti1Image) -> Tuple[Tuple[int, ...], np.ndarray]:
     return shape, img.affine
 
 
+def _dwi_signal_mask(
+    dwi_4d: np.ndarray, bvals_1d: np.ndarray, *, b0_thresh: float = 50.0
+) -> np.ndarray:
+    """Return a mask capturing intrinsic diffusion signal, prioritising b0 volumes."""
+
+    b0_idx = bvals_1d < b0_thresh
+    if np.count_nonzero(b0_idx):
+        b0 = dwi_4d[..., b0_idx].mean(axis=-1)
+    else:
+        b0 = dwi_4d.mean(axis=-1)
+    nz = b0[b0 > 0]
+    if nz.size:
+        thr = float(max(np.percentile(nz, 5.0), np.finfo(np.float32).eps))
+    else:
+        thr = 0.0
+    return b0 > thr
+
+
 def _maybe_resample_to_dce(
     img: nib.Nifti1Image,
     target: Optional[Tuple[Tuple[int, ...], np.ndarray]],
@@ -189,6 +207,14 @@ def _maybe_resample_to_dce(
         nan_mask_img = None
 
     ref_shape, ref_affine = target
+    original_shape = tuple(int(dim) for dim in original_data.shape[: len(ref_shape)])
+    target_shape = tuple(int(dim) for dim in ref_shape)
+    if any(t_dim < o_dim for t_dim, o_dim in zip(target_shape, original_shape)):
+        print(
+            "[!] DCE reference has a smaller field of view – keeping diffusion-space geometry for",
+            label,
+        )
+        return img
     if img.shape == ref_shape and np.allclose(img.affine, ref_affine):
         return img
 
@@ -828,6 +854,8 @@ def compute_fa(
     if bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
         bvecs = bvecs.T
 
+    signal_mask = _dwi_signal_mask(data, bvals)
+
     gtab = gradient_table(bvals=bvals, bvecs=bvecs)
     tenmodel = TensorModel(gtab)
     tenfit = tenmodel.fit(data)
@@ -941,23 +969,49 @@ def compute_fa(
         else:
             brain_mask = np.asarray(brain_mask, dtype=bool) | atlas_brain_mask
 
+    if brain_mask is None:
+        brain_mask = signal_mask
+    else:
+        brain_mask = np.logical_or(brain_mask, signal_mask)
+
     for metric_name, payload in metrics.items():
         raw_metric_data = payload["data"]
         voxel_mask_tissues = payload.get("voxel_mask_tissues")
-        metric_mask = None
-        if voxel_mask_tissues:
-            metric_mask = _union_of_tissues(masks, voxel_mask_tissues)
-        if metric_mask is None:
-            metric_mask = brain_mask
 
-        if metric_mask is not None:
-            metric_data = np.where(
-                metric_mask, raw_metric_data, np.float32(np.nan)
-            )
-        else:
-            metric_data = np.asarray(raw_metric_data, dtype=np.float32)
+        # Choose mask
+        metric_mask = (
+            _union_of_tissues(masks, voxel_mask_tissues)
+            if payload.get("voxel_mask_tissues")
+            else brain_mask
+        )
+        metric_mask = (
+            np.asarray(metric_mask, dtype=bool)
+            if metric_mask is not None
+            else brain_mask
+        )
 
-        metric_data = metric_data.astype(np.float32, copy=False)
+        # Edge heal: if diffusion shows signal on last slice while mask is empty there, expand mask on that slice
+        if signal_mask[..., -1].any() and (metric_mask[..., -1].sum() == 0):
+            print("[!] Expanding metric mask on final z-slice based on diffusion signal")
+            metric_mask[..., -1] |= signal_mask[..., -1]
+
+        # Apply masking
+        metric_data = np.where(metric_mask, raw_metric_data, np.float32(np.nan))
+
+        metric_data = np.asarray(metric_data, dtype=np.float32, copy=False)
+
+        # Native-space debug artifact to inspect last-slice coverage when needed
+        native_dbg = os.path.join(
+            diffusion_dir, f"{metric_name}_map_native_debug.nii.gz"
+        )
+        nib.save(
+            nib.Nifti1Image(metric_data.astype(np.float32), img.affine, img.header),
+            native_dbg,
+        )
+        print(
+            f"[dbg] {metric_name}: last-slice raw finite = {int(np.isfinite(raw_metric_data[..., -1]).sum())} "
+            f"| masked finite = {int(np.isfinite(metric_data[..., -1]).sum())}"
+        )
 
         metric_img = nib.Nifti1Image(metric_data, img.affine, img.header)
         metric_img.set_data_dtype(np.float32)
