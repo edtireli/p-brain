@@ -46,19 +46,11 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
-FEATHER_MM = 6.0  # wider feather for a silkier rim
+FEATHER_MM = 3.0  # width of soft edge for T1 underlay
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
 ICV_ERODE_MM = 3.0        # approximate skull thickness to peel head -> ICV
-
-# Visual opacity controls
-UNDERLAY_ALPHA = 0.95      # T1 visibility in the interior
-PARAM_ALPHA    = 1.00      # colour overlay opacity
-
-# Mask filling behaviour
-FILL_TO_HEAD = True        # True => fill within head, False => stick to ICV
-FILL_PINHOLES_MM = 2.0     # close tiny gaps in the 3D mask
 MASK_CANDIDATES_HEAD = (
     "head_mask_in_DCE.nii.gz",
     "head_mask.nii.gz",
@@ -744,7 +736,7 @@ def _prepare_anatomical_overlay(
 
     return {
         "volume": clean_overlay_img,
-        "alpha": UNDERLAY_ALPHA,
+        "alpha": 0.65,
         "vmin": vmin,
         "vmax": vmax,
         "mask_head": mask_head,    # for underlay display and cropping
@@ -1288,25 +1280,6 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    # If we have a head mask from the underlay, resample it now so we can
-    # optionally fill to head before we pick slices and bbox.
-    head_mask_resampled = None
-    if overlay is not None and overlay.get("mask_head") is not None:
-        try:
-            hm = overlay.get("mask_head")
-            if isinstance(hm, np.ndarray):
-                hm_img = nib.Nifti1Image(hm.astype(np.float32), reference_img.affine)
-            else:
-                hm_img = nib.load(hm) if isinstance(hm, str) else hm
-            if hm_img.shape != data.shape or not np.allclose(hm_img.affine, img.affine):
-                hm_img = resample_from_to(hm_img, (data.shape, img.affine), order=0)
-            head_mask_resampled = (
-                np.asarray(hm_img.get_fdata(), dtype=np.float32) > 0.5
-            )
-            head_mask_resampled = binary_fill_holes(head_mask_resampled)
-        except Exception:
-            head_mask_resampled = None
-
     if brain_mask is not None:
         mask_data = np.asarray(brain_mask, dtype=bool)
         if mask_data.shape != data.shape:
@@ -1328,15 +1301,6 @@ def _render_montage(
                     ) from exc
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
             mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
-        # Close tiny gaps and optionally expand to head to ensure full in-skull coverage
-        mask_data = binary_fill_holes(mask_data)
-        try:
-            r_close = max(1, _voxel_radius(img, FILL_PINHOLES_MM))
-            mask_data = binary_closing(mask_data, ball(r_close))
-        except Exception:
-            pass
-        if FILL_TO_HEAD and head_mask_resampled is not None:
-            mask_data = mask_data | (head_mask_resampled & np.isfinite(data))
         brain_mask = mask_data
         valmask3d = np.isfinite(data) & mask_data
     else:
@@ -1374,7 +1338,7 @@ def _render_montage(
     overlay_mask_volume = overlay.get("mask_head") if overlay else None
     overlay_affine = overlay.get("affine") if overlay else None
     overlay_header = overlay.get("header") if overlay else None
-    underlay_alpha = float(overlay.get("alpha", UNDERLAY_ALPHA)) if overlay else 1.0
+    overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
     overlay_alpha_map = overlay.get("alpha_map") if overlay else None
     overlay_vmin = overlay.get("vmin") if overlay else None
     overlay_vmax = overlay.get("vmax") if overlay else None
@@ -1527,9 +1491,9 @@ def _render_montage(
                 vmax=overlay_vmax,
                 extent=extent,
                 alpha=(
-                    underlay_alpha * overlay_alpha_crop
+                    overlay_alpha * overlay_alpha_crop
                     if overlay_alpha_crop is not None
-                    else underlay_alpha
+                    else overlay_alpha
                 ),
             )
             render_shape = overlay_crop.shape
@@ -1587,7 +1551,7 @@ def _render_montage(
                     norm=local_norm,
                     interpolation="bilinear",
                     origin="upper",
-                    alpha=PARAM_ALPHA,
+                    alpha=overlay_alpha,
                     extent=extent,
                 )
             else:
@@ -1597,7 +1561,7 @@ def _render_montage(
                     norm=norm,
                     interpolation="bilinear",
                     origin="upper",
-                    alpha=PARAM_ALPHA,
+                    alpha=overlay_alpha,
                     extent=extent,
                 )
         else:
@@ -1607,7 +1571,7 @@ def _render_montage(
                 norm=norm,
                 interpolation="bilinear",
                 origin="upper",
-                alpha=PARAM_ALPHA,
+                alpha=overlay_alpha,
                 extent=extent,
             )
 
