@@ -48,6 +48,7 @@ BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
 FEATHER_MM = 1.0  # width of soft edge for T1 underlay
+MAP_EDGE_FEATHER_MM = 1.5  # soft edge for parametric overlays
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
@@ -330,7 +331,7 @@ def generate_parametric_montages(
         reference, rows * cols, mask=head_mask if head_mask is not None else brain_mask
     )
     ref_info_union = _build_reference(reference, rows * cols, mask=brain_mask)
-    ref_info = ref_info_union or ref_info_head
+    ref_info = _combine_reference_info(ref_info_head, ref_info_union)
     if ref_info is None:
         print("[montage] Reference volume contained no finite voxels – skipping montages.")
         return
@@ -352,7 +353,7 @@ def generate_parametric_montages(
                     map_path,
                     out_path,
                     job,
-                    (ref_info_head or ref_info) if job.base.endswith("_map_atlas") else ref_info,
+                    ref_info,
                     reference_img=reference_img,
                     rows=rows,
                     cols=cols,
@@ -406,6 +407,18 @@ def generate_projection_montages(
         print("[projection] Unable to load DCE reference volume – skipping projections.")
         return False
 
+    try:
+        raw_reference_img = nib.load(dce_path)
+    except Exception as exc:  # noqa: BLE001 - propagate context to CLI users
+        print(f"[projection] Unable to load DCE reference volume – skipping projections: {exc}")
+        return False
+
+    reference_img = nib.Nifti1Image(
+        reference,
+        np.array(raw_reference_img.affine, copy=True),
+        raw_reference_img.header.copy() if raw_reference_img.header is not None else None,
+    )
+
     brain_mask = np.isfinite(atlas_data) & (atlas_data > 0)
     ref_info = _build_reference(reference, rows * cols, mask=brain_mask)
     if ref_info is None:
@@ -452,6 +465,7 @@ def generate_projection_montages(
                     rows=rows,
                     cols=cols,
                     dpi=dpi,
+                    reference_img=reference_img,
                 )
                 generated_any = True
                 print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -942,6 +956,33 @@ def _alpha_feather_from_mask(
     return alpha
 
 
+def _alpha_feather_slice(
+    mask: np.ndarray,
+    zoom_xy: Sequence[float],
+    *,
+    scale_y: float = 1.0,
+    scale_x: float = 1.0,
+    feather_mm: float = MAP_EDGE_FEATHER_MM,
+) -> np.ndarray:
+    mask2d = np.asarray(mask, dtype=bool)
+    if mask2d.ndim != 2:
+        raise ValueError("Slice feather mask must be 2D")
+    if not mask2d.any():
+        return np.zeros(mask2d.shape, dtype=np.float32)
+
+    zoom_y, zoom_x = float(zoom_xy[0]), float(zoom_xy[1])
+    pixel_y = zoom_y / max(scale_y, 1e-6)
+    pixel_x = zoom_x / max(scale_x, 1e-6)
+    sampling = (max(pixel_y, 1e-6), max(pixel_x, 1e-6))
+
+    dist = distance_transform_edt(mask2d, sampling=sampling)
+    alpha = np.clip(dist / max(feather_mm, 1e-6), 0.0, 1.0).astype(np.float32)
+    alpha[~mask2d] = 0.0
+    if alpha.size:
+        alpha = gaussian_filter(alpha, sigma=0.6, mode="nearest")
+    return alpha
+
+
 def _load_binary_mask(path: str, reference_img: nib.Nifti1Image) -> np.ndarray | None:
     """Load a binary mask from disk, resample to the reference grid, return bool array."""
 
@@ -1200,6 +1241,38 @@ def _build_reference(
     }
 
 
+def _combine_reference_info(
+    primary: Dict[str, np.ndarray] | None,
+    secondary: Dict[str, np.ndarray] | None,
+) -> Dict[str, np.ndarray] | None:
+    """Merge reference metadata so every montage shares the same framing."""
+
+    refs = [ref for ref in (primary, secondary) if ref is not None]
+    if not refs:
+        return None
+
+    rotate = refs[0]["rotate"]
+    z_fracs = np.array(refs[0]["z_fracs"], copy=True)
+    bbox = dict(refs[0]["bbox_fracs"])
+
+    for ref in refs[1:]:
+        if ref["rotate"] != rotate:
+            raise ValueError("Reference rotations do not match")
+        bbox_ref = ref["bbox_fracs"]
+        bbox["r0_frac"] = min(bbox["r0_frac"], bbox_ref["r0_frac"])
+        bbox["r1_frac"] = max(bbox["r1_frac"], bbox_ref["r1_frac"])
+        bbox["c0_frac"] = min(bbox["c0_frac"], bbox_ref["c0_frac"])
+        bbox["c1_frac"] = max(bbox["c1_frac"], bbox_ref["c1_frac"])
+        if ref["z_fracs"].size > z_fracs.size:
+            z_fracs = np.array(ref["z_fracs"], copy=True)
+
+    return {
+        "bbox_fracs": bbox,
+        "z_fracs": z_fracs,
+        "rotate": rotate,
+    }
+
+
 def _tight_bbox_from_mask(mask2d: np.ndarray, pad: int = 3) -> tuple[int, int, int, int]:
     if not mask2d.any():
         return 0, mask2d.shape[0], 0, mask2d.shape[1]
@@ -1309,6 +1382,25 @@ def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
     return resized >= 0.5
 
 
+def _fill_empty_slices_nearest(data: np.ndarray) -> np.ndarray:
+    if data.ndim != 3:
+        return data
+
+    slice_has_data = np.isfinite(data).any(axis=(0, 1))
+    if slice_has_data.all():
+        return data
+
+    valid_indices = np.flatnonzero(slice_has_data)
+    if valid_indices.size == 0:
+        return data
+
+    filled = np.array(data, copy=True)
+    for idx in np.flatnonzero(~slice_has_data):
+        nearest = valid_indices[np.argmin(np.abs(valid_indices - idx))]
+        filled[:, :, idx] = filled[:, :, nearest]
+    return filled
+
+
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
     found: Dict[str, str] = {}
     search_dirs = job.search_directories or ("",)
@@ -1393,6 +1485,8 @@ def _render_montage(
                 data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
         except Exception:
             pass
+    else:
+        data = _fill_empty_slices_nearest(data)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
@@ -1557,6 +1651,15 @@ def _render_montage(
         else:
             overlay_z_indices = overlay_z_indices[: rows * cols]
 
+    try:
+        zoom_xy = np.array(reference_img.header.get_zooms()[:2], dtype=float)
+    except Exception:
+        zoom_xy = np.array([1.0, 1.0], dtype=float)
+    if not np.all(np.isfinite(zoom_xy)) or zoom_xy.size < 2:
+        zoom_xy = np.array([1.0, 1.0], dtype=float)
+    if ref_info["rotate"] % 2:
+        zoom_xy = zoom_xy[::-1]
+
     for tile_index, (ax, z) in enumerate(zip(axes, z_indices)):
         zi = int(np.clip(z, 0, data.shape[2] - 1))
         overlay_zi = None
@@ -1678,6 +1781,15 @@ def _render_montage(
         arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
         # use a local min/max so low-but-real values remain visible.
+        scale_y = render_shape[0] / max(1, slc.shape[0])
+        scale_x = render_shape[1] / max(1, slc.shape[1])
+        alpha_mask = _alpha_feather_slice(
+            valid_mask,
+            zoom_xy,
+            scale_y=scale_y,
+            scale_x=scale_x,
+        )
+        alpha_values = overlay_alpha * alpha_mask
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
         if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
             loc_vmin = float(np.nanmin(finite_vals))
@@ -1686,15 +1798,15 @@ def _render_montage(
                 local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
                 ax.imshow(arr, cmap=cmap, norm=local_norm,
                           interpolation="nearest" if is_atlas else "bilinear",
-                          origin="upper", alpha=overlay_alpha, extent=extent)
+                          origin="upper", alpha=alpha_values, extent=extent)
             else:
                 ax.imshow(arr, cmap=cmap, norm=norm,
                           interpolation="nearest" if is_atlas else "bilinear",
-                          origin="upper", alpha=overlay_alpha, extent=extent)
+                          origin="upper", alpha=alpha_values, extent=extent)
         else:
             ax.imshow(arr, cmap=cmap, norm=norm,
                       interpolation="nearest" if is_atlas else "bilinear",
-                      origin="upper", alpha=overlay_alpha, extent=extent)
+                      origin="upper", alpha=alpha_values, extent=extent)
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
@@ -1724,9 +1836,12 @@ def _render_projection_montage(
     rows: int,
     cols: int,
     dpi: int,
+    reference_img: nib.Nifti1Image,
 ) -> None:
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
+
+    data = _fill_empty_slices_nearest(data)
 
     finite_mask = np.isfinite(data)
     if job.mask_zero:
@@ -1765,6 +1880,15 @@ def _render_projection_montage(
     if z_indices.size and z_indices.max() >= nz:
         raise RuntimeError(f"z mapping produced {int(z_indices.max())} with nz={nz}")
 
+    try:
+        zoom_xy = np.array(reference_img.header.get_zooms()[:2], dtype=float)
+    except Exception:
+        zoom_xy = np.array([1.0, 1.0], dtype=float)
+    if not np.all(np.isfinite(zoom_xy)) or zoom_xy.size < 2:
+        zoom_xy = np.array([1.0, 1.0], dtype=float)
+    if ref_info["rotate"] % 2:
+        zoom_xy = zoom_xy[::-1]
+
     for ax, z in zip(axes, z_indices):
         zi = int(np.clip(z, 0, data.shape[2] - 1))
         ax.set_xticks([])
@@ -1792,8 +1916,17 @@ def _render_projection_montage(
         else:
             mask_slice = np.isfinite(slc)
 
-        arr = np.ma.array(slc, mask=(~union_crop) | (~mask_slice))
-        ax.imshow(arr, cmap=cmap, norm=norm, interpolation="nearest", origin="upper")
+        valid_mask = union_crop & mask_slice
+        arr = np.ma.array(slc, mask=(~valid_mask))
+        alpha_values = _alpha_feather_slice(valid_mask, zoom_xy)
+        ax.imshow(
+            arr,
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest",
+            origin="upper",
+            alpha=alpha_values,
+        )
 
     for ax in axes[len(z_indices) :]:
         ax.axis("off")
