@@ -1362,7 +1362,25 @@ def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
         return np.zeros(z.size, dtype=np.intp)
 
     idx = np.rint(z * (nz - 1)).astype(np.intp, copy=False)
-    return np.clip(idx, 0, nz - 1)
+    idx = np.clip(idx, 0, nz - 1)
+
+    if idx.size == 0:
+        return idx
+
+    # Parcel montages rely on the mapped indices covering the full slab of the
+    # volume. Floating point rounding can occasionally shift the extrema just
+    # inside the [0, 1] interval, which would otherwise drop the first/last
+    # slices after rounding. Guard against this by forcing the endpoints to be
+    # included whenever the target has at least one slice.
+    idx[0] = 0
+    idx[-1] = nz - 1
+
+    if idx.size > 1:
+        for i in range(1, idx.size):
+            if idx[i] <= idx[i - 1]:
+                idx[i] = min(nz - 1, idx[i - 1] + 1)
+
+    return idx
 
 
 def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
