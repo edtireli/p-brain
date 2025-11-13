@@ -149,6 +149,17 @@ MAP_JOBS: Sequence[MapJob] = (
 
 MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
 
+# Diffusion detection helpers
+_DIFFUSION_BASE_PREFIXES = ("fa_", "md_", "ad_", "rd_", "mo_", "tensor_residual_")
+
+
+def _is_diffusion_job(job: MapJob) -> bool:
+    name = (job.base or "").lower()
+    if any(name.startswith(p) for p in _DIFFUSION_BASE_PREFIXES):
+        return True
+    return "diffusion" in tuple((job.search_directories or ()))
+
+
 PROJECTION_TARGETS: Dict[str, str] = {
     "Ki_map_atlas": "ki_projection_parcel",
     "vp_map_atlas": "vp_projection_parcel",
@@ -341,6 +352,11 @@ def generate_parametric_montages(
 
     generated_any = False
     for job in MAP_JOBS:
+        # Keep atlas maps for perfusion/BBB metrics.
+        # Skip only diffusion *_map_atlas* montages. Parcel projections still render below.
+        if _is_diffusion_job(job) and job.base.endswith("_map_atlas"):
+            continue
+
         for suffix, map_path in _find_available_maps(job, analysis_directory).items():
             try:
                 output_name = job.output_base + suffix + job.output_ext
@@ -1445,6 +1461,30 @@ def _fill_empty_slices_nearest(data: np.ndarray) -> np.ndarray:
     return filled
 
 
+def _inpaint_nans_nearest(
+    volume: np.ndarray,
+    inside_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """3D nearest-neighbour inpaint of NaN islands. Only fills NaNs inside `inside_mask` if provided."""
+    if volume.ndim != 3:
+        return volume
+    vol = np.asarray(volume, dtype=np.float32)
+    finite = np.isfinite(vol)
+    if inside_mask is None:
+        valid = finite
+        target = ~finite
+    else:
+        dom = np.asarray(inside_mask, dtype=bool)
+        valid = finite & dom
+        target = (~finite) & dom
+    if not np.any(target) or not np.any(valid):
+        return vol
+    _, idx = distance_transform_edt(~valid, return_indices=True)
+    out = vol.copy()
+    out[target] = vol[tuple(idx[d][target] for d in range(3))]
+    return out
+
+
 def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]:
     found: Dict[str, str] = {}
     search_dirs = job.search_directories or ("",)
@@ -1512,6 +1552,7 @@ def _render_montage(
     segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
     is_atlas = job.base.endswith("_map_atlas")
+    is_diffusion = _is_diffusion_job(job)
     img = nib.load(map_path)
     # Resample to DCE grid. Atlas maps use nearest neighbour to keep parcels crisp.
     from nibabel.processing import resample_from_to
@@ -1532,6 +1573,22 @@ def _render_montage(
             pass
     else:
         data = _fill_empty_slices_nearest(data)
+    # Diffusion voxelwise often carries NaN islands after the fit
+    if is_diffusion and not is_atlas:
+        # Prefer ICV as the inpaint domain. If missing, use a soft proxy from finite voxels.
+        inpaint_domain = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            inpaint_domain = brain_mask
+        else:
+            finite = np.isfinite(data)
+            # Grow a little to bridge one-voxel gaps without bleeding into air.
+            try:
+                from scipy.ndimage import binary_closing
+
+                inpaint_domain = binary_closing(finite, structure=np.ones((3, 3, 3), bool))
+            except Exception:
+                inpaint_domain = finite
+        data = _inpaint_nans_nearest(data, inside_mask=inpaint_domain)
     slice_valid_initial = (
         np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
     )
@@ -1560,7 +1617,11 @@ def _render_montage(
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
             mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
         brain_mask = mask_data
-        valmask3d = np.isfinite(data) & mask_data
+        # For diffusion, trust finite voxels to avoid mask pinholes
+        if is_diffusion:
+            valmask3d = np.isfinite(data)
+        else:
+            valmask3d = np.isfinite(data) & mask_data
     else:
         # Atlas maps must accept zero as a valid value.
         valmask3d = np.isfinite(data)
@@ -1570,7 +1631,11 @@ def _render_montage(
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
 
     slice_valid = np.any(valmask3d, axis=(0, 1)) if valmask3d.ndim == 3 else None
-    zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    # Parcels should span the full slab so first and last slice always appear
+    if is_atlas:
+        zmin, zmax = 0, data.shape[2] - 1
+    else:
+        zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
     z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax)
     if z_indices.size < rows * cols:
         pad_value = z_indices[-1] if z_indices.size else 0
@@ -1801,7 +1866,14 @@ def _render_montage(
         mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
         mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
 
-        if brain_mask is None and job.mask_zero:
+        # For diffusion, drop tiny magnitudes so background or CSF at ~0 does not paint.
+        if is_diffusion:
+            finite_vals_local = slc[np.isfinite(slc)]
+            if finite_vals_local.size:
+                thr = np.percentile(finite_vals_local, 0.1)
+                eps_dyn = max(thr, 1e-6)
+                mask_slice_crop &= slc > eps_dyn
+        elif brain_mask is None and job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
                 cutoff = np.percentile(finite_vals, 0.1)
@@ -1923,6 +1995,13 @@ def _render_projection_montage(
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
     slice_valid = np.any(finite_mask, axis=(0, 1)) if finite_mask.ndim == 3 else None
     zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    # Projection jobs are parcel displays keyed by *_map_atlas.
+    # Force the range to the full slab so the montage includes both extremes.
+    try:
+        if (job.base or "").endswith("_map_atlas"):
+            zmin, zmax = 0, data.shape[2] - 1
+    except Exception:
+        pass
     z_indices = _map_z_from_ref(
         ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax
     )
