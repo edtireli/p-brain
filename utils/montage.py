@@ -340,6 +340,11 @@ def generate_parametric_montages(
             try:
                 output_name = job.output_base + suffix + job.output_ext
                 out_path = os.path.join(out_dir, output_name)
+
+                # Parcel/atlas montages should display all parcel voxels without the
+                # global brain mask so that no atlas regions are suppressed.
+                job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
+
                 _render_montage(
                     map_path,
                     out_path,
@@ -350,7 +355,7 @@ def generate_parametric_montages(
                     cols=cols,
                     dpi=dpi,
                     overlay=overlay,
-                    brain_mask=brain_mask,
+                    brain_mask=job_brain_mask,
                     segmentation_img=segmentation_img,
                 )
                 generated_any = True
