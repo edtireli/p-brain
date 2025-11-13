@@ -670,6 +670,25 @@ def _get_cmap(name: str | None) -> mpl.colors.Colormap:
         return mpl.colormaps["viridis"].copy()
 
 
+def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
+    """Return an opaque clone of ``cmap`` for colorbars, preserving hues."""
+    cm = cmap.copy()
+    try:
+        lut = cm(np.linspace(0, 1, cm.N))
+        lut[:, -1] = 1.0
+        cm = mpl.colors.ListedColormap(lut, name=getattr(cmap, "name", "cm") + "_opaque")
+        # Force extremes fully opaque as well
+        a0 = list(cmap(0.0))
+        a0[-1] = 1.0
+        a1 = list(cmap(1.0))
+        a1[-1] = 1.0
+        cm.set_bad(tuple(a0))
+        cm.set_under(tuple(a0))
+        cm.set_over(tuple(a1))
+    except Exception:
+        pass
+    return cm
+
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     img = nib.load(dce_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
@@ -1661,6 +1680,7 @@ def _render_montage(
         # Kill low-value haze for diffusion
         under_rgba[-1] = 0.0 if is_diffusion else 0.45
         cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
+    cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
@@ -1943,15 +1963,15 @@ def _render_montage(
                 if loc_vmax > loc_vmin:
                     local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
                     ax.imshow(arr, cmap=cmap, norm=local_norm,
-                              interpolation="nearest" if is_atlas else "bilinear",
+                              interpolation="nearest",
                               origin="upper", alpha=alpha_values, extent=extent)
                 else:
                     ax.imshow(arr, cmap=cmap, norm=norm,
-                              interpolation="nearest" if is_atlas else "bilinear",
+                              interpolation="nearest",
                               origin="upper", alpha=alpha_values, extent=extent)
             else:
                 ax.imshow(arr, cmap=cmap, norm=norm,
-                          interpolation="nearest" if is_atlas else "bilinear",
+                          interpolation="nearest",
                           origin="upper", alpha=alpha_values, extent=extent)
 
     # Hide any unused axes when there are fewer slices than tiles
@@ -1959,8 +1979,14 @@ def _render_montage(
         ax.axis("off")
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
+    # Match panel background while keeping the bar fully opaque
+    cb.ax.set_facecolor("#e0e0e0")
+    try:
+        cb.solids.set_edgecolor("face")
+    except Exception:
+        pass
     if tick_values:
         cb.set_ticks(tick_values)
         cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
@@ -2027,6 +2053,7 @@ def _render_projection_montage(
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
     cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
+    cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
@@ -2092,8 +2119,13 @@ def _render_projection_montage(
         ax.axis("off")
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
+    cb.ax.set_facecolor("#e0e0e0")
+    try:
+        cb.solids.set_edgecolor("face")
+    except Exception:
+        pass
     if tick_values:
         cb.set_ticks(tick_values)
         cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
