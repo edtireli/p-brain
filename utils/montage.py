@@ -1396,12 +1396,12 @@ def _map_z_from_ref(
 def _slice_valid_bounds(
     primary: np.ndarray | None, fallback: np.ndarray | None
 ) -> tuple[int | None, int | None]:
-    if primary is not None and primary.size and primary.any():
-        indices = np.flatnonzero(primary)
-        return int(indices[0]), int(indices[-1])
-    if fallback is not None and fallback.size and fallback.any():
-        indices = np.flatnonzero(fallback)
-        return int(indices[0]), int(indices[-1])
+    p = np.flatnonzero(primary) if isinstance(primary, np.ndarray) and primary.size else np.array([], dtype=int)
+    f = np.flatnonzero(fallback) if isinstance(fallback, np.ndarray) and fallback.size else np.array([], dtype=int)
+    if p.size or f.size:
+        lo = int(min(p[0] if p.size else f[0], f[0] if f.size else p[0]))
+        hi = int(max(p[-1] if p.size else f[-1], f[-1] if f.size else p[-1]))
+        return lo, hi
     return None, None
 
 
@@ -1409,17 +1409,21 @@ def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
     target_shape = (int(target_shape[0]), int(target_shape[1]))
     if mask.shape == target_shape:
         return mask.astype(bool)
-
+    # Masks require categorical resampling. Linear + AA creates pinholes.
     resized = resize(
-        mask.astype(np.float32),
+        mask.astype(np.uint8),
         target_shape,
-        order=1,
+        order=0,
         preserve_range=True,
-        anti_aliasing=True,
-    )
-    if resized.size:
-        resized = gaussian_filter(resized, sigma=0.5, mode="reflect")
-    return resized >= 0.5
+        anti_aliasing=False,
+    ).astype(bool)
+    # Seal tiny artifacts introduced by raster changes
+    try:
+        from scipy.ndimage import binary_closing, binary_fill_holes
+        resized = binary_fill_holes(binary_closing(resized, structure=np.ones((3,3), bool)))
+    except Exception:
+        pass
+    return resized.astype(bool)
 
 
 def _fill_empty_slices_nearest(data: np.ndarray) -> np.ndarray:
@@ -1515,10 +1519,8 @@ def _render_montage(
     if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
         img = resample_from_to(img, target, order=0 if is_atlas else 1)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
-    slice_valid_initial = (
-        np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
-    )
-    # Skip smoothing for atlas maps to avoid jagged rims and value bleeding.
+    # Skip smoothing for atlas maps to avoid value bleeding.
+    # Compute slice-valid AFTER any repair of empty slices.
     if not is_atlas:
         try:
             zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
@@ -1530,6 +1532,9 @@ def _render_montage(
             pass
     else:
         data = _fill_empty_slices_nearest(data)
+    slice_valid_initial = (
+        np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
+    )
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
@@ -1833,6 +1838,11 @@ def _render_montage(
                 union_render = _resize_mask(union_crop, render_shape)
         # seal tiny pinholes from resampling
         valid_mask = union_render & mask_render
+        try:
+            from scipy.ndimage import binary_closing, binary_fill_holes
+            valid_mask = binary_fill_holes(binary_closing(valid_mask, structure=np.ones((3,3), bool)))
+        except Exception:
+            pass
         arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
         # use a local min/max so low-but-real values remain visible.
@@ -1896,10 +1906,10 @@ def _render_projection_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
+    data = _fill_empty_slices_nearest(data)
     slice_valid_initial = (
         np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
     )
-    data = _fill_empty_slices_nearest(data)
 
     finite_mask = np.isfinite(data)
     if job.mask_zero:
