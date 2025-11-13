@@ -1465,19 +1465,23 @@ def _inpaint_nans_nearest(
     volume: np.ndarray,
     inside_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """3D nearest-neighbour inpaint for NaN islands.
-    Preserves real structure and only fills missing islands."""
+    """3D nearest-neighbour inpaint of NaN islands. Only fills NaNs inside `inside_mask` if provided."""
     if volume.ndim != 3:
         return volume
     vol = np.asarray(volume, dtype=np.float32)
     finite = np.isfinite(vol)
-    if inside_mask is not None:
-        finite = finite & np.asarray(inside_mask, dtype=bool)
-    if finite.all():
+    if inside_mask is None:
+        valid = finite
+        target = ~finite
+    else:
+        dom = np.asarray(inside_mask, dtype=bool)
+        valid = finite & dom
+        target = (~finite) & dom
+    if not np.any(target) or not np.any(valid):
         return vol
-    _, idx = distance_transform_edt(~finite, return_indices=True)
+    _, idx = distance_transform_edt(~valid, return_indices=True)
     out = vol.copy()
-    out[~finite] = vol[tuple(idx[d][~finite] for d in range(3))]
+    out[target] = vol[tuple(idx[d][target] for d in range(3))]
     return out
 
 
