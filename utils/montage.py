@@ -36,6 +36,7 @@ from skimage.morphology import (
     binary_dilation,
     binary_erosion,
     binary_opening,
+    remove_small_holes,
     remove_small_objects,
 )
 
@@ -51,6 +52,8 @@ HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
 ICV_ERODE_MM = 3.0        # approximate skull thickness to peel head -> ICV
+MASK_SMOOTH_MM = 1.5      # closing radius to soften ragged mask edges
+MASK_HOLE_VOXELS = 4_000  # fill interior voids below this volume
 MASK_CANDIDATES_HEAD = (
     "head_mask_in_DCE.nii.gz",
     "head_mask.nii.gz",
@@ -719,6 +722,23 @@ def _prepare_anatomical_overlay(
     if mask_head is None or not np.any(mask_head):
         mask_head = np.isfinite(overlay_data) & (overlay_data > 0)
 
+    if mask_head is not None:
+        mask_head = _polish_mask(
+            mask_head,
+            overlay_img,
+            min_size=HEAD_MIN_VOXELS,
+            closing_mm=MASK_SMOOTH_MM,
+            hole_voxels=MASK_HOLE_VOXELS,
+        )
+    if mask_brain is not None:
+        mask_brain = _polish_mask(
+            mask_brain,
+            overlay_img,
+            min_size=None,
+            closing_mm=MASK_SMOOTH_MM,
+            hole_voxels=MASK_HOLE_VOXELS,
+        )
+
     # Use head mask for the underlay, so air is gone though head tissue remains
     masked_overlay = np.array(overlay_data, copy=True)
     masked_overlay[~mask_head] = 0.0
@@ -756,6 +776,48 @@ def _voxel_radius(img: nib.Nifti1Image, mm: float) -> int:
     return max(1, r)
 
 
+def _polish_mask(
+    mask: np.ndarray,
+    img: nib.Nifti1Image,
+    *,
+    min_size: int | None = None,
+    closing_mm: float | None = MASK_SMOOTH_MM,
+    hole_voxels: int | None = MASK_HOLE_VOXELS,
+    fill_holes: bool = True,
+) -> np.ndarray:
+    """Regularise a binary mask to avoid ragged rims and voids."""
+
+    polished = np.asarray(mask, dtype=bool)
+    if not polished.any():
+        return polished
+
+    if fill_holes:
+        polished = binary_fill_holes(polished)
+
+    if hole_voxels is not None and hole_voxels > 0:
+        try:
+            polished = remove_small_holes(
+                polished, area_threshold=int(hole_voxels), connectivity=2
+            )
+        except Exception:  # noqa: BLE001 - keep the best effort result
+            pass
+
+    if closing_mm is not None and closing_mm > 0:
+        try:
+            polished = binary_closing(polished, ball(_voxel_radius(img, closing_mm)))
+        except Exception:  # noqa: BLE001 - keep the best effort result
+            pass
+
+    if min_size is not None and min_size > 0:
+        try:
+            polished = remove_small_objects(polished, min_size=min_size, connectivity=2)
+        except Exception:  # noqa: BLE001
+            pass
+
+    polished = _largest_component(polished)
+    return polished.astype(bool)
+
+
 def _largest_component(mask: np.ndarray) -> np.ndarray:
     lab, n = label(mask.astype(np.uint8))
     if n <= 1:
@@ -780,9 +842,13 @@ def _t1_envelope(img: nib.Nifti1Image) -> np.ndarray:
         thr = float(np.percentile(vals, 2.0))
     soft = finite & (vol > thr)
     soft = binary_closing(soft, ball(1))
-    soft = binary_fill_holes(soft)
-    soft = remove_small_objects(soft, min_size=HEAD_MIN_VOXELS, connectivity=2)
-    soft = _largest_component(soft)
+    soft = _polish_mask(
+        soft,
+        img,
+        min_size=HEAD_MIN_VOXELS,
+        closing_mm=MASK_SMOOTH_MM,
+        hole_voxels=MASK_HOLE_VOXELS,
+    )
     soft = binary_dilation(soft, ball(_voxel_radius(img, HEAD_EXTRA_MM)))
     return soft.astype(bool)
 
@@ -807,26 +873,45 @@ def _build_head_mask(
         seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
         brain = np.isfinite(seg_data) & (seg_data > 0.5)
         if brain.any():
-            brain = binary_fill_holes(brain)
-            brain = _largest_component(brain)
+            brain = _polish_mask(
+                brain,
+                overlay_img,
+                min_size=HEAD_MIN_VOXELS // 2,
+                closing_mm=MASK_SMOOTH_MM,
+                hole_voxels=MASK_HOLE_VOXELS,
+            )
             icv_prior = brain.astype(bool)
             r = _voxel_radius(overlay_img, dilate_mm)
             grown = binary_dilation(icv_prior, ball(r))
             head = np.asarray(head | grown, dtype=bool)
     r_erode = _voxel_radius(overlay_img, erode_mm)
     icv_from_head = binary_erosion(head, ball(r_erode))
-    icv_from_head = binary_fill_holes(icv_from_head)
-    icv_from_head = _largest_component(icv_from_head)
+    icv_from_head = _polish_mask(
+        icv_from_head,
+        overlay_img,
+        min_size=HEAD_MIN_VOXELS // 2,
+        closing_mm=MASK_SMOOTH_MM,
+        hole_voxels=MASK_HOLE_VOXELS,
+    )
 
     if icv_prior is not None:
-        from skimage.morphology import binary_closing as _bclose
-
-        icv = _bclose(icv_from_head | icv_prior, ball(1))
+        icv = _polish_mask(
+            icv_from_head | icv_prior,
+            overlay_img,
+            min_size=HEAD_MIN_VOXELS // 2,
+            closing_mm=MASK_SMOOTH_MM,
+            hole_voxels=MASK_HOLE_VOXELS,
+        )
     else:
         icv = icv_from_head
 
-    head = binary_fill_holes(head)
-    head = _largest_component(head)
+    head = _polish_mask(
+        head,
+        overlay_img,
+        min_size=HEAD_MIN_VOXELS,
+        closing_mm=MASK_SMOOTH_MM,
+        hole_voxels=MASK_HOLE_VOXELS,
+    )
     return head.astype(bool), icv.astype(bool)
 
 
@@ -868,8 +953,13 @@ def _load_binary_mask(path: str, reference_img: nib.Nifti1Image) -> np.ndarray |
             # sometimes masks are 0/1 but smoothed; open+fill to revive thin rims
             mask = data > 0.1
             mask = binary_opening(mask, ball(1))
-        mask = binary_fill_holes(mask)
-        mask = _largest_component(mask)
+        mask = _polish_mask(
+            mask,
+            reference_img,
+            min_size=HEAD_MIN_VOXELS // 2,
+            closing_mm=MASK_SMOOTH_MM,
+            hole_voxels=MASK_HOLE_VOXELS,
+        )
         return mask.astype(bool)
     except Exception:
         return None
@@ -980,8 +1070,13 @@ def _try_freesurfer_icv_from_nearby(
                 img = resample_from_to(img, (reference_img.shape, reference_img.affine), order=0)
             data = np.asarray(img.get_fdata(), dtype=np.float32)
             mask = np.isfinite(data) & (data > 0.5)
-            mask = binary_fill_holes(mask)
-            mask = _largest_component(mask)
+            mask = _polish_mask(
+                mask,
+                reference_img,
+                min_size=HEAD_MIN_VOXELS // 2,
+                closing_mm=MASK_SMOOTH_MM,
+                hole_voxels=MASK_HOLE_VOXELS,
+            )
             if mask.any():
                 print("[montage] Using FreeSurfer ICV:", path)
                 return mask.astype(bool)
@@ -1020,10 +1115,22 @@ def _try_fsl_bet_masks(
             if mask_img.shape != overlay_img.shape or not np.allclose(mask_img.affine, overlay_img.affine):
                 mask_img = resample_from_to(mask_img, overlay_img, order=0)
             mask = np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
+            mask = _polish_mask(
+                mask,
+                overlay_img,
+                min_size=HEAD_MIN_VOXELS // 2,
+                closing_mm=MASK_SMOOTH_MM,
+                hole_voxels=MASK_HOLE_VOXELS,
+            )
             radius = _voxel_radius(overlay_img, ICV_ERODE_MM if ICV_ERODE_MM > 0 else 1.0)
             head = binary_dilation(mask, ball(max(1, radius)))
-            head = binary_fill_holes(head)
-            head = _largest_component(head)
+            head = _polish_mask(
+                head,
+                overlay_img,
+                min_size=HEAD_MIN_VOXELS,
+                closing_mm=MASK_SMOOTH_MM,
+                hole_voxels=MASK_HOLE_VOXELS,
+            )
             print("[montage] Using FSL BET-derived ICV and grown HEAD.")
             return head.astype(bool), mask.astype(bool)
     except Exception as exc:  # noqa: BLE001 - keep rendering with degraded mask
