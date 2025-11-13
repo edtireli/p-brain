@@ -325,8 +325,12 @@ def generate_parametric_montages(
         if brain_mask is None and ext_icv_mask is not None:
             brain_mask = ext_icv_mask
 
-    # Build reference using head mask when available, else brain
-    ref_info = _build_reference(reference, rows * cols, mask=head_mask if head_mask is not None else brain_mask)
+    # Build reference using head mask for atlas jobs and the brain/union mask for others
+    ref_info_head = _build_reference(
+        reference, rows * cols, mask=head_mask if head_mask is not None else brain_mask
+    )
+    ref_info_union = _build_reference(reference, rows * cols, mask=brain_mask)
+    ref_info = ref_info_union or ref_info_head
     if ref_info is None:
         print("[montage] Reference volume contained no finite voxels – skipping montages.")
         return
@@ -348,7 +352,7 @@ def generate_parametric_montages(
                     map_path,
                     out_path,
                     job,
-                    ref_info,
+                    (ref_info_head or ref_info) if job.base.endswith("_map_atlas") else ref_info,
                     reference_img=reference_img,
                     rows=rows,
                     cols=cols,
@@ -1371,17 +1375,16 @@ def _render_montage(
     brain_mask: np.ndarray | None = None,
     segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
-    def _is_atlas_job(j: MapJob) -> bool:
-        return j.base.endswith("_map_atlas")
+    is_atlas = job.base.endswith("_map_atlas")
     img = nib.load(map_path)
     # Resample to DCE grid. Atlas maps use nearest neighbour to keep parcels crisp.
     from nibabel.processing import resample_from_to
     target = (reference_img.shape, reference_img.affine)
     if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
-        img = resample_from_to(img, target, order=0 if _is_atlas_job(job) else 1)
+        img = resample_from_to(img, target, order=0 if is_atlas else 1)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
     # Skip smoothing for atlas maps to avoid jagged rims and value bleeding.
-    if not _is_atlas_job(job):
+    if not is_atlas:
         try:
             zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
             zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
@@ -1419,7 +1422,7 @@ def _render_montage(
     else:
         # Atlas maps must accept zero as a valid value.
         valmask3d = np.isfinite(data)
-    union_xy = np.any(valmask3d, axis=2)
+    union_xy = np.any(valmask3d, axis=2) if not is_atlas else np.ones(data.shape[:2], bool)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
@@ -1439,8 +1442,12 @@ def _render_montage(
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
     # Keep sub-vmin faint so low values remain visible; NaNs remain invisible
-    under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
-    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
+    if is_atlas:
+        cmap = cmap.with_extremes(bad=(0, 0, 0, 0))
+    else:
+        under_rgba = list(cmap(0.0))
+        under_rgba[-1] = 0.45
+        cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
@@ -1650,19 +1657,24 @@ def _render_montage(
             slc_render = resize(
                 slc_render,
                 render_shape,
-                order=0 if _is_atlas_job(job) else 1,
+                order=0 if is_atlas else 1,
                 preserve_range=True,
-                anti_aliasing=False if _is_atlas_job(job) else True,
+                anti_aliasing=False if is_atlas else True,
             ).astype(np.float32)
-            mask_render = _resize_mask(mask_slice_crop, render_shape) if not _is_atlas_job(job) else _resize_mask(mask_slice_crop.astype(float), render_shape)
-            union_render = _resize_mask(union_crop, render_shape)
+            if is_atlas:
+                mask_render = resize(
+                    mask_slice_crop.astype(np.uint8),
+                    render_shape,
+                    order=0,
+                    preserve_range=True,
+                    anti_aliasing=False,
+                ).astype(bool)
+                union_render = np.ones(render_shape, bool)
+            else:
+                mask_render = _resize_mask(mask_slice_crop, render_shape)
+                union_render = _resize_mask(union_crop, render_shape)
         # seal tiny pinholes from resampling
-        try:
-            from skimage.morphology import binary_closing as _bclose
-
-            valid_mask = _bclose(union_render & mask_render, footprint=np.ones((2, 2), bool))
-        except Exception:
-            valid_mask = union_render & mask_render
+        valid_mask = union_render & mask_render
         arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
         # use a local min/max so low-but-real values remain visible.
@@ -1673,15 +1685,15 @@ def _render_montage(
             if loc_vmax > loc_vmin:
                 local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
                 ax.imshow(arr, cmap=cmap, norm=local_norm,
-                          interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                          interpolation="nearest" if is_atlas else "bilinear",
                           origin="upper", alpha=overlay_alpha, extent=extent)
             else:
                 ax.imshow(arr, cmap=cmap, norm=norm,
-                          interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                          interpolation="nearest" if is_atlas else "bilinear",
                           origin="upper", alpha=overlay_alpha, extent=extent)
         else:
             ax.imshow(arr, cmap=cmap, norm=norm,
-                      interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                      interpolation="nearest" if is_atlas else "bilinear",
                       origin="upper", alpha=overlay_alpha, extent=extent)
 
     # Hide any unused axes when there are fewer slices than tiles
