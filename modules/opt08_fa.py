@@ -629,6 +629,7 @@ def _parcel_means_dce(
     label_lookup: Dict[int, str],
     *,
     restrict_to_wm: bool = False,
+    fallback_data: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
     parcel_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     parcels: Dict[str, Dict[str, float]] = {}
@@ -640,6 +641,10 @@ def _parcel_means_dce(
         mask = atlas_data == int(label)
         values = metric_data[mask]
         values = values[np.isfinite(values)]
+        if values.size == 0 and fallback_data is not None:
+            fallback_values = fallback_data[mask]
+            fallback_values = fallback_values[np.isfinite(fallback_values)]
+            values = fallback_values
         if values.size == 0:
             continue
 
@@ -663,6 +668,7 @@ def _parcel_means(
     metadata: Dict[int, Dict[str, object]],
     *,
     restrict_to_wm: bool = False,
+    fallback_data: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
     parcel_map = np.full(metric_data.shape, np.nan, dtype=np.float32)
     parcels: Dict[str, Dict[str, float]] = {}
@@ -674,6 +680,10 @@ def _parcel_means(
         indices = info["indices"]
         values = metric_data[indices]
         values = values[np.isfinite(values)]
+        if values.size == 0 and fallback_data is not None:
+            fallback_values = fallback_data[indices]
+            fallback_values = fallback_values[np.isfinite(fallback_values)]
+            values = fallback_values
         if values.size == 0:
             continue
 
@@ -1157,6 +1167,16 @@ def compute_fa(
             dce_resample_target,
             f"{metric_name.upper()} map",
         )
+
+        raw_metric_img = nib.Nifti1Image(
+            np.asarray(raw_metric_data, dtype=np.float32), img.affine, img.header
+        )
+        raw_metric_img.set_data_dtype(np.float32)
+        raw_metric_img = _maybe_resample_to_dce(
+            raw_metric_img,
+            dce_resample_target,
+            f"{metric_name.upper()} raw diffusion map",
+        )
         map_path = os.path.join(diffusion_dir, f"{metric_name}_map.nii.gz")
         nib.save(metric_img, map_path)
         print(f"[!] Saved {metric_name.upper()} map to {map_path}")
@@ -1195,11 +1215,13 @@ def compute_fa(
                 and metric_img.shape[:3] == atlas_dce_data.shape
             ):
                 metric_resampled = metric_img.get_fdata(dtype=np.float32)
+                raw_metric_resampled = raw_metric_img.get_fdata(dtype=np.float32)
                 parcel_map, dce_parcels = _parcel_means_dce(
                     metric_resampled,
                     atlas_dce_data,
                     label_lookup,
                     restrict_to_wm=restrict,
+                    fallback_data=raw_metric_resampled,
                 )
                 if dce_parcels:
                     header = (
@@ -1223,6 +1245,7 @@ def compute_fa(
                     metric_data,
                     parcel_metadata,
                     restrict_to_wm=restrict,
+                    fallback_data=raw_metric_data,
                 )
                 if parcels:
                     atlas_img = nib.Nifti1Image(

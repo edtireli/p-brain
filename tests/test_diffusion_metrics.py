@@ -273,3 +273,65 @@ def test_compute_fa_retains_edge_slices_when_mask_is_empty(monkeypatch, tmp_path
 
     assert np.isfinite(fa_map[..., 0]).all()
     assert np.isfinite(fa_map[..., -1]).all()
+
+
+def test_parcel_means_uses_fallback_when_mask_empty():
+    atlas = np.zeros((2, 2, 2), dtype=np.int32)
+    atlas[0] = 1
+    atlas[1] = 2
+
+    metadata = {
+        1: {
+            "indices": np.where(atlas == 1),
+            "name": "Region1",
+            "voxel_count": int(np.count_nonzero(atlas == 1)),
+            "is_wm": True,
+        },
+        2: {
+            "indices": np.where(atlas == 2),
+            "name": "Region2",
+            "voxel_count": int(np.count_nonzero(atlas == 2)),
+            "is_wm": False,
+        },
+    }
+
+    metric_data = np.full(atlas.shape, np.nan, dtype=np.float32)
+    fallback = np.zeros_like(metric_data)
+    fallback[atlas == 1] = 1.5
+    fallback[atlas == 2] = 2.5
+
+    parcel_map, parcels = diffusion._parcel_means(
+        metric_data, metadata, fallback_data=fallback
+    )
+
+    assert set(parcels.keys()) == {"Region1", "Region2"}
+    assert np.isclose(parcels["Region1"]["mean"], 1.5)
+    assert np.isclose(parcels["Region2"]["mean"], 2.5)
+    assert np.allclose(parcel_map[atlas == 1], 1.5)
+    assert np.allclose(parcel_map[atlas == 2], 2.5)
+
+
+def test_parcel_means_dce_uses_fallback_when_mask_empty():
+    atlas = np.zeros((2, 2, 2), dtype=np.int32)
+    atlas[0] = 3
+    atlas[1] = 4
+
+    metric_data = np.full(atlas.shape, np.nan, dtype=np.float32)
+    fallback = np.zeros_like(metric_data)
+    fallback[atlas == 3] = 3.25
+    fallback[atlas == 4] = 4.75
+
+    label_lookup = {3: "A", 4: "B"}
+
+    parcel_map, parcels = diffusion._parcel_means_dce(
+        metric_data,
+        atlas,
+        label_lookup,
+        fallback_data=fallback,
+    )
+
+    assert set(parcels.keys()) == {"A", "B"}
+    assert np.isclose(parcels["A"]["mean"], 3.25)
+    assert np.isclose(parcels["B"]["mean"], 4.75)
+    assert np.allclose(parcel_map[atlas == 3], 3.25)
+    assert np.allclose(parcel_map[atlas == 4], 4.75)
