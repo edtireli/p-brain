@@ -168,6 +168,38 @@ def _dwi_signal_mask(
     return b0 > thr
 
 
+def _heal_metric_mask_edges(
+    metric_mask: np.ndarray,
+    signal_mask: Optional[np.ndarray],
+    raw_metric_data: np.ndarray,
+) -> None:
+    """Ensure outermost slices survive masking when they contain diffusion signal."""
+
+    if metric_mask.size == 0 or metric_mask.ndim < 3:
+        return
+
+    for edge_index, label in ((0, "first"), (-1, "final")):
+        slice_mask = metric_mask[..., edge_index]
+        if np.any(slice_mask):
+            continue
+
+        if signal_mask is not None:
+            signal_slice = signal_mask[..., edge_index]
+            if np.any(signal_slice):
+                metric_mask[..., edge_index] |= signal_slice
+                print(
+                    f"[!] Expanding metric mask on {label} z-slice based on diffusion signal"
+                )
+                continue
+
+        finite_slice = np.isfinite(raw_metric_data[..., edge_index])
+        if np.any(finite_slice):
+            metric_mask[..., edge_index] |= finite_slice
+            print(
+                f"[!] Expanding metric mask on {label} z-slice based on raw diffusion metrics"
+            )
+
+
 def _maybe_resample_to_dce(
     img: nib.Nifti1Image,
     target: Optional[ResampleTarget],
@@ -597,6 +629,7 @@ def _parcel_means_dce(
     label_lookup: Dict[int, str],
     *,
     restrict_to_wm: bool = False,
+    fallback_data: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
     parcel_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     parcels: Dict[str, Dict[str, float]] = {}
@@ -608,6 +641,10 @@ def _parcel_means_dce(
         mask = atlas_data == int(label)
         values = metric_data[mask]
         values = values[np.isfinite(values)]
+        if values.size == 0 and fallback_data is not None:
+            fallback_values = fallback_data[mask]
+            fallback_values = fallback_values[np.isfinite(fallback_values)]
+            values = fallback_values
         if values.size == 0:
             continue
 
@@ -631,6 +668,7 @@ def _parcel_means(
     metadata: Dict[int, Dict[str, object]],
     *,
     restrict_to_wm: bool = False,
+    fallback_data: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Dict[str, float]]]:
     parcel_map = np.full(metric_data.shape, np.nan, dtype=np.float32)
     parcels: Dict[str, Dict[str, float]] = {}
@@ -642,6 +680,10 @@ def _parcel_means(
         indices = info["indices"]
         values = metric_data[indices]
         values = values[np.isfinite(values)]
+        if values.size == 0 and fallback_data is not None:
+            fallback_values = fallback_data[indices]
+            fallback_values = fallback_values[np.isfinite(fallback_values)]
+            values = fallback_values
         if values.size == 0:
             continue
 
@@ -1098,10 +1140,7 @@ def compute_fa(
             else brain_mask
         )
 
-        # Edge heal: if diffusion shows signal on last slice while mask is empty there, expand mask on that slice
-        if signal_mask[..., -1].any() and (metric_mask[..., -1].sum() == 0):
-            print("[!] Expanding metric mask on final z-slice based on diffusion signal")
-            metric_mask[..., -1] |= signal_mask[..., -1]
+        _heal_metric_mask_edges(metric_mask, signal_mask, raw_metric_data)
 
         # Apply masking
         metric_data = np.where(metric_mask, raw_metric_data, np.float32(np.nan))
@@ -1127,6 +1166,16 @@ def compute_fa(
             metric_img,
             dce_resample_target,
             f"{metric_name.upper()} map",
+        )
+
+        raw_metric_img = nib.Nifti1Image(
+            np.asarray(raw_metric_data, dtype=np.float32), img.affine, img.header
+        )
+        raw_metric_img.set_data_dtype(np.float32)
+        raw_metric_img = _maybe_resample_to_dce(
+            raw_metric_img,
+            dce_resample_target,
+            f"{metric_name.upper()} raw diffusion map",
         )
         map_path = os.path.join(diffusion_dir, f"{metric_name}_map.nii.gz")
         nib.save(metric_img, map_path)
@@ -1166,11 +1215,13 @@ def compute_fa(
                 and metric_img.shape[:3] == atlas_dce_data.shape
             ):
                 metric_resampled = metric_img.get_fdata(dtype=np.float32)
+                raw_metric_resampled = raw_metric_img.get_fdata(dtype=np.float32)
                 parcel_map, dce_parcels = _parcel_means_dce(
                     metric_resampled,
                     atlas_dce_data,
                     label_lookup,
                     restrict_to_wm=restrict,
+                    fallback_data=raw_metric_resampled,
                 )
                 if dce_parcels:
                     header = (
@@ -1194,6 +1245,7 @@ def compute_fa(
                     metric_data,
                     parcel_metadata,
                     restrict_to_wm=restrict,
+                    fallback_data=raw_metric_data,
                 )
                 if parcels:
                     atlas_img = nib.Nifti1Image(
