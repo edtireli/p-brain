@@ -1626,8 +1626,8 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    # Fence the domain by ICV/head when available
-    if brain_mask is not None:
+    # Fence the domain by ICV/head when available (voxelwise only)
+    if brain_mask is not None and not is_atlas:
         mask_data = np.asarray(brain_mask, dtype=bool)
         if mask_data.shape != data.shape:
             if segmentation_img is None:
@@ -1652,13 +1652,41 @@ def _render_montage(
         # Work inside ICV and keep every finite voxel
         valmask3d = np.isfinite(data) & mask_data
     else:
-        # Atlas maps must accept zero as a valid value.
-        valmask3d = np.isfinite(data)
+        if is_atlas:
+            # Build atlas display support from segmentation labels when available.
+            atlas_support = None
+            if segmentation_img is not None:
+                from nibabel.processing import resample_from_to
+
+                target = (data.shape, img.affine)
+                seg_img = segmentation_img
+                if (
+                    segmentation_img.shape != data.shape
+                    or not np.allclose(segmentation_img.affine, img.affine)
+                ):
+                    seg_img = resample_from_to(segmentation_img, target, order=0)
+                seg = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+                atlas_support = np.isfinite(seg) & (seg > 0.5)
+            if atlas_support is None:
+                finite = np.isfinite(data)
+                try:
+                    from scipy.ndimage import binary_closing, binary_fill_holes
+
+                    atlas_support = binary_fill_holes(
+                        binary_closing(finite, structure=np.ones((3,3,3), bool))
+                    )
+                except Exception:
+                    atlas_support = finite
+            valmask3d = atlas_support.astype(bool)
+        else:
+            # Non-atlas, no explicit brain mask – accept all finite voxels.
+            valmask3d = np.isfinite(data)
     # Use head/ICV to frame the crop whenever we have it
     if brain_mask is not None and not is_atlas:
         union_xy = np.any(brain_mask, axis=2)
     else:
-        union_xy = np.any(valmask3d, axis=2) if not is_atlas else np.ones(data.shape[:2], bool)
+        # For atlas maps, frame by the atlas support, not by "all ones".
+        union_xy = np.any(valmask3d, axis=2)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
@@ -1903,14 +1931,8 @@ def _render_montage(
         mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
         mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
 
-        # For diffusion, compute cutoff from in-brain only
-        if is_diffusion:
-            finite_vals_local = slc[np.isfinite(slc) & mask_slice_crop]
-            if finite_vals_local.size:
-                thr = np.percentile(finite_vals_local, 0.1)
-                eps_dyn = max(thr, 1e-6)
-            mask_slice_crop &= slc > eps_dyn
-        elif brain_mask is None and job.mask_zero:
+        # Value clipping only for explicit mask_zero jobs, never for atlas/diffusion support logic.
+        if (brain_mask is None) and job.mask_zero and not is_atlas:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
                 cutoff = np.percentile(finite_vals, 0.1)
@@ -1919,9 +1941,12 @@ def _render_montage(
                 eps_dyn = 1e-6
             mask_slice_crop &= slc > eps_dyn
 
-        # Keep atlas data literal where finite; background stays transparent.
-        slc_filled = np.array(slc, copy=True)
-        slc_filled[~mask_slice_crop] = 0.0
+        # Atlas: treat NaNs as zeros inside support so parcels render continuous.
+        if is_atlas:
+            slc_filled = np.where(np.isfinite(slc), slc, 0.0)
+        else:
+            slc_filled = np.array(slc, copy=True)
+            slc_filled[~mask_slice_crop] = 0.0
         slc_render = slc_filled.astype(np.float32)
         mask_render = mask_slice_crop
         union_render = union_crop
@@ -1934,14 +1959,9 @@ def _render_montage(
                 anti_aliasing=False if is_atlas else True,
             ).astype(np.float32)
             if is_atlas:
-                mask_render = resize(
-                    mask_slice_crop.astype(np.uint8),
-                    render_shape,
-                    order=0,
-                    preserve_range=True,
-                    anti_aliasing=False,
-                ).astype(bool)
-                union_render = np.ones(render_shape, bool)
+                # Keep support-consistent masks after raster change.
+                mask_render = _resize_mask(mask_slice_crop, render_shape)
+                union_render = mask_render.copy()
             else:
                 mask_render = _resize_mask(mask_slice_crop, render_shape)
                 union_render = _resize_mask(union_crop, render_shape)
@@ -1952,7 +1972,11 @@ def _render_montage(
             valid_mask = binary_fill_holes(binary_closing(valid_mask, structure=np.ones((3,3), bool)))
         except Exception:
             pass
-        arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
+        # Atlas: do NOT mask on NaN after we replaced them with zeros; just respect the support.
+        if is_atlas:
+            arr = np.ma.array(slc_render, mask=(~valid_mask))
+        else:
+            arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
         # use a local min/max so low-but-real values remain visible.
         scale_y = render_shape[0] / max(1, slc.shape[0])
