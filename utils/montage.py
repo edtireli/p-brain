@@ -1595,6 +1595,7 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
+    # Always trust ICV/head to fence the brain for voxelwise diffusion
     if brain_mask is not None:
         mask_data = np.asarray(brain_mask, dtype=bool)
         if mask_data.shape != data.shape:
@@ -1617,15 +1618,16 @@ def _render_montage(
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
             mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
         brain_mask = mask_data
-        # For diffusion, trust finite voxels to avoid mask pinholes
-        if is_diffusion:
-            valmask3d = np.isfinite(data)
-        else:
-            valmask3d = np.isfinite(data) & mask_data
+        # Diffusion voxelwise must be fenced by ICV
+        valmask3d = np.isfinite(data) & mask_data
     else:
         # Atlas maps must accept zero as a valid value.
         valmask3d = np.isfinite(data)
-    union_xy = np.any(valmask3d, axis=2) if not is_atlas else np.ones(data.shape[:2], bool)
+    # Use head/ICV to frame the crop whenever we have it
+    if brain_mask is not None and not is_atlas:
+        union_xy = np.any(brain_mask, axis=2)
+    else:
+        union_xy = np.any(valmask3d, axis=2) if not is_atlas else np.ones(data.shape[:2], bool)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
@@ -1656,7 +1658,8 @@ def _render_montage(
         cmap = cmap.with_extremes(bad=(0, 0, 0, 0))
     else:
         under_rgba = list(cmap(0.0))
-        under_rgba[-1] = 0.45
+        # Kill low-value haze for diffusion
+        under_rgba[-1] = 0.0 if is_diffusion else 0.45
         cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
 
     fig, axes = plt.subplots(
@@ -1866,13 +1869,13 @@ def _render_montage(
         mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
         mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
 
-        # For diffusion, drop tiny magnitudes so background or CSF at ~0 does not paint.
+        # For diffusion, compute cutoff from in-brain only
         if is_diffusion:
-            finite_vals_local = slc[np.isfinite(slc)]
+            finite_vals_local = slc[np.isfinite(slc) & mask_slice_crop]
             if finite_vals_local.size:
                 thr = np.percentile(finite_vals_local, 0.1)
                 eps_dyn = max(thr, 1e-6)
-                mask_slice_crop &= slc > eps_dyn
+            mask_slice_crop &= slc > eps_dyn
         elif brain_mask is None and job.mask_zero:
             finite_vals = slc[np.isfinite(slc) & (slc > 0)]
             if finite_vals.size:
@@ -1928,22 +1931,28 @@ def _render_montage(
         )
         alpha_values = overlay_alpha * alpha_mask
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
-        if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
-            loc_vmin = float(np.nanmin(finite_vals))
-            loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
-            if loc_vmax > loc_vmin:
-                local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
-                ax.imshow(arr, cmap=cmap, norm=local_norm,
-                          interpolation="nearest" if is_atlas else "bilinear",
-                          origin="upper", alpha=alpha_values, extent=extent)
+        # Keep diffusion on the global scale to avoid slice-to-slice contrast jumps
+        if is_diffusion:
+            ax.imshow(arr, cmap=cmap, norm=norm,
+                      interpolation="bilinear",
+                      origin="upper", alpha=alpha_values, extent=extent)
+        else:
+            if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
+                loc_vmin = float(np.nanmin(finite_vals))
+                loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
+                if loc_vmax > loc_vmin:
+                    local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
+                    ax.imshow(arr, cmap=cmap, norm=local_norm,
+                              interpolation="nearest" if is_atlas else "bilinear",
+                              origin="upper", alpha=alpha_values, extent=extent)
+                else:
+                    ax.imshow(arr, cmap=cmap, norm=norm,
+                              interpolation="nearest" if is_atlas else "bilinear",
+                              origin="upper", alpha=alpha_values, extent=extent)
             else:
                 ax.imshow(arr, cmap=cmap, norm=norm,
                           interpolation="nearest" if is_atlas else "bilinear",
                           origin="upper", alpha=alpha_values, extent=extent)
-        else:
-            ax.imshow(arr, cmap=cmap, norm=norm,
-                      interpolation="nearest" if is_atlas else "bilinear",
-                      origin="upper", alpha=alpha_values, extent=extent)
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
