@@ -1356,31 +1356,53 @@ def _map_bbox_from_ref(ref_bbox: Dict[str, float], shape_rot: Sequence[int]) -> 
     return r0, r1, c0, c1
 
 
-def _map_z_from_ref(z_fracs: np.ndarray, nz: int) -> np.ndarray:
+def _map_z_from_ref(
+    z_fracs: np.ndarray,
+    nz: int,
+    *,
+    zmin: int | None = None,
+    zmax: int | None = None,
+) -> np.ndarray:
     z = np.asarray(z_fracs, dtype=np.float64)
     if nz <= 0 or z.size == 0:
         return np.zeros(z.size, dtype=np.intp)
 
-    idx = np.rint(z * (nz - 1)).astype(np.intp, copy=False)
-    idx = np.clip(idx, 0, nz - 1)
+    if zmin is None:
+        zmin = 0
+    if zmax is None:
+        zmax = nz - 1
+
+    zmin = int(max(0, min(zmin, nz - 1)))
+    zmax = int(max(zmin, min(zmax, nz - 1)))
+    span = max(1, zmax - zmin)
+
+    idx = np.rint(z * span).astype(np.intp, copy=False) + zmin
+    idx = np.clip(idx, zmin, zmax)
 
     if idx.size == 0:
         return idx
 
-    # Parcel montages rely on the mapped indices covering the full slab of the
-    # volume. Floating point rounding can occasionally shift the extrema just
-    # inside the [0, 1] interval, which would otherwise drop the first/last
-    # slices after rounding. Guard against this by forcing the endpoints to be
-    # included whenever the target has at least one slice.
-    idx[0] = 0
-    idx[-1] = nz - 1
+    idx[0] = zmin
+    idx[-1] = zmax
 
     if idx.size > 1:
         for i in range(1, idx.size):
             if idx[i] <= idx[i - 1]:
-                idx[i] = min(nz - 1, idx[i - 1] + 1)
+                idx[i] = min(zmax, idx[i - 1] + 1)
 
     return idx
+
+
+def _slice_valid_bounds(
+    primary: np.ndarray | None, fallback: np.ndarray | None
+) -> tuple[int | None, int | None]:
+    if primary is not None and primary.size and primary.any():
+        indices = np.flatnonzero(primary)
+        return int(indices[0]), int(indices[-1])
+    if fallback is not None and fallback.size and fallback.any():
+        indices = np.flatnonzero(fallback)
+        return int(indices[0]), int(indices[-1])
+    return None, None
 
 
 def _resize_mask(mask: np.ndarray, target_shape: Sequence[int]) -> np.ndarray:
@@ -1493,6 +1515,9 @@ def _render_montage(
     if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
         img = resample_from_to(img, target, order=0 if is_atlas else 1)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
+    slice_valid_initial = (
+        np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
+    )
     # Skip smoothing for atlas maps to avoid jagged rims and value bleeding.
     if not is_atlas:
         try:
@@ -1538,7 +1563,10 @@ def _render_montage(
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
+
+    slice_valid = np.any(valmask3d, axis=(0, 1)) if valmask3d.ndim == 3 else None
+    zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax)
     if z_indices.size < rows * cols:
         pad_value = z_indices[-1] if z_indices.size else 0
         z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
@@ -1577,6 +1605,8 @@ def _render_montage(
     overlay_vmax = overlay.get("vmax") if overlay else None
     overlay_data = None
     overlay_mask_data = None
+    overlay_slice_valid_initial: np.ndarray | None = None
+    overlay_slice_valid_masked: np.ndarray | None = None
     overlay_alpha_data = None
     overlay_z_indices = None
     if overlay_volume is not None:
@@ -1603,6 +1633,8 @@ def _render_montage(
             if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_affine, img.affine):
                 ovl_img = resample_from_to(ovl_img, target, order=1)
             overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
+            if overlay_data.ndim == 3:
+                overlay_slice_valid_initial = np.isfinite(overlay_data).any(axis=(0, 1))
             if alpha_img is not None:
                 if alpha_img.shape[:3] != data.shape[:3] or not np.allclose(
                     alpha_img.affine, img.affine
@@ -1645,9 +1677,14 @@ def _render_montage(
                         except Exception:  # noqa: BLE001
                             pass
                         overlay_mask_data[:, :, idx] = slice_mask
+                if overlay_mask_data.ndim == 3:
+                    overlay_slice_valid_masked = overlay_mask_data.any(axis=(0, 1))
             if overlay_data is not None:
+                ovl_zmin, ovl_zmax = _slice_valid_bounds(
+                    overlay_slice_valid_initial, overlay_slice_valid_masked
+                )
                 overlay_z_indices = _map_z_from_ref(
-                    ref_info["z_fracs"], overlay_data.shape[2]
+                    ref_info["z_fracs"], overlay_data.shape[2], zmin=ovl_zmin, zmax=ovl_zmax
                 )
 
     nz = data.shape[2]
@@ -1859,6 +1896,9 @@ def _render_projection_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
+    slice_valid_initial = (
+        np.isfinite(data).any(axis=(0, 1)) if data.ndim == 3 else np.array([], dtype=bool)
+    )
     data = _fill_empty_slices_nearest(data)
 
     finite_mask = np.isfinite(data)
@@ -1871,7 +1911,11 @@ def _render_projection_montage(
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
     r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
-    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2])
+    slice_valid = np.any(finite_mask, axis=(0, 1)) if finite_mask.ndim == 3 else None
+    zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    z_indices = _map_z_from_ref(
+        ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax
+    )
     if z_indices.size < rows * cols:
         pad_value = z_indices[-1] if z_indices.size else 0
         z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
