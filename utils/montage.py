@@ -1626,7 +1626,7 @@ def _render_montage(
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
-    # Always trust ICV/head to fence the brain for voxelwise diffusion
+    # Fence the domain by ICV/head when available
     if brain_mask is not None:
         mask_data = np.asarray(brain_mask, dtype=bool)
         if mask_data.shape != data.shape:
@@ -1649,7 +1649,7 @@ def _render_montage(
             seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
             mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
         brain_mask = mask_data
-        # Diffusion voxelwise must be fenced by ICV
+        # Work inside ICV and keep every finite voxel
         valmask3d = np.isfinite(data) & mask_data
     else:
         # Atlas maps must accept zero as a valid value.
