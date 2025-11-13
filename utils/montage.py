@@ -341,8 +341,7 @@ def generate_parametric_montages(
                 output_name = job.output_base + suffix + job.output_ext
                 out_path = os.path.join(out_dir, output_name)
 
-                # Parcel/atlas montages should display all parcel voxels without the
-                # global brain mask so that no atlas regions are suppressed.
+                # Parcel/atlas montages should display every finite voxel from the map.
                 job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
 
                 _render_montage(
@@ -1372,23 +1371,25 @@ def _render_montage(
     brain_mask: np.ndarray | None = None,
     segmentation_img: nib.Nifti1Image | None = None,
 ) -> None:
+    def _is_atlas_job(j: MapJob) -> bool:
+        return j.base.endswith("_map_atlas")
     img = nib.load(map_path)
-    # Resample every map to the DCE reference grid for slice parity
+    # Resample to DCE grid. Atlas maps use nearest neighbour to keep parcels crisp.
     from nibabel.processing import resample_from_to
-
     target = (reference_img.shape, reference_img.affine)
     if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
-        img = resample_from_to(img, target, order=1)
+        img = resample_from_to(img, target, order=0 if _is_atlas_job(job) else 1)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
-    # Light display smoothing for coarse diffusion grids
-    try:
-        zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
-        zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
-        ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
-        if ratio > 1.4:
-            data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
-    except Exception:
-        pass
+    # Skip smoothing for atlas maps to avoid jagged rims and value bleeding.
+    if not _is_atlas_job(job):
+        try:
+            zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
+            zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
+            ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
+            if ratio > 1.4:
+                data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
+        except Exception:
+            pass
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
@@ -1416,7 +1417,8 @@ def _render_montage(
         brain_mask = mask_data
         valmask3d = np.isfinite(data) & mask_data
     else:
-        valmask3d = np.isfinite(data) & (np.abs(data) > EPS)
+        # Atlas maps must accept zero as a valid value.
+        valmask3d = np.isfinite(data)
     union_xy = np.any(valmask3d, axis=2)
     union_xy_r = np.rot90(union_xy, ref_info["rotate"])
 
@@ -1638,6 +1640,7 @@ def _render_montage(
                 eps_dyn = 1e-6
             mask_slice_crop &= slc > eps_dyn
 
+        # Keep atlas data literal where finite; background stays transparent.
         slc_filled = np.array(slc, copy=True)
         slc_filled[~mask_slice_crop] = 0.0
         slc_render = slc_filled.astype(np.float32)
@@ -1647,11 +1650,11 @@ def _render_montage(
             slc_render = resize(
                 slc_render,
                 render_shape,
-                order=1,
+                order=0 if _is_atlas_job(job) else 1,
                 preserve_range=True,
-                anti_aliasing=True,
+                anti_aliasing=False if _is_atlas_job(job) else True,
             ).astype(np.float32)
-            mask_render = _resize_mask(mask_slice_crop, render_shape)
+            mask_render = _resize_mask(mask_slice_crop, render_shape) if not _is_atlas_job(job) else _resize_mask(mask_slice_crop.astype(float), render_shape)
             union_render = _resize_mask(union_crop, render_shape)
         # seal tiny pinholes from resampling
         try:
@@ -1660,10 +1663,7 @@ def _render_montage(
             valid_mask = _bclose(union_render & mask_render, footprint=np.ones((2, 2), bool))
         except Exception:
             valid_mask = union_render & mask_render
-        arr = np.ma.array(
-            slc_render,
-            mask=(~valid_mask) | (~np.isfinite(slc_render)),
-        )
+        arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
         # use a local min/max so low-but-real values remain visible.
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
@@ -1672,35 +1672,17 @@ def _render_montage(
             loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
             if loc_vmax > loc_vmin:
                 local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
-                ax.imshow(
-                    arr,
-                    cmap=cmap,
-                    norm=local_norm,
-                    interpolation="bilinear",
-                    origin="upper",
-                    alpha=overlay_alpha,
-                    extent=extent,
-                )
+                ax.imshow(arr, cmap=cmap, norm=local_norm,
+                          interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                          origin="upper", alpha=overlay_alpha, extent=extent)
             else:
-                ax.imshow(
-                    arr,
-                    cmap=cmap,
-                    norm=norm,
-                    interpolation="bilinear",
-                    origin="upper",
-                    alpha=overlay_alpha,
-                    extent=extent,
-                )
+                ax.imshow(arr, cmap=cmap, norm=norm,
+                          interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                          origin="upper", alpha=overlay_alpha, extent=extent)
         else:
-            ax.imshow(
-                arr,
-                cmap=cmap,
-                norm=norm,
-                interpolation="bilinear",
-                origin="upper",
-                alpha=overlay_alpha,
-                extent=extent,
-            )
+            ax.imshow(arr, cmap=cmap, norm=norm,
+                      interpolation="nearest" if _is_atlas_job(job) else "bilinear",
+                      origin="upper", alpha=overlay_alpha, extent=extent)
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
