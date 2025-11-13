@@ -1397,6 +1397,21 @@ def _render_montage(
                     )
             if overlay_mask_data is None and overlay_data is not None:
                 overlay_mask_data = np.isfinite(overlay_data)
+            if overlay_mask_data is not None:
+                overlay_mask_data = np.asarray(overlay_mask_data, dtype=bool)
+                if overlay_mask_data.ndim == 3 and overlay_mask_data.shape[2]:
+                    footprint2d = np.ones((3, 3), dtype=bool)
+                    for idx in range(overlay_mask_data.shape[2]):
+                        slice_mask = overlay_mask_data[:, :, idx]
+                        try:
+                            slice_mask = binary_fill_holes(slice_mask)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            slice_mask = binary_closing(slice_mask, footprint=footprint2d)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        overlay_mask_data[:, :, idx] = slice_mask
             if overlay_data is not None:
                 overlay_z_indices = _map_z_from_ref(
                     ref_info["z_fracs"], overlay_data.shape[2]
