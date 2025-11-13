@@ -670,23 +670,35 @@ def _get_cmap(name: str | None) -> mpl.colors.Colormap:
         return mpl.colormaps["viridis"].copy()
 
 
+def _dim_rgba(rgba: tuple[float, float, float, float], gain: float = 0.55) -> tuple[float, float, float, float]:
+    """Darken an RGBA color without touching alpha."""
+    r, g, b, a = rgba
+    return (r * gain, g * gain, b * gain, a)
+
+
+def _opaque_for_image(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
+    """
+    Make all sample colors fully opaque so overlays never mix with the axes facecolor.
+    Keep NaN ('bad') fully transparent so the underlay shows through.
+    """
+
+    lut = cmap(np.linspace(0, 1, getattr(cmap, "N", 256)))
+    lut[:, -1] = 1.0
+    out = mpl.colors.ListedColormap(lut, name=getattr(cmap, "name", "cm") + "_imgopaque")
+    # preserve chosen extremes but ensure they are opaque
+    under = list(cmap(0.0))
+    under[-1] = 1.0
+    over = list(cmap(1.0))
+    over[-1] = 1.0
+    out.set_under(tuple(under))
+    out.set_over(tuple(over))
+    out.set_bad((0, 0, 0, 0))  # NaNs remain holes
+    return out
+
+
 def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
-    """Return an opaque clone of ``cmap`` for colorbars, preserving hues."""
-    cm = cmap.copy()
-    try:
-        lut = cm(np.linspace(0, 1, cm.N))
-        lut[:, -1] = 1.0
-        cm = mpl.colors.ListedColormap(lut, name=getattr(cmap, "name", "cm") + "_opaque")
-        # Force extremes fully opaque as well
-        a0 = list(cmap(0.0))
-        a0[-1] = 1.0
-        a1 = list(cmap(1.0))
-        a1[-1] = 1.0
-        cm.set_bad(tuple(a0))
-        cm.set_under(tuple(a0))
-        cm.set_over(tuple(a1))
-    except Exception:
-        pass
+    cm = _opaque_for_image(cmap)
+    cm.set_bad(cm(0.0))  # colorbars don't have NaNs; avoid any transparency
     return cm
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
@@ -1676,10 +1688,12 @@ def _render_montage(
     if is_atlas:
         cmap = cmap.with_extremes(bad=(0, 0, 0, 0))
     else:
-        under_rgba = list(cmap(0.0))
-        # Kill low-value haze for diffusion
-        under_rgba[-1] = 0.0 if is_diffusion else 0.45
-        cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
+        # Dim low values by RGB, keep alpha solid. No grey bleed.
+        under_rgba = _dim_rgba(tuple(cmap(0.0)), 0.55)
+        under_rgba = (under_rgba[0], under_rgba[1], under_rgba[2], 1.0)
+        cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=under_rgba)
+    # Make fully opaque variants for image and colorbar
+    cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     fig, axes = plt.subplots(
@@ -1953,26 +1967,50 @@ def _render_montage(
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
         # Keep diffusion on the global scale to avoid slice-to-slice contrast jumps
         if is_diffusion:
-            ax.imshow(arr, cmap=cmap, norm=norm,
-                      interpolation="bilinear",
-                      origin="upper", alpha=alpha_values, extent=extent)
+            ax.imshow(
+                arr,
+                cmap=cmap_img,
+                norm=norm,
+                interpolation="nearest",
+                origin="upper",
+                alpha=alpha_values,
+                extent=extent,
+            )
         else:
             if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
                 loc_vmin = float(np.nanmin(finite_vals))
                 loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
                 if loc_vmax > loc_vmin:
                     local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
-                    ax.imshow(arr, cmap=cmap, norm=local_norm,
-                              interpolation="nearest",
-                              origin="upper", alpha=alpha_values, extent=extent)
+                    ax.imshow(
+                        arr,
+                        cmap=cmap_img,
+                        norm=local_norm,
+                        interpolation="nearest",
+                        origin="upper",
+                        alpha=alpha_values,
+                        extent=extent,
+                    )
                 else:
-                    ax.imshow(arr, cmap=cmap, norm=norm,
-                              interpolation="nearest",
-                              origin="upper", alpha=alpha_values, extent=extent)
+                    ax.imshow(
+                        arr,
+                        cmap=cmap_img,
+                        norm=norm,
+                        interpolation="nearest",
+                        origin="upper",
+                        alpha=alpha_values,
+                        extent=extent,
+                    )
             else:
-                ax.imshow(arr, cmap=cmap, norm=norm,
-                          interpolation="nearest",
-                          origin="upper", alpha=alpha_values, extent=extent)
+                ax.imshow(
+                    arr,
+                    cmap=cmap_img,
+                    norm=norm,
+                    interpolation="nearest",
+                    origin="upper",
+                    alpha=alpha_values,
+                    extent=extent,
+                )
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
@@ -1981,10 +2019,11 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
-    # Match panel background while keeping the bar fully opaque
+    # Match panel background; keep bar fully opaque
     cb.ax.set_facecolor("#e0e0e0")
     try:
         cb.solids.set_edgecolor("face")
+        cb.solids.set_alpha(1.0)
     except Exception:
         pass
     if tick_values:
@@ -2051,8 +2090,10 @@ def _render_projection_montage(
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    under_rgba = list(cmap(0.0)); under_rgba[-1] = 0.45
-    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(under_rgba))
+    under_rgba = _dim_rgba(tuple(cmap(0.0)), 0.55)
+    under_rgba = (under_rgba[0], under_rgba[1], under_rgba[2], 1.0)
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=under_rgba)
+    cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     fig, axes = plt.subplots(
@@ -2108,7 +2149,7 @@ def _render_projection_montage(
         alpha_values = _alpha_feather_slice(valid_mask, zoom_xy)
         ax.imshow(
             arr,
-            cmap=cmap,
+            cmap=cmap_img,
             norm=norm,
             interpolation="nearest",
             origin="upper",
@@ -2124,6 +2165,7 @@ def _render_projection_montage(
     cb.ax.set_facecolor("#e0e0e0")
     try:
         cb.solids.set_edgecolor("face")
+        cb.solids.set_alpha(1.0)
     except Exception:
         pass
     if tick_values:
