@@ -189,3 +189,87 @@ def test_compute_fa_includes_all_brain_tissues(monkeypatch, tmp_path):
     fa_map = saved_images[fa_map_path].get_fdata()
     assert not np.isnan(fa_map).any()
 
+
+def test_heal_metric_mask_edges_recovers_first_and_last_slices():
+    metric_mask = np.zeros((2, 3, 4), dtype=bool)
+    signal_mask = np.zeros_like(metric_mask)
+    raw_metric = np.ones(metric_mask.shape, dtype=np.float32)
+    raw_metric[..., 1:3] = np.nan
+
+    diffusion._heal_metric_mask_edges(metric_mask, signal_mask, raw_metric)
+
+    assert metric_mask[..., 0].all()
+    assert metric_mask[..., -1].all()
+    assert not metric_mask[..., 1:3].any()
+
+
+def test_compute_fa_retains_edge_slices_when_mask_is_empty(monkeypatch, tmp_path):
+    nifti_dir = tmp_path / "NIfTI"
+    analysis_dir = tmp_path / "Analysis"
+    nifti_dir.mkdir()
+    analysis_dir.mkdir()
+
+    dwi_path = nifti_dir / "fake_dwi.nii.gz"
+    dwi_path.write_bytes(b"")
+    bval_path = nifti_dir / "fake.bval"
+    bvec_path = nifti_dir / "fake.bvec"
+    np.savetxt(bval_path, np.array([0.0, 1000.0, 1000.0]))
+    np.savetxt(bvec_path, np.eye(3))
+
+    fa_values = np.linspace(0.1, 0.8, 16, dtype=np.float32).reshape((2, 2, 4))
+    mode_values = np.linspace(0.2, 0.9, 16, dtype=np.float32).reshape((2, 2, 4))
+    diffusion_data = np.ones((*fa_values.shape, 3), dtype=np.float32)
+    signal_mask = np.zeros_like(fa_values, dtype=bool)
+    signal_mask[..., 1:3] = True
+
+    saved_images = {}
+
+    class _EdgeTensorFit:
+        def __init__(self, data: np.ndarray):
+            self._data = data
+            self.fa = fa_values
+            self.md = np.full_like(self.fa, 0.5, dtype=np.float32)
+            self.ad = np.full_like(self.fa, 0.6, dtype=np.float32)
+            self.rd = np.full_like(self.fa, 0.4, dtype=np.float32)
+            self.mode = mode_values
+
+        def predict(self, _gtab):
+            return np.zeros_like(self._data, dtype=np.float32)
+
+    class _EdgeTensorModel:
+        def __init__(self, gtab):
+            self._gtab = gtab
+
+        def fit(self, data: np.ndarray):
+            return _EdgeTensorFit(data)
+
+    monkeypatch.setattr(
+        diffusion,
+        "find_dwi_files",
+        lambda *_args, **_kwargs: (str(dwi_path), str(bval_path), str(bvec_path)),
+    )
+    monkeypatch.setattr(diffusion, "gradient_table", lambda **_kwargs: object())
+    monkeypatch.setattr(diffusion, "TensorModel", _EdgeTensorModel)
+    monkeypatch.setattr(diffusion, "_collect_tissue_masks", lambda *_args: {})
+    monkeypatch.setattr(diffusion, "_ensure_image_directory", lambda *_args: None)
+    monkeypatch.setattr(diffusion, "_plot_metric_histogram", lambda *_args: None)
+    monkeypatch.setattr(diffusion, "_load_atlas_segmentation", lambda *_args: None)
+    monkeypatch.setattr(diffusion, "_load_atlas_segmentation_dce", lambda *_args: None)
+    monkeypatch.setattr(diffusion, "_maybe_resample_to_dce", lambda img, *_args, **_kwargs: img)
+    monkeypatch.setattr(diffusion, "_dwi_signal_mask", lambda *_args, **_kwargs: signal_mask)
+
+    monkeypatch.setattr(diffusion.nib, "load", lambda _path: _FakeLoadedImage(diffusion_data))
+    monkeypatch.setattr(diffusion.nib, "Nifti1Image", lambda data, affine, header: _FakeNiftiImage(data, affine, header))
+    monkeypatch.setattr(diffusion.nib, "save", lambda img, path: saved_images.setdefault(path, img))
+
+    diffusion.compute_fa(
+        str(nifti_dir),
+        str(analysis_dir),
+    )
+
+    fa_map_path = str(analysis_dir / "diffusion" / "fa_map.nii.gz")
+    assert fa_map_path in saved_images
+    fa_map = saved_images[fa_map_path].get_fdata()
+
+    assert np.isfinite(fa_map[..., 0]).all()
+    assert np.isfinite(fa_map[..., -1]).all()

@@ -168,6 +168,38 @@ def _dwi_signal_mask(
     return b0 > thr
 
 
+def _heal_metric_mask_edges(
+    metric_mask: np.ndarray,
+    signal_mask: Optional[np.ndarray],
+    raw_metric_data: np.ndarray,
+) -> None:
+    """Ensure outermost slices survive masking when they contain diffusion signal."""
+
+    if metric_mask.size == 0 or metric_mask.ndim < 3:
+        return
+
+    for edge_index, label in ((0, "first"), (-1, "final")):
+        slice_mask = metric_mask[..., edge_index]
+        if np.any(slice_mask):
+            continue
+
+        if signal_mask is not None:
+            signal_slice = signal_mask[..., edge_index]
+            if np.any(signal_slice):
+                metric_mask[..., edge_index] |= signal_slice
+                print(
+                    f"[!] Expanding metric mask on {label} z-slice based on diffusion signal"
+                )
+                continue
+
+        finite_slice = np.isfinite(raw_metric_data[..., edge_index])
+        if np.any(finite_slice):
+            metric_mask[..., edge_index] |= finite_slice
+            print(
+                f"[!] Expanding metric mask on {label} z-slice based on raw diffusion metrics"
+            )
+
+
 def _maybe_resample_to_dce(
     img: nib.Nifti1Image,
     target: Optional[ResampleTarget],
@@ -1098,10 +1130,7 @@ def compute_fa(
             else brain_mask
         )
 
-        # Edge heal: if diffusion shows signal on last slice while mask is empty there, expand mask on that slice
-        if signal_mask[..., -1].any() and (metric_mask[..., -1].sum() == 0):
-            print("[!] Expanding metric mask on final z-slice based on diffusion signal")
-            metric_mask[..., -1] |= signal_mask[..., -1]
+        _heal_metric_mask_edges(metric_mask, signal_mask, raw_metric_data)
 
         # Apply masking
         metric_data = np.where(metric_mask, raw_metric_data, np.float32(np.nan))
