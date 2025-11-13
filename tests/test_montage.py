@@ -27,3 +27,13 @@ def test_map_z_from_ref_is_monotonic():
     assert np.all(mapped[:-1] <= mapped[1:])
     assert mapped[0] == 0
     assert mapped[-1] == 4
+
+
+def test_map_z_from_ref_respects_valid_bounds():
+    z_fracs = np.linspace(0.0, 1.0, num=8)
+    mapped = montage._map_z_from_ref(z_fracs, 12, zmin=2, zmax=9)
+
+    assert mapped[0] == 2
+    assert mapped[-1] == 9
+    assert np.all(mapped >= 2)
+    assert np.all(mapped <= 9)
