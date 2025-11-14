@@ -1717,14 +1717,25 @@ def _render_montage(
         z_indices = z_indices[: rows * cols]
 
     cmap = _get_cmap(job.cmap_name)
+    # Build normalizer on the display domain. Prefer T1 HEAD when available.
+    head_support_3d = None
+    if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
+        head_support_3d = overlay["mask_head"].astype(bool)
+        if head_support_3d.shape != data.shape:
+            from nibabel.processing import resample_from_to
+            head_img = nib.Nifti1Image(head_support_3d.astype(np.float32), reference_img.affine)
+            head_img = resample_from_to(head_img, (data.shape, img.affine), order=0)
+            head_support_3d = np.asarray(head_img.get_fdata(), dtype=np.float32) > 0.5
     norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
+    if is_atlas and head_support_3d is not None:
+        norm_data = np.where(head_support_3d, norm_data, np.nan)
     norm, tick_values = _build_normalizer(
         norm_data, job, mask_zero_override=False if brain_mask is not None else None
     )
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    # Keep sub-vmin faint so low values remain visible; NaNs remain invisible
+    # NaNs invisible everywhere. Voxelwise keeps a dim "under" inside T1.
     if is_atlas:
         cmap = cmap.with_extremes(bad=(0, 0, 0, 0))
     else:
@@ -1882,7 +1893,11 @@ def _render_montage(
         if np.isfinite(slc).sum() == 0:
             print(f"[montage] z={zi}: all NaN after mask/crop")
 
+        # Display support from T1 HEAD if present; fallback to union of valid voxels.
         union_crop = union_xy_r[r0:r1, c0:c1]
+        if overlay is not None and overlay_mask_data is not None:
+            # overlay_union_crop already respects the T1 HEAD footprint
+            union_crop = overlay_union_crop
         extent = (0.0, 1.0, 1.0, 0.0)
         overlay_union_crop = union_crop
         render_shape = slc.shape
@@ -1970,14 +1985,10 @@ def _render_montage(
                 preserve_range=True,
                 anti_aliasing=False if is_atlas else True,
             ).astype(np.float32)
-            if is_atlas:
-                # Keep support-consistent masks after raster change.
-                mask_render = _resize_mask(mask_slice_crop, render_shape)
-                union_render = mask_render.copy()
-            else:
-                mask_render = _resize_mask(mask_slice_crop, render_shape)
-                union_render = _resize_mask(union_crop, render_shape)
-        # seal tiny pinholes from resampling
+            # Keep support-consistent masks after raster change.
+            mask_render = _resize_mask(mask_slice_crop, render_shape)
+            union_render = _resize_mask(union_crop, render_shape)
+        # Final visible domain = T1 HEAD support ∩ map support
         valid_mask = union_render & mask_render
         try:
             from scipy.ndimage import binary_closing, binary_fill_holes
