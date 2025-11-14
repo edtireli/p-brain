@@ -4,8 +4,9 @@ Heavy debug mode added. Set P_BRAIN_DEBUG_TRACKS=1 to enable extra prints.
 Also writes a JSON snapshot alongside outputs for post-mortem inspection.
 """
 
-import platform
 from __future__ import annotations
+
+import platform
 from functools import wraps
 
 import inspect
