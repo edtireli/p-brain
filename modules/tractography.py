@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
@@ -35,6 +36,22 @@ from dipy.tracking.streamline import Streamlines
 from dipy.tracking.utils import seeds_from_mask
 
 from modules.opt08_fa import find_dwi_files
+
+
+def _canonical_affine(affine: np.ndarray) -> np.ndarray:
+    """Return a 4x4 voxel-to-world affine derived from ``affine``."""
+
+    arr = np.asarray(affine, dtype=np.float64)
+    if arr.shape == (4, 4):
+        return np.array(arr, copy=True)
+
+    if arr.ndim != 2 or arr.shape[0] < 4 or arr.shape[1] < 4:
+        raise ValueError("Expected affine with at least 4x4 elements")
+
+    canonical = np.eye(4, dtype=arr.dtype)
+    canonical[:3, :3] = arr[:3, :3]
+    canonical[:3, 3] = arr[:3, 3]
+    return canonical
 
 
 @dataclass
@@ -92,7 +109,11 @@ def _render_with_fury(
     scene.background(background_color)
 
     colours = dipy_colormap.line_colors(streamlines)
-    stream_actor = dipy_actor.line(streamlines, colours, linewidth=1.0)
+    stream_actor = dipy_actor.line(
+        streamlines,
+        colors=colours,
+        linewidth=1.0,
+    )
     scene.add(stream_actor)
 
     # Gently rotate the scene so fibres are rendered with depth cues.
@@ -101,7 +122,22 @@ def _render_with_fury(
     scene.yaw(20)
     scene.zoom(1.2)
 
-    dipy_window.snapshot(scene, fname=output_path, size=(1600, 1600))
+    snapshot_kwargs = {"fname": output_path, "size": (1600, 1600)}
+    try:
+        signature = inspect.signature(dipy_window.snapshot)
+    except (TypeError, ValueError):  # pragma: no cover - rare introspection issues
+        signature = None
+    if signature is not None and "offscreen" in signature.parameters:
+        snapshot_kwargs["offscreen"] = True
+
+    try:
+        dipy_window.snapshot(scene, **snapshot_kwargs)
+    except Exception as exc:  # noqa: BLE001 - propagate to caller for fallback
+        raise RuntimeError("FURY snapshot failed") from exc
+    finally:
+        clear = getattr(scene, "clear", None)
+        if callable(clear):  # pragma: no branch - safety guard for older fury
+            clear()
 
 
 def _render_with_matplotlib(
@@ -147,7 +183,7 @@ def _aggregate_streamline_colours(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return per-voxel colour averages and streamline densities."""
 
-    inv_affine = np.linalg.inv(affine)
+    inv_affine = np.linalg.inv(_canonical_affine(affine))
     counts = np.zeros(volume_shape, dtype=np.float32)
     colour_sum = np.zeros(volume_shape + (3,), dtype=np.float32)
 
@@ -221,7 +257,7 @@ def _render_montage(
         bg_min, bg_max = float(background.min()), float(background.max())
 
     colours, counts = _aggregate_streamline_colours(
-        streamlines, reference_img.affine, background.shape
+        streamlines, _canonical_affine(reference_img.affine), background.shape
     )
 
     z_slices = np.linspace(0, background.shape[2] - 1, 6, dtype=int)
@@ -290,6 +326,7 @@ def generate_tractography(
     dwi_path, bval_path, bvec_path = found
 
     img = nib.load(dwi_path)
+    voxel_to_world = _canonical_affine(img.affine)
 
     streamlines: Optional[Streamlines] = None
     if os.path.exists(tract_path):
@@ -335,12 +372,12 @@ def generate_tractography(
             return_sh=False,
         )
 
-        seeds = seeds_from_mask(wm_mask, density=1, affine=img.affine)
+        seeds = seeds_from_mask(wm_mask, density=1, affine=voxel_to_world)
         streamline_generator = LocalTracking(
             peaks,
             stopping_criterion,
             seeds,
-            affine=img.affine,
+            affine=voxel_to_world,
             step_size=0.5,
             return_all=False,
         )
@@ -351,7 +388,9 @@ def generate_tractography(
                 "Tractography produced no streamlines – check diffusion quality"
             )
 
-        tractogram = nib_streamlines.Tractogram(streamlines, affine_to_rasmm=img.affine)
+        tractogram = nib_streamlines.Tractogram(
+            streamlines, affine_to_rasmm=voxel_to_world
+        )
         nib_streamlines.save(tractogram, tract_path)
     else:
         fa_candidates = (
@@ -376,7 +415,14 @@ def generate_tractography(
 
     render_path = os.path.join(tract_image_dir, "tractography_render.png")
     if _FURY_AVAILABLE:
-        _render_with_fury(streamlines, render_path)
+        try:
+            _render_with_fury(streamlines, render_path)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully
+            print(
+                "[tracks] FURY rendering failed – falling back to matplotlib:",
+                str(exc),
+            )
+            _render_with_matplotlib(streamlines, render_path)
     else:  # pragma: no cover - fallback depends on runtime environment
         _render_with_matplotlib(streamlines, render_path)
 
@@ -397,7 +443,9 @@ def generate_tractography(
                 tensor_fit = tensor_model.fit(data)
                 fa_volume = tensor_fit.fa.astype(np.float32)
                 fa_volume = np.nan_to_num(fa_volume, nan=0.0, posinf=0.0, neginf=0.0)
-            background_img = nib.Nifti1Image(fa_volume, img.affine, img.header)
+            background_img = nib.Nifti1Image(
+                fa_volume, voxel_to_world, img.header
+            )
         montage_path = os.path.join(tract_image_dir, "tractography_montage.png")
         _render_montage(streamlines, img, background_img, montage_path, title=montage_title)
 
