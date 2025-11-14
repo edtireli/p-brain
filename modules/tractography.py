@@ -1,7 +1,7 @@
 """Utilities to compute and visualise diffusion tractography streamlines."""
 
 from __future__ import annotations
-from functools import wraps
+from functools import reduce, wraps
 
 import inspect
 import multiprocessing as mp
@@ -56,20 +56,6 @@ def _canonical_affine(affine: np.ndarray) -> np.ndarray:
     canonical[:3, 3] = arr[:3, 3]
     return canonical
 
-
-def _squeeze_dwi_4d(arr: np.ndarray) -> np.ndarray:
-    """
-    Ensure DWI data is 4D (X,Y,Z,N). Handle Philips/RSI 5D (X,Y,Z,1,N).
-    """
-
-    a = np.asarray(arr)
-    if a.ndim == 5 and a.shape[3] == 1:
-        a = a[..., 0, :]
-    if a.ndim != 4:
-        raise ValueError(f"Expected 4D DWI (X,Y,Z,N), got shape {a.shape}")
-    return a
-
-
 @dataclass
 class TractographyOutputs:
     """Container describing generated tractography artefacts."""
@@ -77,6 +63,57 @@ class TractographyOutputs:
     tract_path: str
     render_path: Optional[str] = None
     montage_path: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# DWI normalisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _as_4d_dwi(data: np.ndarray, bvals: np.ndarray) -> np.ndarray:
+    """
+    Return a 4-D array shaped (X, Y, Z, N) from potentially 5-D inputs.
+    We pick the gradient dimension by matching the axis whose length equals
+    len(bvals). Any remaining singleton axes beyond Z are squeezed.
+    """
+
+    arr = np.asarray(data)
+    if arr.ndim == 4:
+        return arr
+    if arr.ndim < 4:
+        raise ValueError(f"DWI must be >=4-D, got {arr.ndim}D")
+
+    grad_len = int(bvals.size)
+    grad_axis = None
+    for ax in range(3, arr.ndim):
+        if arr.shape[ax] == grad_len:
+            grad_axis = ax
+            break
+    if grad_axis is None:
+        grad_axis = arr.ndim - 1
+
+    arr = np.moveaxis(arr, grad_axis, -1)
+
+    if arr.ndim > 4:
+        to_squeeze: list[int] = []
+        for ax in range(3, arr.ndim - 1):
+            if arr.shape[ax] == 1:
+                to_squeeze.append(ax)
+        if to_squeeze:
+            arr = np.squeeze(arr, axis=tuple(to_squeeze))
+
+    if arr.ndim != 4:
+        raise ValueError(
+            f"Failed to coerce DWI to 4-D. Shape after coercion: {arr.shape}"
+        )
+    return arr
+
+
+def _shape_str(a: np.ndarray) -> str:
+    try:
+        return "x".join(map(str, a.shape))
+    except Exception:
+        return "<unknown>"
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +506,9 @@ def generate_tractography(
 
     dwi_path, bval_path, bvec_path = found
 
-    img = nib.load(dwi_path)  # may be 5D for Philips RSI
-    voxel_to_world = _canonical_affine(img.affine)
+    img = nib.load(dwi_path)
+    # Force a 4x4 voxel->world affine even if header carries higher-dim transforms.
+    voxel_to_world = _canonical_affine(getattr(img, "affine", np.eye(4)))
 
     streamlines: Optional[Streamlines] = None
     if os.path.exists(tract_path):
@@ -484,18 +522,24 @@ def generate_tractography(
     fa_volume: Optional[np.ndarray] = None
 
     if streamlines is None:
-        # Force strict 4D (X,Y,Z,N) for all DIPY ops
-        data = _squeeze_dwi_4d(img.get_fdata(dtype=np.float32))
+        raw = img.get_fdata(dtype=np.float32)
 
         bvals = np.loadtxt(bval_path)
         bvecs = np.loadtxt(bvec_path)
         if bvecs.ndim == 2 and bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
             bvecs = bvecs.T
+        data = _as_4d_dwi(raw, bvals)
+
         if data.shape[-1] != bvals.size or bvecs.shape != (bvals.size, 3):
             raise ValueError(
                 f"bvals/bvecs mismatch. volumes={data.shape[-1]}, "
                 f"bvals={bvals.size}, bvecs={bvecs.shape}"
             )
+        print(
+            f"[tracks] DWI shape={_shape_str(data)} | "
+            f"bvals={bvals.size} | "
+            f"affine(vox->mm) shape={voxel_to_world.shape}"
+        )
 
         gtab = gradient_table(bvals=bvals, bvecs=bvecs)
         tensor_model = TensorModel(gtab)
@@ -520,9 +564,11 @@ def generate_tractography(
             min_separation_angle=25,
             mask=wm_mask,
             return_sh=False,
+            # Make the direction-getter live in the same explicit 4x4 space.
+            affine=voxel_to_world,
         )
 
-        # Generate seeds in voxel space; LocalTracking will use affine to map
+        # Keep seeds in voxel space; LocalTracking will lift to mm using affine.
         seeds = seeds_from_mask(wm_mask, density=1)
         streamline_generator = LocalTracking(
             peaks,
@@ -540,7 +586,9 @@ def generate_tractography(
             )
 
         tractogram = nib_streamlines.Tractogram(
-            streamlines, affine_to_rasmm=voxel_to_world
+            streamlines,
+            # Streamlines are in world (mm) because we provided affine to LocalTracking.
+            affine_to_rasmm=voxel_to_world,
         )
         nib_streamlines.save(tractogram, tract_path)
     else:
@@ -584,11 +632,12 @@ def generate_tractography(
         else:
             if fa_volume is None:
                 # When tractography was precomputed we may not have FA in-memory.
-                data = _squeeze_dwi_4d(img.get_fdata(dtype=np.float32))
+                raw = img.get_fdata(dtype=np.float32)
                 bvals = np.loadtxt(bval_path)
                 bvecs = np.loadtxt(bvec_path)
                 if bvecs.ndim == 2 and bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
                     bvecs = bvecs.T
+                data = _as_4d_dwi(raw, bvals)
                 gtab = gradient_table(bvals=bvals, bvecs=bvecs)
                 tensor_model = TensorModel(gtab)
                 tensor_fit = tensor_model.fit(data)
