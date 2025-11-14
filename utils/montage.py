@@ -697,19 +697,8 @@ def _opaque_for_image(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
 
 
 def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
-    """
-    Make a colorbar-safe copy:
-      - fully opaque
-      - avoid using the exact endpoints for the bar swatches
-      - no transparent 'bad'
-    """
     cm = _opaque_for_image(cmap)
-    # Nudge the "under/over" colors away from the exact endpoints
-    low  = cm(0.02)
-    high = cm(0.98)
-    cm.set_under(low)
-    cm.set_over(high)
-    cm.set_bad(low)
+    cm.set_bad(cm(0.0))  # colorbars don't have NaNs; avoid any transparency
     return cm
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
@@ -1614,22 +1603,7 @@ def _render_montage(
         except Exception:
             pass
     else:
-        # Atlas: keep slices continuous and fill interior NaN islands within parcels
         data = _fill_empty_slices_nearest(data)
-        try:
-            atlas_support = None
-            if segmentation_img is not None:
-                from nibabel.processing import resample_from_to
-                seg = segmentation_img
-                if seg.shape != data.shape or not np.allclose(seg.affine, img.affine):
-                    seg = resample_from_to(seg, (data.shape, img.affine), order=0)
-                segd = np.asarray(seg.get_fdata(), dtype=np.float32)
-                atlas_support = np.isfinite(segd) & (segd > 0.5)
-            if atlas_support is None:
-                atlas_support = np.isfinite(data)
-            data = _inpaint_nans_nearest(data, inside_mask=atlas_support)
-        except Exception:
-            pass
     # Diffusion voxelwise often carries NaN islands after the fit
     if is_diffusion and not is_atlas:
         # Prefer ICV as the inpaint domain. If missing, use a soft proxy from finite voxels.
@@ -1732,10 +1706,8 @@ def _render_montage(
 
     cmap = _get_cmap(job.cmap_name)
     norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
-    # For atlas maps, ignore zeros when building the normalizer to avoid range collapse
     norm, tick_values = _build_normalizer(
-        norm_data, job,
-        mask_zero_override=True if is_atlas else (False if brain_mask is not None else None),
+        norm_data, job, mask_zero_override=False if brain_mask is not None else None
     )
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
@@ -1970,12 +1942,11 @@ def _render_montage(
             mask_slice_crop &= slc > eps_dyn
 
         # Atlas: treat NaNs as zeros inside support so parcels render continuous.
-    if is_atlas:
-        # After inpaint above, just render finite values and leave real holes transparent
-        slc_filled = np.array(slc, copy=True)
-    else:
-        slc_filled = np.array(slc, copy=True)
-        slc_filled[~mask_slice_crop] = 0.0
+        if is_atlas:
+            slc_filled = np.where(np.isfinite(slc), slc, 0.0)
+        else:
+            slc_filled = np.array(slc, copy=True)
+            slc_filled[~mask_slice_crop] = 0.0
         slc_render = slc_filled.astype(np.float32)
         mask_render = mask_slice_crop
         union_render = union_crop
@@ -2003,7 +1974,7 @@ def _render_montage(
             pass
         # Atlas: do NOT mask on NaN after we replaced them with zeros; just respect the support.
         if is_atlas:
-            arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
+            arr = np.ma.array(slc_render, mask=(~valid_mask))
         else:
             arr = np.ma.array(slc_render, mask=(~valid_mask) | (~np.isfinite(slc_render)))
         # If the slice is entirely below global vmin (e.g., FA in cortex),
@@ -2071,7 +2042,7 @@ def _render_montage(
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
-    cb = fig.colorbar(sm, cax=cax, extend="neither")
+    cb = fig.colorbar(sm, cax=cax)
     # Match panel background; keep bar fully opaque
     cb.ax.set_facecolor("#e0e0e0")
     try:
