@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping, Sequence, Tuple
 import matplotlib as mpl
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 import nibabel as nib
 import numpy as np
 import shutil
@@ -711,6 +712,37 @@ def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Color
     # never transparent inside the bar
     out.set_bad(tuple(under))  # harmless, ScalarMappable will not feed NaN to the bar
     return out
+
+
+def _colorbar_axis_for_grid(
+    fig: plt.Figure,
+    axes: Sequence[plt.Axes],
+    *,
+    pad: float = 0.01,
+    width: float = 0.02,
+) -> plt.Axes:
+    """Create a colourbar axis tightly aligned with a montage grid.
+
+    The axis spans the vertical extent of the visible montage tiles so the
+    colourbar reaches the same minimum and maximum as the images, with no grey
+    padding above or below. ``pad`` controls the horizontal distance from the
+    montage grid, while ``width`` specifies the colourbar width in figure
+    coordinates.
+    """
+
+    visible_axes = [ax for ax in axes if ax.get_visible()]
+    if not visible_axes:
+        visible_axes = [axes[0]]
+
+    grid_bbox = mtransforms.Bbox.union([ax.get_position() for ax in visible_axes])
+    left = grid_bbox.x1 + pad
+    # Keep the colourbar inside the figure even if padding pushes it close to 1.0
+    if left + width > 0.99:
+        left = min(left, 0.99 - width)
+    if left < 0.0:
+        left = 0.0
+
+    return fig.add_axes([left, grid_bbox.y0, width, grid_bbox.height])
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     img = nib.load(dce_path)
@@ -2019,7 +2051,8 @@ def _render_montage(
     for ax in axes[len(z_indices) :]:
         ax.axis("off")
 
-    cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
+    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
+    cax = _colorbar_axis_for_grid(fig, axes)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
     # Match panel background and enforce full opacity; support both old and new Colorbar APIs.
@@ -2048,7 +2081,6 @@ def _render_montage(
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
 
-    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
     plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
 
@@ -2174,7 +2206,8 @@ def _render_projection_montage(
     for ax in axes[len(z_indices) :]:
         ax.axis("off")
 
-    cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
+    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
+    cax = _colorbar_axis_for_grid(fig, axes)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
     cb.ax.set_facecolor("#e0e0e0")
@@ -2191,7 +2224,6 @@ def _render_projection_montage(
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
 
-    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
     plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
     plt.close(fig)
 
