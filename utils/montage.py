@@ -2057,8 +2057,7 @@ def _render_montage(
         except Exception:
             pass
     if tick_values:
-        cb.set_ticks(tick_values)
-        cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
+        _apply_colorbar_ticks(cb, tick_values)
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
@@ -2215,8 +2214,7 @@ def _render_projection_montage(
     except Exception:
         pass
     if tick_values:
-        cb.set_ticks(tick_values)
-        cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
+        _apply_colorbar_ticks(cb, tick_values)
     cb.ax.tick_params(labelsize=8, colors="black")
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
@@ -2341,3 +2339,78 @@ def _colorbar_extend_flag(values: np.ndarray, norm: mpl.colors.Normalize) -> str
     if has_over:
         return "max"
     return "neither"
+
+
+def _format_tick_labels(values: Sequence[float]) -> list[str]:
+    ticks = [float(v) for v in values]
+    if not ticks:
+        return []
+    for precision in range(2, 7):
+        labels = [format(val, f".{precision}g") for val in ticks]
+        if len(set(labels)) == len(labels):
+            return labels
+    return [format(val, ".6g") for val in ticks]
+
+
+def _apply_colorbar_ticks(cb: mpl.colorbar.Colorbar, tick_values: Sequence[float]) -> None:
+    ticks = [float(v) for v in tick_values if np.isfinite(v)]
+    if not ticks:
+        cb.ax.set_yticks([])
+        return
+
+    fig = cb.ax.figure
+
+    def _nearest_gap(idx: int) -> float:
+        left = abs(ticks[idx] - ticks[idx - 1]) if idx > 0 else np.inf
+        right = (
+            abs(ticks[idx + 1] - ticks[idx])
+            if idx + 1 < len(ticks)
+            else np.inf
+        )
+        return min(left, right)
+
+    while True:
+        cb.set_ticks(ticks)
+        cb.set_ticklabels(_format_tick_labels(ticks))
+        try:
+            fig.canvas.draw()
+        except Exception:
+            break
+
+        texts = cb.ax.get_yticklabels()
+        if len(texts) != len(ticks):
+            break
+
+        renderer = fig.canvas.get_renderer()
+        boxes = [txt.get_window_extent(renderer) for txt in texts]
+        drop_idx: int | None = None
+
+        for i in range(1, len(boxes)):
+            if not boxes[i].overlaps(boxes[i - 1]):
+                continue
+
+            candidates: list[int] = []
+            if 0 < i < len(boxes) - 1:
+                candidates.append(i)
+            if 0 < i - 1 < len(boxes) - 1:
+                candidates.append(i - 1)
+
+            if not candidates:
+                drop_idx = None
+                break
+
+            if len(candidates) == 1:
+                drop_idx = candidates[0]
+            else:
+                drop_idx = min(candidates, key=_nearest_gap)
+            break
+
+        if drop_idx is None or drop_idx <= 0 or drop_idx >= len(ticks) - 1:
+            break
+
+        ticks.pop(drop_idx)
+        if len(ticks) <= 2:
+            break
+
+    cb.set_ticks(ticks)
+    cb.set_ticklabels(_format_tick_labels(ticks))
