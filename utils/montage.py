@@ -696,10 +696,22 @@ def _opaque_for_image(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
     return out
 
 
+def _truncate_cmap_for_bar(cmap: mpl.colors.Colormap, low: float = 0.02, high: float = 0.98) -> mpl.colors.Colormap:
+    """Return an opaque, truncated copy for the colorbar, avoiding exact endpoints."""
+    base = _opaque_for_image(cmap)
+    xs = np.linspace(low, high, getattr(base, "N", 256))
+    lut = base(xs)
+    out = mpl.colors.ListedColormap(lut, name=getattr(base, "name", "cm") + "_cb")
+    # distinct tips for under/over triangles
+    out.set_under(base(0.0))
+    out.set_over(base(1.0))
+    out.set_bad((0, 0, 0, 1))  # fully opaque inside the bar
+    return out
+
+
 def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
-    cm = _opaque_for_image(cmap)
-    cm.set_bad(cm(0.0))  # colorbars don't have NaNs; avoid any transparency
-    return cm
+    # keep image colors as-is, only the bar is trimmed to avoid white-at-the-top ambiguity
+    return _truncate_cmap_for_bar(cmap, low=0.02, high=0.98)
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     img = nib.load(dce_path)
