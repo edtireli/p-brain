@@ -231,6 +231,37 @@ def _coerce_streamlines_xyz(sls: Streamlines) -> Streamlines:
     return out
 
 
+def _load_streamlines_world(path: str) -> Optional[Streamlines]:
+    """Load streamlines from ``path`` ensuring they are expressed in world space."""
+
+    try:
+        tractogram_file = nib_streamlines.load(path)
+    except Exception:
+        return None
+
+    tractogram = tractogram_file.tractogram
+
+    try:
+        affine_to_rasmm = getattr(tractogram, "affine_to_rasmm", None)
+    except Exception:
+        affine_to_rasmm = None
+
+    if affine_to_rasmm is not None:
+        try:
+            tractogram = tractogram.to_world(lazy=False)
+        except Exception:
+            if _DBG:
+                _dbg_print("[tracks][dbg] tractogram.to_world() failed; proceeding without transform")
+            # Fall back to raw coordinates if the transform cannot be applied.
+
+    try:
+        loaded = tractogram.streamlines
+    except Exception:
+        return None
+
+    return _coerce_streamlines_xyz(Streamlines(loaded))
+
+
 def _load_background_volume(
     nifti_path: str,
     reference_img: nib.Nifti1Image,
@@ -684,12 +715,7 @@ def generate_tractography(
     if os.path.exists(tract_path):
         if _DBG:
             _dbg_print(f"[tracks][dbg] pre-existing tract file found: {tract_path}")
-        try:
-            tractogram = nib_streamlines.load(tract_path).tractogram
-            loaded = tractogram.streamlines
-            streamlines = _coerce_streamlines_xyz(Streamlines(loaded))
-        except Exception:
-            streamlines = None
+        streamlines = _load_streamlines_world(tract_path)
 
     fa_volume: Optional[np.ndarray] = None
 
@@ -854,11 +880,9 @@ def generate_tractography(
                 fa_volume = fa_data
                 break
         # Streamlines loaded from file can carry 4 columns in rare cases
-        try:
-            tractogram = nib_streamlines.load(tract_path).tractogram
-            streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
-        except Exception:
-            pass
+        loaded_streamlines = _load_streamlines_world(tract_path)
+        if loaded_streamlines is not None:
+            streamlines = loaded_streamlines
 
     image_directory = _ensure_image_directory(image_directory, analysis_directory)
     tract_image_dir = os.path.join(image_directory, "tractography")

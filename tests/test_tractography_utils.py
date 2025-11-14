@@ -88,3 +88,48 @@ def test_load_background_volume_resamples_4d_reference(tmp_path):
 
     assert resampled.shape[:3] == reference_img.shape[:3]
     assert np.allclose(resampled.affine, tractography._canonical_affine(reference_affine))
+
+
+def test_load_streamlines_world_invokes_to_world(monkeypatch):
+    called = {"to_world": False}
+
+    class _DummyTractogram:
+        def __init__(self):
+            self.affine_to_rasmm = np.array(
+                [[2.0, 0.0, 0.0, 10.0], [0.0, 3.0, 0.0, -5.0], [0.0, 0.0, 4.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+            self.streamlines = [
+                np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)
+            ]
+
+        def to_world(self, *, lazy=False):
+            called["to_world"] = True
+            assert lazy is False
+            lin = self.affine_to_rasmm[:3, :3]
+            offset = self.affine_to_rasmm[:3, 3]
+            transformed = []
+            for streamline in self.streamlines:
+                transformed.append(streamline @ lin.T + offset)
+            self.streamlines = transformed
+            return self
+
+    class _DummyFile:
+        def __init__(self):
+            self.tractogram = _DummyTractogram()
+
+    monkeypatch.setattr(
+        tractography.nib_streamlines,
+        "load",
+        lambda _path: _DummyFile(),
+    )
+
+    streamlines = tractography._load_streamlines_world("dummy.trk")
+
+    assert called["to_world"] is True
+    assert streamlines is not None
+    assert len(streamlines) == 1
+    first = np.asarray(streamlines[0])
+    assert first.shape == (2, 3)
+    np.testing.assert_allclose(first[0], np.array([10.0, -5.0, 1.0], dtype=np.float32))
+    np.testing.assert_allclose(first[1], np.array([12.0, -2.0, 5.0], dtype=np.float32))
