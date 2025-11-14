@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import multiprocessing as mp
 import os
+import queue
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
@@ -138,6 +140,94 @@ def _render_with_fury(
         clear = getattr(scene, "clear", None)
         if callable(clear):  # pragma: no branch - safety guard for older fury
             clear()
+
+
+def _fury_render_worker(
+    tract_path: str,
+    output_path: str,
+    background_color: tuple[float, float, float],
+    result_queue,
+) -> None:
+    """Helper executed in a subprocess to isolate FURY crashes."""
+
+    try:
+        tractogram = nib_streamlines.load(tract_path).tractogram
+        streamlines = Streamlines(tractogram.streamlines)
+        _render_with_fury(
+            streamlines,
+            output_path,
+            background_color=background_color,
+        )
+    except Exception as exc:  # noqa: BLE001 - propagate message to parent process
+        result_queue.put((False, str(exc)))
+    else:
+        result_queue.put((True, None))
+
+
+def _env_flag_disabled(value: str) -> bool:
+    """Return ``True`` when ``value`` represents a disabled boolean flag."""
+
+    return value.strip().lower() in {"0", "false", "no", "off"}
+
+
+def _should_use_fury() -> bool:
+    """Determine whether FURY rendering should be attempted."""
+
+    if not _FURY_AVAILABLE:
+        return False
+
+    flag = os.environ.get("P_BRAIN_ENABLE_FURY", "")
+    if flag:
+        return not _env_flag_disabled(flag)
+
+    disable_flag = os.environ.get("P_BRAIN_DISABLE_FURY", "")
+    if disable_flag:
+        return not disable_flag.strip().lower() in {"1", "true", "yes", "on"}
+
+    return True
+
+
+def _render_with_fury_isolated(
+    tract_path: str,
+    output_path: str,
+    *,
+    background_color: tuple[float, float, float] = (0.02, 0.02, 0.05),
+) -> bool:
+    """Render streamlines via FURY inside a subprocess, returning success."""
+
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_fury_render_worker,
+        args=(tract_path, output_path, background_color, result_queue),
+    )
+    process.start()
+    process.join()
+
+    success = False
+    message: Optional[str] = None
+
+    if process.exitcode == 0:
+        try:
+            success, message = result_queue.get_nowait()
+        except queue.Empty:  # pragma: no cover - unexpected but tolerable
+            success = True
+    else:
+        success = False
+        if process.exitcode is not None:
+            if process.exitcode < 0:
+                message = f"terminated by signal {-process.exitcode}"
+            elif process.exitcode > 0:
+                message = f"exited with status {process.exitcode}"
+
+    if not success:
+        prefix = "[tracks] FURY rendering failed"
+        if message:
+            print(f"{prefix}: {message}")
+        else:
+            print(f"{prefix} – falling back to matplotlib")
+
+    return success
 
 
 def _render_with_matplotlib(
@@ -414,14 +504,8 @@ def generate_tractography(
     os.makedirs(tract_image_dir, exist_ok=True)
 
     render_path = os.path.join(tract_image_dir, "tractography_render.png")
-    if _FURY_AVAILABLE:
-        try:
-            _render_with_fury(streamlines, render_path)
-        except Exception as exc:  # noqa: BLE001 - degrade gracefully
-            print(
-                "[tracks] FURY rendering failed – falling back to matplotlib:",
-                str(exc),
-            )
+    if _should_use_fury():
+        if not _render_with_fury_isolated(tract_path, render_path):
             _render_with_matplotlib(streamlines, render_path)
     else:  # pragma: no cover - fallback depends on runtime environment
         _render_with_matplotlib(streamlines, render_path)
