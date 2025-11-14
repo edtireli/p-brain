@@ -1735,14 +1735,10 @@ def _render_montage(
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
         norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
-    # NaNs invisible everywhere. Voxelwise keeps a dim "under" inside T1.
-    if is_atlas:
-        cmap = cmap.with_extremes(bad=(0, 0, 0, 0))
-    else:
-        # Dim low values by RGB, keep alpha solid. No grey bleed.
-        under_rgba = _dim_rgba(tuple(cmap(0.0)), 0.55)
-        under_rgba = (under_rgba[0], under_rgba[1], under_rgba[2], 1.0)
-        cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=under_rgba)
+    # NaNs are transparent. Sub-vmin gets the lowest real colour, no fake black pits.
+    base_under = list(cmap(0.0))
+    base_under[-1] = 1.0
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(base_under))
     # Make fully opaque variants for image and colorbar
     cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
@@ -1895,11 +1891,10 @@ def _render_montage(
 
         # Display support from T1 HEAD if present; fallback to union of valid voxels.
         union_crop = union_xy_r[r0:r1, c0:c1]
-        if overlay is not None and overlay_mask_data is not None:
-            # overlay_union_crop already respects the T1 HEAD footprint
-            union_crop = overlay_union_crop
         extent = (0.0, 1.0, 1.0, 0.0)
-        overlay_union_crop = union_crop
+        # Predeclare to avoid UnboundLocalError on branches
+        overlay_union_crop = None
+        overlay_alpha_crop = None
         render_shape = slc.shape
         if overlay_data is not None:
             index_for_overlay = zi if overlay_zi is None else overlay_zi
@@ -1910,22 +1905,22 @@ def _render_montage(
             )
             overlay_crop = overlay_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             # Underlay visibility follows HEAD mask, not the brain union
-            overlay_alpha_crop = None
             if overlay_mask_data is not None:
                 mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
                 mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
                 overlay_union = mask_rot.astype(bool)
             else:
                 overlay_union = union_xy_r
-            overlay_union_crop = overlay_union[
-                overlay_r0:overlay_r1, overlay_c0:overlay_c1
-            ]
+            overlay_union_crop = overlay_union[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
             if overlay_alpha_data is not None:
                 alpha_slice = overlay_alpha_data[:, :, index_for_overlay]
                 alpha_rot = np.rot90(alpha_slice, ref_info["rotate"])
                 overlay_alpha_crop = alpha_rot[
                     overlay_r0:overlay_r1, overlay_c0:overlay_c1
                 ]
+                # Safe mask for alpha ramp even if union is degenerate
+                if overlay_union_crop is None:
+                    overlay_union_crop = union_crop
                 overlay_alpha_crop = overlay_alpha_crop * overlay_union_crop.astype(np.float32)
                 overlay_alpha_crop = np.clip(overlay_alpha_crop, 0.0, 1.0)
             overlay_mask_slice = None
@@ -1933,6 +1928,9 @@ def _render_montage(
                 mask_slice_raw = overlay_mask_data[:, :, index_for_overlay]
                 mask_rot = np.rot90(mask_slice_raw, ref_info["rotate"])
                 overlay_mask_slice = mask_rot[overlay_r0:overlay_r1, overlay_c0:overlay_c1]
+            # If overlay_union_crop was not set for any reason, fall back to T1 union crop
+            if overlay_union_crop is None:
+                overlay_union_crop = union_crop
             overlay_mask = (~overlay_union_crop) | (~np.isfinite(overlay_crop))
             if overlay_mask_slice is not None:
                 overlay_mask |= ~overlay_mask_slice
@@ -1946,11 +1944,7 @@ def _render_montage(
                 vmin=overlay_vmin,
                 vmax=overlay_vmax,
                 extent=extent,
-                alpha=(
-                    overlay_alpha * overlay_alpha_crop
-                    if overlay_alpha_crop is not None
-                    else overlay_alpha
-                ),
+                alpha=(overlay_alpha * overlay_alpha_crop if overlay_alpha_crop is not None else overlay_alpha),
             )
             render_shape = overlay_crop.shape
 
