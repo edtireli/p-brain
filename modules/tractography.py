@@ -17,7 +17,7 @@ import traceback
 import json
 import datetime
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -246,8 +246,24 @@ def _load_background_volume(
             "nibabel.processing.resample_from_to is required for anatomical overlays"
         )
 
-    resampled = resample_from_to(img, reference_img, order=1)
+    spatial_shape = reference_img.shape
+    if len(spatial_shape) > 3:
+        spatial_shape = spatial_shape[:3]
+    target = (tuple(int(dim) for dim in spatial_shape), _canonical_affine(reference_img.affine))
+    resampled = resample_from_to(img, target, order=1)
     return resampled
+
+
+def _seed_points_from_mask(
+    mask: np.ndarray,
+    voxel_to_world: np.ndarray,
+    *,
+    density: Union[int, Sequence[int]] = 1,
+) -> np.ndarray:
+    """Return evenly distributed seed points in voxel space mapped to world coordinates."""
+
+    affine = _canonical_affine(voxel_to_world)
+    return seeds_from_mask(mask, affine, density=density)
 
 
 def _ensure_image_directory(
@@ -763,8 +779,8 @@ def generate_tractography(
             except Exception:
                 pass
 
-        # Keep seeds in voxel space; LocalTracking will lift to mm using affine.
-        seeds = seeds_from_mask(wm_mask, density=1)
+        # Keep seeds aligned with the diffusion affine to avoid affine shape mismatches.
+        seeds = _seed_points_from_mask(wm_mask, voxel_to_world, density=1)
         if _DBG:
             _dbg_print(
                 f"[tracks][dbg] seeds shape={getattr(seeds,'shape',None)} dtype={getattr(seeds,'dtype',None)} "
