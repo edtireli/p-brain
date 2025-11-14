@@ -65,6 +65,41 @@ class TractographyOutputs:
     montage_path: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Streamline sanitisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_xyz(points: np.ndarray) -> np.ndarray:
+    """
+    Return Nx3 float32 coordinates from points with possible extra columns.
+    If a 4th column exists, treat it as homogeneous w and dehomogenise.
+    """
+
+    P = np.asarray(points)
+    if P.ndim != 2:
+        return P
+    if P.shape[1] == 3:
+        return P.astype(np.float32)
+    if P.shape[1] >= 4:
+        w = P[:, 3]
+        w = np.where((w == 0) | (~np.isfinite(w)), 1.0, w)
+        return (P[:, :3] / w[:, None]).astype(np.float32)
+    # fewer than 3 columns, pass through
+    return P.astype(np.float32)
+
+
+def _coerce_streamlines_xyz(sls: Streamlines) -> Streamlines:
+    """Ensure every streamline is Nx3 and has at least two points."""
+
+    out = Streamlines()
+    for sl in sls:
+        xyz = _to_xyz(sl)
+        if xyz.shape[0] >= 2 and xyz.shape[1] == 3:
+            out.append(xyz)
+    return out
+
+
 def _load_background_volume(
     nifti_path: str,
     reference_img: nib.Nifti1Image,
@@ -152,12 +187,14 @@ def _fury_render_worker(
 
     try:
         tractogram = nib_streamlines.load(tract_path).tractogram
-        streamlines = Streamlines(tractogram.streamlines)
+        streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
         _render_with_fury(
             streamlines,
             output_path,
             background_color=background_color,
         )
+    except KeyboardInterrupt:
+        raise
     except Exception as exc:  # noqa: BLE001 - propagate message to parent process
         result_queue.put((False, str(exc)))
     else:
@@ -243,6 +280,7 @@ def _render_with_matplotlib(
     ax = fig.add_subplot(111, projection="3d")
 
     for sl in streamlines:
+        sl = _to_xyz(sl)
         if len(sl) < 2:
             continue
         segments = np.diff(sl, axis=0)
@@ -280,6 +318,7 @@ def _aggregate_streamline_colours(
     for streamline in streamlines:
         if streamline.shape[0] < 2:
             continue
+        streamline = _to_xyz(streamline)
 
         world_a = streamline[:-1]
         world_b = streamline[1:]
@@ -423,7 +462,7 @@ def generate_tractography(
         try:
             tractogram = nib_streamlines.load(tract_path).tractogram
             loaded = tractogram.streamlines
-            streamlines = Streamlines(loaded)
+            streamlines = _coerce_streamlines_xyz(Streamlines(loaded))
         except Exception:
             streamlines = None
 
@@ -436,6 +475,11 @@ def generate_tractography(
         bvecs = np.loadtxt(bvec_path)
         if bvecs.ndim == 2 and bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
             bvecs = bvecs.T
+        if data.shape[-1] != bvals.size or bvecs.shape != (bvals.size, 3):
+            raise ValueError(
+                f"bvals/bvecs mismatch. volumes={data.shape[-1]}, "
+                f"bvals={bvals.size}, bvecs={bvecs.shape}"
+            )
 
         gtab = gradient_table(bvals=bvals, bvecs=bvecs)
         tensor_model = TensorModel(gtab)
@@ -462,7 +506,8 @@ def generate_tractography(
             return_sh=False,
         )
 
-        seeds = seeds_from_mask(wm_mask, density=1, affine=voxel_to_world)
+        # Generate seeds in voxel space to avoid mixed conventions
+        seeds = seeds_from_mask(wm_mask, density=1)
         streamline_generator = LocalTracking(
             peaks,
             stopping_criterion,
@@ -471,7 +516,7 @@ def generate_tractography(
             step_size=0.5,
             return_all=False,
         )
-        streamlines = Streamlines(streamline_generator)
+        streamlines = _coerce_streamlines_xyz(Streamlines(streamline_generator))
 
         if len(streamlines) == 0:
             raise RuntimeError(
@@ -498,6 +543,12 @@ def generate_tractography(
             if fa_data.shape[:3] == img.shape[:3]:
                 fa_volume = fa_data
                 break
+        # Streamlines loaded from file can carry 4 columns in rare cases
+        try:
+            tractogram = nib_streamlines.load(tract_path).tractogram
+            streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
+        except Exception:
+            pass
 
     image_directory = _ensure_image_directory(image_directory, analysis_directory)
     tract_image_dir = os.path.join(image_directory, "tractography")
