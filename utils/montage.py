@@ -2021,7 +2021,22 @@ def _render_montage(
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
-    cb = fig.colorbar(sm, cax=cax)
+    finite_norm_values = norm_data[np.isfinite(norm_data)]
+    if finite_norm_values.size == 0:
+        finite_norm_values = np.array([float(norm.vmin), float(norm.vmax)], dtype=float)
+    sm.set_array(finite_norm_values)
+    extend_flag = _colorbar_extend_flag(finite_norm_values, norm)
+    boundaries = np.linspace(
+        float(norm.vmin),
+        float(norm.vmax),
+        getattr(cmap_cb, "N", 256) + 1,
+    )
+    cb = fig.colorbar(
+        sm,
+        cax=cax,
+        extend=extend_flag,
+        boundaries=boundaries,
+    )
     # Match panel background and enforce full opacity; support both old and new Colorbar APIs.
     try:
         cb.ax.set_facecolor("#e0e0e0")
@@ -2176,7 +2191,22 @@ def _render_projection_montage(
 
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
-    cb = fig.colorbar(sm, cax=cax)
+    finite_projection_values = data[finite_mask]
+    if finite_projection_values.size == 0:
+        finite_projection_values = np.array([float(norm.vmin), float(norm.vmax)], dtype=float)
+    sm.set_array(finite_projection_values)
+    extend_flag = _colorbar_extend_flag(finite_projection_values, norm)
+    boundaries = np.linspace(
+        float(norm.vmin),
+        float(norm.vmax),
+        getattr(cmap_cb, "N", 256) + 1,
+    )
+    cb = fig.colorbar(
+        sm,
+        cax=cax,
+        extend=extend_flag,
+        boundaries=boundaries,
+    )
     cb.ax.set_facecolor("#e0e0e0")
     cb.patch.set_alpha(1.0)
     try:
