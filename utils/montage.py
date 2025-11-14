@@ -47,8 +47,8 @@ ROT90 = 1
 BBOX_PADDING = 3
 DPI = 300
 EPS = 1e-8
-FEATHER_MM = 1.0  # width of soft edge for T1 underlay
-MAP_EDGE_FEATHER_MM = 1.5  # soft edge for parametric overlays
+FEATHER_MM = 1.0           # soft rim for T1 only
+MAP_EDGE_FEATHER_MM = 0.0  # hard edge for parametric overlays
 HEAD_DILATE_MM = 8.0      # grow brain mask to include skull+scalp
 HEAD_EXTRA_MM = 2.0       # tiny extra cushion
 HEAD_MIN_VOXELS = 10_000  # drop tiny islands from T1 envelope
@@ -1998,60 +1998,22 @@ def _render_montage(
         # use a local min/max so low-but-real values remain visible.
         scale_y = render_shape[0] / max(1, slc.shape[0])
         scale_x = render_shape[1] / max(1, slc.shape[1])
-        alpha_mask = _alpha_feather_slice(
-            valid_mask,
-            zoom_xy,
-            scale_y=scale_y,
-            scale_x=scale_x,
-        )
-        alpha_values = overlay_alpha * alpha_mask
+        # Hard mask for the parametric layer
+        alpha_values = valid_mask.astype(np.float32)
+        if alpha_values.shape != slc_render.shape:
+            alpha_values = alpha_values.astype(np.float32, copy=False)
+            alpha_values = _resize_mask(alpha_values > 0.5, slc_render.shape).astype(np.float32)
         finite_vals = arr.compressed() if hasattr(arr, "compressed") else np.asarray([], dtype=float)
-        # Keep diffusion on the global scale to avoid slice-to-slice contrast jumps
-        if is_diffusion:
-            ax.imshow(
-                arr,
-                cmap=cmap_img,
-                norm=norm,
-                interpolation="nearest",
-                origin="upper",
-                alpha=alpha_values,
-                extent=extent,
-            )
-        else:
-            if finite_vals.size and np.nanmax(finite_vals) <= float(getattr(norm, "vmin", 0.0)):
-                loc_vmin = float(np.nanmin(finite_vals))
-                loc_vmax = float(np.nanpercentile(finite_vals, 99.0))
-                if loc_vmax > loc_vmin:
-                    local_norm = mcolors.Normalize(vmin=loc_vmin, vmax=loc_vmax, clip=False)
-                    ax.imshow(
-                        arr,
-                        cmap=cmap_img,
-                        norm=local_norm,
-                        interpolation="nearest",
-                        origin="upper",
-                        alpha=alpha_values,
-                        extent=extent,
-                    )
-                else:
-                    ax.imshow(
-                        arr,
-                        cmap=cmap_img,
-                        norm=norm,
-                        interpolation="nearest",
-                        origin="upper",
-                        alpha=alpha_values,
-                        extent=extent,
-                    )
-            else:
-                ax.imshow(
-                    arr,
-                    cmap=cmap_img,
-                    norm=norm,
-                    interpolation="nearest",
-                    origin="upper",
-                    alpha=alpha_values,
-                    extent=extent,
-                )
+        # One global scale for the whole figure
+        ax.imshow(
+            arr,
+            cmap=cmap_img,
+            norm=norm,
+            interpolation="nearest",
+            origin="upper",
+            alpha=alpha_values,
+            extent=extent,
+        )
 
     # Hide any unused axes when there are fewer slices than tiles
     for ax in axes[len(z_indices) :]:
@@ -2199,7 +2161,7 @@ def _render_projection_montage(
 
         valid_mask = union_crop & mask_slice
         arr = np.ma.array(slc, mask=(~valid_mask))
-        alpha_values = _alpha_feather_slice(valid_mask, zoom_xy)
+        alpha_values = valid_mask.astype(np.float32)
         ax.imshow(
             arr,
             cmap=cmap_img,
