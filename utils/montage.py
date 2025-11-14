@@ -2060,14 +2060,25 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
-    # match panel background and force full opacity
-    cb.ax.set_facecolor("#e0e0e0")
-    cb.patch.set_alpha(1.0)
+    # Match panel background and enforce full opacity; support both old and new Colorbar APIs.
     try:
-        cb.solids.set_edgecolor("face")
-        cb.solids.set_alpha(1.0)
+        cb.ax.set_facecolor("#e0e0e0")
+        if hasattr(cb.ax, "patch"):
+            cb.ax.patch.set_alpha(1.0)
+        elif hasattr(cb, "patch"):
+            # Some matplotlib builds use cb.patch instead of cb.ax.patch
+            cb.patch.set_alpha(1.0)
     except Exception:
         pass
+
+    # Guard solids: may be None on some backends
+    solids = getattr(cb, "solids", None)
+    if solids is not None:
+        try:
+            solids.set_edgecolor("face")
+            solids.set_alpha(1.0)
+        except Exception:
+            pass
     if tick_values:
         cb.set_ticks(tick_values)
         cb.set_ticklabels([f"{val:.2g}" for val in tick_values])
