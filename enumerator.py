@@ -490,6 +490,107 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
     return True
 
 
+def _run_tracks_for_dataset(
+    data_root,
+    dataset_id,
+    is_control,
+    *,
+    create_montage=False,
+    use_anatomical=False,
+):
+    """Compute tractography renderings for ``dataset_id`` when possible."""
+
+    dataset_root = _resolve_dataset_root(data_root, dataset_id, is_control)
+    if not os.path.isdir(dataset_root):
+        print(f"[tracks] Dataset directory missing – skipping: {dataset_root}")
+        return False
+
+    analysis_directory = os.path.join(dataset_root, "Analysis")
+    nifti_directory = os.path.join(dataset_root, "NIfTI")
+    image_directory = os.path.join(dataset_root, "Images")
+
+    for path, label in (
+        (analysis_directory, "Analysis"),
+        (nifti_directory, "NIfTI"),
+    ):
+        if not os.path.isdir(path):
+            print(f"[tracks] {label} directory missing – skipping: {path}")
+            return False
+
+    try:
+        if bool(is_control or settings.CONTROLS):
+            filenames = parameters.control_filenames(nifti_directory)
+        else:
+            filenames = parameters.global_filenames(nifti_directory)
+    except Exception as exc:
+        print(f"[tracks] Failed to discover configured filenames for {dataset_id}: {exc}")
+        return False
+
+    diffusion_filename = filenames[-2] if filenames else None
+    dce_filename = filenames[-1] if filenames else None
+
+    if not diffusion_filename:
+        print(
+            f"[tracks] No configured diffusion volume for {dataset_id} – skipping tractography."
+        )
+        return False
+
+    anatomical_overlay = None
+    if use_anatomical:
+        dce_path = os.path.join(nifti_directory, dce_filename) if dce_filename else None
+        if dce_path and not os.path.isfile(dce_path):
+            dce_path = None
+        if dce_path:
+            anatomical_overlay = _maybe_generate_anatomical_overlay(nifti_directory, dce_path)
+        else:
+            anatomical_overlay = _find_anatomical_overlay(nifti_directory)
+        if anatomical_overlay is None:
+            print(
+                "[tracks] Anatomical overlay requested but unavailable – proceeding without it."
+            )
+
+    try:
+        from modules.tractography import generate_tractography
+    except ImportError as exc:
+        print(f"[tracks] Unable to import tractography workflow: {exc}")
+        return False
+
+    try:
+        outputs = generate_tractography(
+            nifti_directory,
+            analysis_directory,
+            image_directory,
+            diffusion_filename=diffusion_filename,
+            anatomical_overlay=anatomical_overlay,
+            create_montage=create_montage,
+            montage_title=(
+                "Tractography over anatomical T1"
+                if (create_montage and anatomical_overlay and use_anatomical)
+                else "Tractography overlay"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - surface helpful context to CLI users
+        print(f"[tracks] Failed to compute tractography for {dataset_id}: {exc}")
+        return False
+
+    print(
+        "[tracks] Generated tractography: "
+        f"{os.path.relpath(outputs.tract_path, start=data_root)}"
+    )
+    if outputs.render_path:
+        print(
+            "[tracks] Render saved to "
+            f"{os.path.relpath(outputs.render_path, start=data_root)}"
+        )
+    if outputs.montage_path:
+        print(
+            "[tracks] Montage saved to "
+            f"{os.path.relpath(outputs.montage_path, start=data_root)}"
+        )
+
+    return True
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run p-brain on multiple datasets")
     parser.add_argument(
@@ -539,6 +640,14 @@ def parse_args():
         "--diffusion_only",
         action="store_true",
         help="Only run the diffusion tensor workflow for patient datasets",
+    )
+    parser.add_argument(
+        "--tracks",
+        action="store_true",
+        help=(
+            "Compute diffusion tractography streamlines and render visualisations. "
+            "Implies --diffusion so the tensor fit is available."
+        ),
     )
     return parser.parse_args()
 
@@ -666,6 +775,9 @@ def main():
     if args.diffusion_only:
         args.diffusion = True
 
+    if args.tracks:
+        args.diffusion = True
+
     projection_stats = None
     if args.projection:
         try:
@@ -691,6 +803,17 @@ def main():
             if not diffusion_ok:
                 exit_code = 1
 
+            if args.tracks and diffusion_ok:
+                tracks_ok = _run_tracks_for_dataset(
+                    data_directory,
+                    dataset_id,
+                    is_control,
+                    create_montage=args.montage,
+                    use_anatomical=args.montage_anatomical,
+                )
+                if not tracks_ok:
+                    exit_code = 1
+
             if args.montage:
                 success = _run_montage_for_dataset(
                     data_directory,
@@ -715,6 +838,16 @@ def main():
                     is_control,
                 )
                 if not diffusion_ok:
+                    exit_code = 1
+            if args.tracks and (not args.diffusion or diffusion_ok):
+                tracks_ok = _run_tracks_for_dataset(
+                    data_directory,
+                    dataset_id,
+                    is_control,
+                    create_montage=True,
+                    use_anatomical=args.montage_anatomical,
+                )
+                if not tracks_ok:
                     exit_code = 1
             success = _run_montage_for_dataset(
                 data_directory,
@@ -759,6 +892,15 @@ def main():
             projection_stats=projection_stats,
             use_anatomical=args.montage_anatomical,
         )
+
+        if args.tracks:
+            _run_tracks_for_dataset(
+                data_directory,
+                dataset_id,
+                is_control,
+                create_montage=False,
+                use_anatomical=args.montage_anatomical,
+            )
 
 
 if __name__ == "__main__":
