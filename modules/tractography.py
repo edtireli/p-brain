@@ -92,7 +92,11 @@ def _render_with_fury(
     scene.background(background_color)
 
     colours = dipy_colormap.line_colors(streamlines)
-    stream_actor = dipy_actor.line(streamlines, colours, linewidth=1.0)
+    stream_actor = dipy_actor.line(
+        streamlines,
+        colors=colours,
+        linewidth=1.0,
+    )
     scene.add(stream_actor)
 
     # Gently rotate the scene so fibres are rendered with depth cues.
