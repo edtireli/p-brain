@@ -678,40 +678,39 @@ def _dim_rgba(rgba: tuple[float, float, float, float], gain: float = 0.55) -> tu
 
 def _opaque_for_image(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
     """
-    Make all sample colors fully opaque so overlays never mix with the axes facecolor.
-    Keep NaN ('bad') fully transparent so the underlay shows through.
+    For image tiles: force alpha=1 for all colors so values never blend with the
+    axes facecolor. Keep NaN ('bad') fully transparent so the anatomical underlay
+    shows through.
     """
-
     lut = cmap(np.linspace(0, 1, getattr(cmap, "N", 256)))
     lut[:, -1] = 1.0
     out = mpl.colors.ListedColormap(lut, name=getattr(cmap, "name", "cm") + "_imgopaque")
-    # preserve chosen extremes but ensure they are opaque
-    under = list(cmap(0.0))
-    under[-1] = 1.0
-    over = list(cmap(1.0))
-    over[-1] = 1.0
+    # preserve your endpoint choices and make them opaque
+    under = list(cmap(0.0)); under[-1] = 1.0
+    over  = list(cmap(1.0)); over[-1]  = 1.0
     out.set_under(tuple(under))
     out.set_over(tuple(over))
-    out.set_bad((0, 0, 0, 0))  # NaNs remain holes
+    # NaNs transparent only in tiles
+    out.set_bad((0, 0, 0, 0))
     return out
-
-
-def _truncate_cmap_for_bar(cmap: mpl.colors.Colormap, low: float = 0.02, high: float = 0.98) -> mpl.colors.Colormap:
-    """Return an opaque, truncated copy for the colorbar, avoiding exact endpoints."""
-    base = _opaque_for_image(cmap)
-    xs = np.linspace(low, high, getattr(base, "N", 256))
-    lut = base(xs)
-    out = mpl.colors.ListedColormap(lut, name=getattr(base, "name", "cm") + "_cb")
-    # distinct tips for under/over triangles
-    out.set_under(base(0.0))
-    out.set_over(base(1.0))
-    out.set_bad((0, 0, 0, 1))  # fully opaque inside the bar
-    return out
-
-
 def _opaque_colormap_for_colorbar(cmap: mpl.colors.Colormap) -> mpl.colors.Colormap:
-    # keep image colors as-is, only the bar is trimmed to avoid white-at-the-top ambiguity
-    return _truncate_cmap_for_bar(cmap, low=0.02, high=0.98)
+    """
+    For colorbars: use the full untruncated range [0, 1] with alpha=1 everywhere,
+    same endpoints as the tiles, and no transparency. This guarantees the first
+    color of the bar equals the vmin color seen in the image.
+    """
+    base = cmap
+    lut = base(np.linspace(0, 1, getattr(base, "N", 256)))
+    lut[:, -1] = 1.0
+    out = mpl.colors.ListedColormap(lut, name=getattr(base, "name", "cm") + "_cbopaque")
+    # match endpoints exactly
+    under = list(base(0.0)); under[-1] = 1.0
+    over  = list(base(1.0)); over[-1]  = 1.0
+    out.set_under(tuple(under))
+    out.set_over(tuple(over))
+    # never transparent inside the bar
+    out.set_bad(tuple(under))  # harmless, ScalarMappable will not feed NaN to the bar
+    return out
 
 def _load_reference_volume(dce_path: str) -> np.ndarray | None:
     img = nib.load(dce_path)
@@ -1743,10 +1742,11 @@ def _render_montage(
     cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
+    # use solid figure background to avoid antialias bleed against transparency
     fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="#e0e0e0"
     )
-    fig.patch.set_alpha(0.0)
+    fig.patch.set_alpha(1.0)
     axes = axes.ravel()
 
     overlay_volume = overlay.get("volume") if overlay else None
@@ -2060,8 +2060,9 @@ def _render_montage(
     cax = fig.add_axes([0.93, 0.12, 0.015, 0.3])
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
-    # Match panel background; keep bar fully opaque
+    # match panel background and force full opacity
     cb.ax.set_facecolor("#e0e0e0")
+    cb.patch.set_alpha(1.0)
     try:
         cb.solids.set_edgecolor("face")
         cb.solids.set_alpha(1.0)
@@ -2138,9 +2139,9 @@ def _render_projection_montage(
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=(0.0, 0.0, 0.0, 0.0)
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="#e0e0e0"
     )
-    fig.patch.set_alpha(0.0)
+    fig.patch.set_alpha(1.0)
     axes = axes.ravel()
 
     nz = data.shape[2]
@@ -2204,6 +2205,7 @@ def _render_projection_montage(
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap_cb)
     cb = fig.colorbar(sm, cax=cax)
     cb.ax.set_facecolor("#e0e0e0")
+    cb.patch.set_alpha(1.0)
     try:
         cb.solids.set_edgecolor("face")
         cb.solids.set_alpha(1.0)
