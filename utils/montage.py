@@ -2325,3 +2325,27 @@ def _default_ticks(lo: float, hi: float) -> list[float]:
         return [lo_r]
     steps = np.linspace(lo_r, hi_r, 5)
     return [float(x) for x in steps]
+
+
+def _colorbar_extend_flag(values: np.ndarray, norm: mpl.colors.Normalize) -> str:
+    """
+    Decide whether the colourbar should show 'min', 'max', 'both' or 'neither'
+    extensions by comparing the finite data to the normaliser limits.
+    """
+    try:
+        vmin = float(norm.vmin)
+        vmax = float(norm.vmax)
+    except Exception:
+        return "neither"
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return "neither"
+    has_under = np.nanmin(finite) < vmin
+    has_over  = np.nanmax(finite) > vmax
+    if has_under and has_over:
+        return "both"
+    if has_under:
+        return "min"
+    if has_over:
+        return "max"
+    return "neither"
