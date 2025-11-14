@@ -32,6 +32,11 @@ except Exception:  # pragma: no cover - fury is optional
 
 import nibabel as nib
 from nibabel import streamlines as nib_streamlines
+try:  # ``StatefulTractogram`` helps preserve coordinate frames when saving.
+    from nibabel.streamlines.stateful_tractogram import StatefulTractogram, Space
+except ImportError:  # pragma: no cover - older nibabel without stateful helper
+    StatefulTractogram = None  # type: ignore[assignment]
+    Space = None  # type: ignore[assignment]
 
 try:  # ``resample_from_to`` is only needed for anatomical overlays.
     from nibabel.processing import resample_from_to
@@ -231,8 +236,63 @@ def _coerce_streamlines_xyz(sls: Streamlines) -> Streamlines:
     return out
 
 
-def _load_streamlines_world(path: str) -> Optional[Streamlines]:
-    """Load streamlines from ``path`` ensuring they are expressed in world space."""
+def _streamline_fraction_inside(
+    streamlines: Streamlines,
+    affine: Optional[np.ndarray],
+    shape: Optional[Sequence[int]],
+) -> float:
+    """Return the fraction of points lying within the provided ``shape``."""
+
+    if affine is None or shape is None:
+        return 0.0
+
+    try:
+        inv_affine = np.linalg.inv(_canonical_affine(affine))
+    except Exception:
+        return 0.0
+
+    if len(shape) > 3:
+        shape = shape[:3]
+    bounds = np.array(shape, dtype=np.float64) - 0.5
+
+    inside = 0
+    total = 0
+    for sl in streamlines:
+        if sl.shape[0] == 0:
+            continue
+        pts = nib.affines.apply_affine(inv_affine, sl)
+        total += pts.shape[0]
+        mask = (
+            (pts[:, 0] >= -0.5)
+            & (pts[:, 0] <= bounds[0])
+            & (pts[:, 1] >= -0.5)
+            & (pts[:, 1] <= bounds[1])
+            & (pts[:, 2] >= -0.5)
+            & (pts[:, 2] <= bounds[2])
+        )
+        inside += int(np.count_nonzero(mask))
+
+    if total == 0:
+        return 0.0
+
+    return inside / float(total)
+
+
+def _load_streamlines_world(
+    path: str,
+    *,
+    expected_affine: Optional[np.ndarray] = None,
+    expected_shape: Optional[Sequence[int]] = None,
+) -> Optional[Streamlines]:
+    """Load streamlines ensuring they are expressed in world space.
+
+    Older releases wrote world-space streamlines while also recording the
+    diffusion affine in the tractogram header. ``tractogram.to_world`` would
+    therefore apply the affine twice, pushing fibres far outside the field of
+    view. To remain backward compatible we evaluate both the raw stored
+    coordinates and the transformed-to-world version, selecting whichever
+    overlaps the diffusion volume best.
+    """
 
     try:
         tractogram_file = nib_streamlines.load(path)
@@ -241,25 +301,51 @@ def _load_streamlines_world(path: str) -> Optional[Streamlines]:
 
     tractogram = tractogram_file.tractogram
 
-    try:
-        affine_to_rasmm = getattr(tractogram, "affine_to_rasmm", None)
-    except Exception:
-        affine_to_rasmm = None
-
-    if affine_to_rasmm is not None:
-        try:
-            tractogram = tractogram.to_world(lazy=False)
-        except Exception:
-            if _DBG:
-                _dbg_print("[tracks][dbg] tractogram.to_world() failed; proceeding without transform")
-            # Fall back to raw coordinates if the transform cannot be applied.
+    raw_streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
+    transformed_streamlines: Optional[Streamlines] = None
 
     try:
-        loaded = tractogram.streamlines
+        transformed = tractogram.to_world(lazy=False)
     except Exception:
-        return None
+        if _DBG:
+            _dbg_print(
+                "[tracks][dbg] tractogram.to_world() failed; proceeding without transform"
+            )
+    else:
+        transformed_streamlines = _coerce_streamlines_xyz(
+            Streamlines(transformed.streamlines)
+        )
 
-    return _coerce_streamlines_xyz(Streamlines(loaded))
+    if expected_affine is not None and expected_shape is not None:
+        candidates: list[tuple[str, Streamlines]] = [("raw", raw_streamlines)]
+        if transformed_streamlines is not None:
+            candidates.append(("world", transformed_streamlines))
+
+        best_label = "raw"
+        best_streamlines = raw_streamlines
+        best_fraction = _streamline_fraction_inside(
+            raw_streamlines, expected_affine, expected_shape
+        )
+
+        for label, candidate in candidates[1:]:
+            fraction = _streamline_fraction_inside(
+                candidate, expected_affine, expected_shape
+            )
+            if fraction > best_fraction + 1e-6:
+                best_fraction = fraction
+                best_streamlines = candidate
+                best_label = label
+
+        if _DBG:
+            _dbg(
+                f"streamline load candidate={best_label} inside={best_fraction:.3f}"
+            )
+        return best_streamlines
+
+    if transformed_streamlines is not None:
+        return transformed_streamlines
+
+    return raw_streamlines
 
 
 def _load_background_volume(
@@ -715,7 +801,11 @@ def generate_tractography(
     if os.path.exists(tract_path):
         if _DBG:
             _dbg_print(f"[tracks][dbg] pre-existing tract file found: {tract_path}")
-        streamlines = _load_streamlines_world(tract_path)
+        streamlines = _load_streamlines_world(
+            tract_path,
+            expected_affine=voxel_to_world,
+            expected_shape=img.shape,
+        )
 
     fa_volume: Optional[np.ndarray] = None
 
@@ -852,11 +942,15 @@ def generate_tractography(
             )
 
         try:
-            tractogram = nib_streamlines.Tractogram(
-                streamlines,
-                affine_to_rasmm=_canonical_affine(voxel_to_world),
-            )
-            nib_streamlines.save(tractogram, tract_path)
+            if StatefulTractogram is not None and Space is not None:
+                sft = StatefulTractogram(streamlines, img, Space.RASMM)
+                nib_streamlines.save(sft, tract_path)
+            else:  # pragma: no cover - legacy nibabel fallback
+                tractogram = nib_streamlines.Tractogram(
+                    streamlines,
+                    affine_to_rasmm=np.eye(4),
+                )
+                nib_streamlines.save(tractogram, tract_path)
             _dbg(f"saved tractogram: {tract_path}")
         except Exception:
             if _DBG:
@@ -880,7 +974,11 @@ def generate_tractography(
                 fa_volume = fa_data
                 break
         # Streamlines loaded from file can carry 4 columns in rare cases
-        loaded_streamlines = _load_streamlines_world(tract_path)
+        loaded_streamlines = _load_streamlines_world(
+            tract_path,
+            expected_affine=voxel_to_world,
+            expected_shape=img.shape,
+        )
         if loaded_streamlines is not None:
             streamlines = loaded_streamlines
 
