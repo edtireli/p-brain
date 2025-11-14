@@ -1,7 +1,7 @@
 """Utilities to compute and visualise diffusion tractography streamlines."""
 
 from __future__ import annotations
-from functools import reduce, wraps
+from functools import wraps
 
 import inspect
 import multiprocessing as mp
@@ -9,6 +9,7 @@ import os
 import queue
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
+from pprint import pformat
 
 import numpy as np
 
@@ -40,13 +41,30 @@ from dipy.tracking.utils import seeds_from_mask
 
 from modules.opt08_fa import find_dwi_files
 
+# ---------------------------------------------------------------------------
+# Debug helpers
+# ---------------------------------------------------------------------------
+
+def _env_true(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+_DBG = _env_true("P_BRAIN_DEBUG_TRACKS", False)
+
+def _dbg(msg: str) -> None:
+    if _DBG:
+        print(f"[tracks][dbg] {msg}", flush=True)
 
 def _canonical_affine(affine: np.ndarray) -> np.ndarray:
     """Return a 4x4 voxel-to-world affine derived from ``affine``."""
 
     arr = np.asarray(affine, dtype=np.float64)
     if arr.shape == (4, 4):
-        return np.array(arr, copy=True)
+        out = np.array(arr, copy=True)
+        _dbg(f"canonical affine 4x4 ok:\n{out}")
+        return out
 
     if arr.ndim != 2 or arr.shape[0] < 4 or arr.shape[1] < 4:
         raise ValueError("Expected affine with at least 4x4 elements")
@@ -54,6 +72,7 @@ def _canonical_affine(affine: np.ndarray) -> np.ndarray:
     canonical = np.eye(4, dtype=arr.dtype)
     canonical[:3, :3] = arr[:3, :3]
     canonical[:3, 3] = arr[:3, 3]
+    _dbg(f"affine shape {arr.shape} coerced to 4x4 canonical:\n{canonical}")
     return canonical
 
 @dataclass
@@ -79,6 +98,7 @@ def _as_4d_dwi(data: np.ndarray, bvals: np.ndarray) -> np.ndarray:
 
     arr = np.asarray(data)
     if arr.ndim == 4:
+        _dbg(f"DWI already 4-D: shape={arr.shape}")
         return arr
     if arr.ndim < 4:
         raise ValueError(f"DWI must be >=4-D, got {arr.ndim}D")
@@ -93,6 +113,7 @@ def _as_4d_dwi(data: np.ndarray, bvals: np.ndarray) -> np.ndarray:
         grad_axis = arr.ndim - 1
 
     arr = np.moveaxis(arr, grad_axis, -1)
+    _dbg(f"DWI grad axis chosen: axis={grad_axis}, shape after move={arr.shape}")
 
     if arr.ndim > 4:
         to_squeeze: list[int] = []
@@ -101,11 +122,13 @@ def _as_4d_dwi(data: np.ndarray, bvals: np.ndarray) -> np.ndarray:
                 to_squeeze.append(ax)
         if to_squeeze:
             arr = np.squeeze(arr, axis=tuple(to_squeeze))
+            _dbg(f"Squeezed singleton axes {to_squeeze}; new shape={arr.shape}")
 
     if arr.ndim != 4:
         raise ValueError(
             f"Failed to coerce DWI to 4-D. Shape after coercion: {arr.shape}"
         )
+    _dbg(f"DWI final 4-D shape={arr.shape}")
     return arr
 
 
@@ -129,13 +152,16 @@ def _to_xyz(points: np.ndarray) -> np.ndarray:
 
     P = np.asarray(points)
     if P.ndim != 2:
+        _dbg(f"streamline points ndim={P.ndim}, pass through")
         return P
     if P.shape[1] == 3:
+        _dbg("streamline already Nx3")
         return P.astype(np.float32)
     if P.shape[1] >= 4:
         w = P[:, 3]
         w = np.where((w == 0) | (~np.isfinite(w)), 1.0, w)
         out = (P[:, :3] / w[:, None]).astype(np.float32)
+        _dbg("streamline had >=4 cols, dehomogenised to Nx3")
         return out
     # fewer than 3 columns, pass through
     return P.astype(np.float32)
@@ -145,10 +171,17 @@ def _coerce_streamlines_xyz(sls: Streamlines) -> Streamlines:
     """Ensure every streamline is Nx3 and has at least two points."""
 
     out = Streamlines()
+    idx = 0
     for sl in sls:
         xyz = _to_xyz(sl)
         if xyz.shape[0] >= 2 and xyz.shape[1] == 3:
             out.append(xyz)
+            if _DBG and idx < 3:
+                _dbg(f"kept streamline[{idx}] shape={xyz.shape}, "
+                     f"head={np.array2string(xyz[:2], precision=3)}")
+                idx += 1
+        else:
+            _dbg(f"dropped streamline shape={xyz.shape}")
     return out
 
 
@@ -240,6 +273,8 @@ def _fury_render_worker(
     try:
         tractogram = nib_streamlines.load(tract_path).tractogram
         streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
+        if _DBG:
+            _dbg(f"FURY worker loaded {len(streamlines)} streamlines")
         _render_with_fury(
             streamlines,
             output_path,
@@ -363,7 +398,9 @@ def _aggregate_streamline_colours(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return per-voxel colour averages and streamline densities."""
 
-    inv_affine = np.linalg.inv(_canonical_affine(affine))
+    aff4 = _canonical_affine(affine)
+    inv_affine = np.linalg.inv(aff4)
+    _dbg(f"overlay inv_affine shape={inv_affine.shape}")
     counts = np.zeros(volume_shape, dtype=np.float32)
     colour_sum = np.zeros(volume_shape + (3,), dtype=np.float32)
 
@@ -507,8 +544,36 @@ def generate_tractography(
     dwi_path, bval_path, bvec_path = found
 
     img = nib.load(dwi_path)
+    hdr = img.header
+    # Dump useful header info when debug is on
+    if _DBG:
+        try:
+            dim = getattr(hdr, "get_data_shape", lambda: None)()
+        except Exception:
+            dim = None
+        _dbg(f"loaded DWI: path={dwi_path}")
+        _dbg(f"img.shape={getattr(img, 'shape', None)} | header.shape={dim}")
+        try:
+            s_code = int(hdr["sform_code"])
+            q_code = int(hdr["qform_code"])
+            _dbg(f"sform_code={s_code} qform_code={q_code}")
+        except Exception:
+            _dbg("no sform/qform codes available")
+        try:
+            _dbg(f"qform:\n{pformat(img.get_qform())}")
+        except Exception:
+            pass
+        try:
+            _dbg(f"sform:\n{pformat(img.get_sform())}")
+        except Exception:
+            pass
+        _dbg(f"img.affine shape={getattr(img, 'affine', np.eye(4)).shape}")
+
     # Force a 4x4 voxel->world affine even if header carries higher-dim transforms.
     voxel_to_world = _canonical_affine(getattr(img, "affine", np.eye(4)))
+    if voxel_to_world.shape != (4, 4):
+        voxel_to_world = _canonical_affine(voxel_to_world)
+    _dbg(f"voxel_to_world final shape={voxel_to_world.shape}")
 
     streamlines: Optional[Streamlines] = None
     if os.path.exists(tract_path):
@@ -523,6 +588,7 @@ def generate_tractography(
 
     if streamlines is None:
         raw = img.get_fdata(dtype=np.float32)
+        _dbg(f"raw DWI dtype={raw.dtype} shape={raw.shape} ndim={raw.ndim}")
 
         bvals = np.loadtxt(bval_path)
         bvecs = np.loadtxt(bvec_path)
@@ -535,62 +601,93 @@ def generate_tractography(
                 f"bvals/bvecs mismatch. volumes={data.shape[-1]}, "
                 f"bvals={bvals.size}, bvecs={bvecs.shape}"
             )
-        print(
-            f"[tracks] DWI shape={_shape_str(data)} | "
-            f"bvals={bvals.size} | "
-            f"affine(vox->mm) shape={voxel_to_world.shape}"
+        _dbg(
+            f"DWI shape={data.shape} | bvals={bvals.size} | "
+            f"bvecs shape={bvecs.shape} | aff(vox->mm)={voxel_to_world.shape}"
         )
+        with np.errstate(all='ignore'):
+            norms = np.linalg.norm(bvecs, axis=1)
+        _dbg(f"bvec norms sample={norms[:10]}")
 
         gtab = gradient_table(bvals=bvals, bvecs=bvecs)
+        _dbg("built gradient table")
         tensor_model = TensorModel(gtab)
-        tensor_fit = tensor_model.fit(data)
+        try:
+            tensor_fit = tensor_model.fit(data)
+        except Exception as e:
+            _dbg(f"*** FATAL in section: TensorModel.fit | {type(e).__name__}: {e}")
+            raise
 
         fa_volume = tensor_fit.fa.astype(np.float32)
         fa_volume = np.nan_to_num(fa_volume, nan=0.0, posinf=0.0, neginf=0.0)
+        _dbg(f"FA shape={fa_volume.shape} range=({fa_volume.min():.3f},{fa_volume.max():.3f})")
 
         wm_mask = fa_volume > 0.2
         if not np.any(wm_mask):
             raise RuntimeError(
                 "Diffusion data does not contain voxels above FA threshold (0.2)"
             )
+        _dbg(f"WM mask voxels={int(np.count_nonzero(wm_mask))}")
 
         stopping_criterion = ThresholdStoppingCriterion(fa_volume, 0.15)
 
-        peaks = peaks_from_model(
-            tensor_model,
-            data,
-            default_sphere,
-            relative_peak_threshold=0.5,
-            min_separation_angle=25,
-            mask=wm_mask,
-            return_sh=False,
-            # Make the direction-getter live in the same explicit 4x4 space.
-            affine=voxel_to_world,
-        )
+        try:
+            peaks = peaks_from_model(
+                tensor_model,
+                data,
+                default_sphere,
+                relative_peak_threshold=0.5,
+                min_separation_angle=25,
+                mask=wm_mask,
+                return_sh=False,
+            )
+            _dbg("peaks_from_model ok")
+        except TypeError as e:
+            _dbg(f"*** FATAL in section: peaks_from_model arg mismatch | {e}")
+            raise
+        except Exception as e:
+            _dbg(f"*** FATAL in section: peaks_from_model | {type(e).__name__}: {e}")
+            raise
 
         # Keep seeds in voxel space; LocalTracking will lift to mm using affine.
         seeds = seeds_from_mask(wm_mask, density=1)
-        streamline_generator = LocalTracking(
-            peaks,
-            stopping_criterion,
-            seeds,
-            affine=voxel_to_world,
-            step_size=0.5,
-            return_all=False,
-        )
+        _dbg(f"seeds count={len(seeds)}; first={seeds[0] if len(seeds)>0 else None}")
+        # Hard guard: force 4x4 before passing to LocalTracking
+        lt_affine = _canonical_affine(voxel_to_world)
+        if lt_affine.shape != (4, 4):
+            _dbg(f"LocalTracking affine had shape {lt_affine.shape}, coerced to 4x4")
+            lt_affine = _canonical_affine(lt_affine)
+        try:
+            streamline_generator = LocalTracking(
+                peaks,
+                stopping_criterion,
+                seeds,
+                affine=lt_affine,
+                step_size=0.5,
+                return_all=False,
+            )
+        except Exception as e:
+            _dbg(f"*** FATAL in section: LocalTracking ctor | {type(e).__name__}: {e}")
+            _dbg(f"affine passed to LT:\n{lt_affine}")
+            raise
         streamlines = _coerce_streamlines_xyz(Streamlines(streamline_generator))
+        _dbg(f"streamlines generated: {len(streamlines)}")
 
         if len(streamlines) == 0:
             raise RuntimeError(
                 "Tractography produced no streamlines – check diffusion quality"
             )
 
-        tractogram = nib_streamlines.Tractogram(
-            streamlines,
-            # Streamlines are in world (mm) because we provided affine to LocalTracking.
-            affine_to_rasmm=voxel_to_world,
-        )
-        nib_streamlines.save(tractogram, tract_path)
+        try:
+            tractogram = nib_streamlines.Tractogram(
+                streamlines,
+                affine_to_rasmm=_canonical_affine(voxel_to_world),
+            )
+            nib_streamlines.save(tractogram, tract_path)
+            _dbg(f"saved tractogram: {tract_path}")
+        except Exception as e:
+            _dbg(f"*** FATAL in section: save tractogram | {type(e).__name__}: {e}")
+            raise
     else:
         fa_candidates = (
             os.path.join(diffusion_dir, "fa_map_native_debug.nii.gz"),
@@ -647,7 +744,11 @@ def generate_tractography(
                 fa_volume, voxel_to_world, img.header
             )
         montage_path = os.path.join(tract_image_dir, "tractography_montage.png")
-        _render_montage(streamlines, img, background_img, montage_path, title=montage_title)
+        try:
+            _render_montage(streamlines, img, background_img, montage_path, title=montage_title)
+        except Exception as e:
+            _dbg(f"*** FATAL in section: render montage | {type(e).__name__}: {e}")
+            raise
 
     return TractographyOutputs(
         tract_path=tract_path,
