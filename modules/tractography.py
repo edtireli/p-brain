@@ -4,6 +4,7 @@ Heavy debug mode added. Set P_BRAIN_DEBUG_TRACKS=1 to enable extra prints.
 Also writes a JSON snapshot alongside outputs for post-mortem inspection.
 """
 
+import platform
 from __future__ import annotations
 from functools import wraps
 
@@ -280,13 +281,17 @@ def _render_with_fury(
         streamlines = Streamlines(streamlines)
     scene.background(background_color)
 
-    colours = dipy_colormap.line_colors(streamlines)
-    stream_actor = dipy_actor.line(
-        streamlines,
-        colors=colours,
-        linewidth=1.0,
-    )
-    scene.add(stream_actor)
+    try:
+        colours = dipy_colormap.line_colors(streamlines)
+        stream_actor = dipy_actor.line(
+            streamlines,
+            colors=colours,
+            linewidth=1.0,
+        )
+        scene.add(stream_actor)
+    except Exception:
+        import traceback as _tb
+        raise RuntimeError("FURY line actor build failed:\n" + _tb.format_exc())
 
     # Gently rotate the scene so fibres are rendered with depth cues.
     scene.reset_camera()
@@ -304,8 +309,9 @@ def _render_with_fury(
 
     try:
         dipy_window.snapshot(scene, **snapshot_kwargs)
-    except Exception as exc:  # noqa: BLE001 - propagate to caller for fallback
-        raise RuntimeError("FURY snapshot failed") from exc
+    except Exception:
+        import traceback as _tb
+        raise RuntimeError("FURY snapshot failed:\n" + _tb.format_exc())
     finally:
         clear = getattr(scene, "clear", None)
         if callable(clear):  # pragma: no branch - safety guard for older fury
@@ -324,7 +330,7 @@ def _fury_render_worker(
         tractogram = nib_streamlines.load(tract_path).tractogram
         streamlines = _coerce_streamlines_xyz(Streamlines(tractogram.streamlines))
         if _DBG:
-            _dbg(f"FURY worker loaded {len(streamlines)} streamlines")
+            print(f"[tracks][dbg] FURY worker loaded {len(streamlines)} streamlines", flush=True)
         _render_with_fury(
             streamlines,
             output_path,
@@ -332,8 +338,12 @@ def _fury_render_worker(
         )
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # noqa: BLE001 - propagate message to parent process
-        result_queue.put((False, str(exc)))
+    except Exception:
+        import traceback as _tb
+        tb = _tb.format_exc()
+        # include a tiny bit of state; affine shapes etc are printed earlier already
+        msg = "[worker traceback follows]\n" + tb
+        result_queue.put((False, msg))
     else:
         result_queue.put((True, None))
 
@@ -345,7 +355,12 @@ def _env_flag_disabled(value: str) -> bool:
 
 
 def _should_use_fury() -> bool:
-    """Determine whether FURY rendering should be attempted."""
+    """Determine whether FURY rendering should be attempted.
+
+    Default OFF on Apple Silicon macOS due to VTK/Metal offscreen quirks
+    that yield transform shape mismatches. Allow explicit opt-in via
+    P_BRAIN_ENABLE_FURY=1. Explicit disable via P_BRAIN_DISABLE_FURY=1.
+    """
 
     if not _FURY_AVAILABLE:
         return False
@@ -358,6 +373,14 @@ def _should_use_fury() -> bool:
     if disable_flag:
         return not disable_flag.strip().lower() in {"1", "true", "yes", "on"}
 
+    # Platform default: avoid FURY on Apple Silicon macOS
+    try:
+        if platform.system() == "Darwin" and platform.machine() in {"arm64", "aarch64"}:
+            if _DBG:
+                _dbg_print("[tracks][dbg] FURY default OFF on macOS arm64; use P_BRAIN_ENABLE_FURY=1 to force ON")
+            return False
+    except Exception:
+        pass
     return True
 
 
@@ -397,7 +420,8 @@ def _render_with_fury_isolated(
     if not success:
         prefix = "[tracks] FURY rendering failed"
         if message:
-            print(f"{prefix}: {message}")
+            # message already includes traceback from worker
+            print(f"{prefix}:\n{message}")
         else:
             print(f"{prefix} – falling back to matplotlib")
 
@@ -823,6 +847,10 @@ def generate_tractography(
     tract_image_dir = os.path.join(image_directory, "tractography")
     os.makedirs(tract_image_dir, exist_ok=True)
 
+    if _DBG:
+        try:
+            _dbg_print(f"[tracks][dbg] platform={platform.system()} arch={platform.machine()}")
+        except Exception: pass
     # Persist debug snapshot
     if _DBG:
         try:
