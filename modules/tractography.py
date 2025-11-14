@@ -1,6 +1,7 @@
 """Utilities to compute and visualise diffusion tractography streamlines."""
 
 from __future__ import annotations
+from functools import wraps
 
 import inspect
 import multiprocessing as mp
@@ -56,6 +57,19 @@ def _canonical_affine(affine: np.ndarray) -> np.ndarray:
     return canonical
 
 
+def _squeeze_dwi_4d(arr: np.ndarray) -> np.ndarray:
+    """
+    Ensure DWI data is 4D (X,Y,Z,N). Handle Philips/RSI 5D (X,Y,Z,1,N).
+    """
+
+    a = np.asarray(arr)
+    if a.ndim == 5 and a.shape[3] == 1:
+        a = a[..., 0, :]
+    if a.ndim != 4:
+        raise ValueError(f"Expected 4D DWI (X,Y,Z,N), got shape {a.shape}")
+    return a
+
+
 @dataclass
 class TractographyOutputs:
     """Container describing generated tractography artefacts."""
@@ -84,7 +98,8 @@ def _to_xyz(points: np.ndarray) -> np.ndarray:
     if P.shape[1] >= 4:
         w = P[:, 3]
         w = np.where((w == 0) | (~np.isfinite(w)), 1.0, w)
-        return (P[:, :3] / w[:, None]).astype(np.float32)
+        out = (P[:, :3] / w[:, None]).astype(np.float32)
+        return out
     # fewer than 3 columns, pass through
     return P.astype(np.float32)
 
@@ -454,7 +469,7 @@ def generate_tractography(
 
     dwi_path, bval_path, bvec_path = found
 
-    img = nib.load(dwi_path)
+    img = nib.load(dwi_path)  # may be 5D for Philips RSI
     voxel_to_world = _canonical_affine(img.affine)
 
     streamlines: Optional[Streamlines] = None
@@ -469,7 +484,8 @@ def generate_tractography(
     fa_volume: Optional[np.ndarray] = None
 
     if streamlines is None:
-        data = img.get_fdata(dtype=np.float32)
+        # Force strict 4D (X,Y,Z,N) for all DIPY ops
+        data = _squeeze_dwi_4d(img.get_fdata(dtype=np.float32))
 
         bvals = np.loadtxt(bval_path)
         bvecs = np.loadtxt(bvec_path)
@@ -506,7 +522,7 @@ def generate_tractography(
             return_sh=False,
         )
 
-        # Generate seeds in voxel space to avoid mixed conventions
+        # Generate seeds in voxel space; LocalTracking will use affine to map
         seeds = seeds_from_mask(wm_mask, density=1)
         streamline_generator = LocalTracking(
             peaks,
@@ -568,7 +584,7 @@ def generate_tractography(
         else:
             if fa_volume is None:
                 # When tractography was precomputed we may not have FA in-memory.
-                data = img.get_fdata(dtype=np.float32)
+                data = _squeeze_dwi_4d(img.get_fdata(dtype=np.float32))
                 bvals = np.loadtxt(bval_path)
                 bvecs = np.loadtxt(bvec_path)
                 if bvecs.ndim == 2 and bvecs.shape[0] == 3 and bvecs.shape[1] != 3:
