@@ -6,6 +6,7 @@ Also writes a JSON snapshot alongside outputs for post-mortem inspection.
 
 from __future__ import annotations
 
+import colorsys
 import platform
 from functools import wraps
 
@@ -55,6 +56,45 @@ from dipy.tracking.utils import seeds_from_mask
 from modules.opt08_fa import find_dwi_files
 
 _DBG = os.environ.get("P_BRAIN_DEBUG_TRACKS", "1").strip().lower() in {"1","true","yes","on"}
+
+
+def _env_float(name: str, default: Optional[float]) -> Optional[float]:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        _dbg(f"invalid float for {name}: {value}")
+        return default
+    return parsed
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        _dbg(f"invalid int for {name}: {value}")
+        return default
+    return max(1, parsed)
+
+
+def _streamline_filter_defaults() -> dict[str, Optional[float]]:
+    min_length = _env_float("P_BRAIN_TRACK_MIN_LENGTH", 30.0)
+    if min_length is not None and min_length <= 0:
+        min_length = None
+    max_length = _env_float("P_BRAIN_TRACK_MAX_LENGTH", 200.0)
+    if max_length is not None and max_length <= 0:
+        max_length = None
+    subsample = _env_int("P_BRAIN_TRACK_SUBSAMPLE", 5)
+    return {
+        "min_length": min_length,
+        "max_length": max_length,
+        "subsample_stride": subsample,
+    }
 
 def _dbg_print(msg: str) -> None:
     print(msg, flush=True)
@@ -236,6 +276,87 @@ def _coerce_streamlines_xyz(sls: Streamlines) -> Streamlines:
     return out
 
 
+def _streamline_length(sl: np.ndarray) -> float:
+    if sl.shape[0] < 2:
+        return 0.0
+    diffs = np.diff(sl.astype(np.float32), axis=0)
+    distances = np.linalg.norm(diffs, axis=1)
+    return float(np.sum(distances))
+
+
+def _length_stats(lengths: np.ndarray) -> dict[str, Optional[float]]:
+    if lengths.size == 0:
+        return {"count": 0, "min": None, "max": None, "mean": None, "median": None}
+    return {
+        "count": int(lengths.size),
+        "min": float(np.min(lengths)),
+        "max": float(np.max(lengths)),
+        "mean": float(np.mean(lengths)),
+        "median": float(np.median(lengths)),
+    }
+
+
+def _postprocess_streamlines(
+    streamlines: Iterable[np.ndarray],
+    *,
+    min_length: Optional[float],
+    max_length: Optional[float],
+    subsample_stride: int,
+    debug_blob: Optional[dict] = None,
+) -> Streamlines:
+    sl_list = Streamlines(streamlines)
+    lengths = np.array([_streamline_length(sl) for sl in sl_list], dtype=np.float32)
+
+    if debug_blob is not None:
+        debug_blob["raw_count"] = int(len(sl_list))
+        debug_blob["raw_length_stats"] = _length_stats(lengths)
+
+    if min_length is not None:
+        keep = lengths >= float(min_length)
+    else:
+        keep = np.ones(len(sl_list), dtype=bool)
+    if max_length is not None:
+        keep &= lengths <= float(max_length)
+
+    if keep.size and not np.all(keep):
+        sl_list = Streamlines([sl for sl, flag in zip(sl_list, keep) if flag])
+        lengths = lengths[keep]
+        if _DBG:
+            _dbg(
+                f"length filter applied: kept={len(sl_list)} min={min_length} max={max_length}"
+            )
+
+    stride = max(1, int(subsample_stride))
+    if stride > 1 and len(sl_list) > 0:
+        sl_list = Streamlines(sl_list[::stride])
+        lengths = lengths[::stride]
+        if _DBG:
+            _dbg(f"subsampled streamlines with stride={stride}; count={len(sl_list)}")
+
+    if debug_blob is not None:
+        debug_blob["filtered_count"] = int(len(sl_list))
+        debug_blob["filtered_length_stats"] = _length_stats(lengths)
+
+    return sl_list
+
+
+def _streamline_orientation_colours(streamlines: Streamlines) -> list[np.ndarray]:
+    colours: list[np.ndarray] = []
+    for sl in streamlines:
+        if sl.shape[0] < 2:
+            rgb = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        else:
+            vec = sl[-1] - sl[0]
+            if not np.any(np.isfinite(vec)):
+                rgb = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+            else:
+                angle = float(np.arctan2(vec[1], vec[0]))
+                hue = (angle + np.pi) / (2 * np.pi)
+                rgb = np.array(colorsys.hsv_to_rgb(hue, 0.85, 1.0), dtype=np.float32)
+        colours.append(np.repeat(rgb[None, :], sl.shape[0], axis=0))
+    return colours
+
+
 def _streamline_fraction_inside(
     streamlines: Streamlines,
     affine: Optional[np.ndarray],
@@ -406,26 +527,42 @@ def _render_with_fury(
 ) -> None:
     """Render colourful streamlines using ``fury`` for rich shading and lighting."""
 
+    streamlines = Streamlines(streamlines)
     scene = dipy_window.Scene()
     if _DBG:
         _dbg_print(
-            f"[tracks][dbg] FURY scene created. streamlines_count="
-            f"{sum(1 for _ in streamlines)}"
+            f"[tracks][dbg] FURY scene created. streamlines_count={len(streamlines)}"
         )
-        streamlines = Streamlines(streamlines)
     scene.background(background_color)
 
     try:
-        colours = dipy_colormap.line_colors(streamlines)
-        stream_actor = dipy_actor.line(
+        colours = _streamline_orientation_colours(streamlines)
+        stream_actor = dipy_actor.streamtube(
             streamlines,
             colors=colours,
-            linewidth=1.0,
+            linewidth=0.3,
         )
         scene.add(stream_actor)
     except Exception:
         import traceback as _tb
-        raise RuntimeError("FURY line actor build failed:\n" + _tb.format_exc())
+        try:
+            stream_actor = dipy_actor.line(
+                streamlines,
+                colors=colours,
+                linewidth=1.0,
+            )
+            scene.add(stream_actor)
+        except Exception:
+            try:
+                fallback_colours = dipy_colormap.line_colors(streamlines)
+                stream_actor = dipy_actor.line(
+                    streamlines,
+                    colors=fallback_colours,
+                    linewidth=1.0,
+                )
+                scene.add(stream_actor)
+            except Exception:
+                raise RuntimeError("FURY line actor build failed:\n" + _tb.format_exc())
 
     # Gently rotate the scene so fibres are rendered with depth cues.
     scene.reset_camera()
@@ -767,6 +904,12 @@ def generate_tractography(
         "dipy_version": None,
         "env": {k: v for k, v in os.environ.items() if k.startswith("P_BRAIN") or k.startswith("OMP_")},
     }
+    filter_config = _streamline_filter_defaults()
+    debug_blob["streamline_filter"] = {
+        "min_length": filter_config["min_length"],
+        "max_length": filter_config["max_length"],
+        "subsample_stride": filter_config["subsample_stride"],
+    }
     try:
         import dipy
 
@@ -808,8 +951,10 @@ def generate_tractography(
         )
 
     fa_volume: Optional[np.ndarray] = None
+    stream_stats: dict[str, object] = {}
 
     if streamlines is None:
+        stream_stats["source"] = "generated"
         raw = img.get_fdata(dtype=np.float32)
         bvals = np.loadtxt(bval_path)
         bvecs = np.loadtxt(bvec_path)
@@ -935,10 +1080,17 @@ def generate_tractography(
             raise
         streamlines = _coerce_streamlines_xyz(Streamlines(streamline_generator))
         _dbg(f"streamlines generated: {len(streamlines)}")
+        streamlines = _postprocess_streamlines(
+            streamlines,
+            min_length=filter_config["min_length"],
+            max_length=filter_config["max_length"],
+            subsample_stride=filter_config["subsample_stride"],
+            debug_blob=stream_stats,
+        )
 
         if len(streamlines) == 0:
             raise RuntimeError(
-                "Tractography produced no streamlines – check diffusion quality"
+                "Tractography produced no streamlines after length filtering"
             )
 
         try:
@@ -981,6 +1133,22 @@ def generate_tractography(
         )
         if loaded_streamlines is not None:
             streamlines = loaded_streamlines
+        stream_stats["source"] = "loaded"
+        if streamlines is None:
+            raise RuntimeError("Failed to load existing tractography streamlines")
+        streamlines = _postprocess_streamlines(
+            streamlines,
+            min_length=filter_config["min_length"],
+            max_length=filter_config["max_length"],
+            subsample_stride=filter_config["subsample_stride"],
+            debug_blob=stream_stats,
+        )
+        if len(streamlines) == 0:
+            raise RuntimeError(
+                "Existing tractography streamlines were removed by length filtering"
+            )
+
+    debug_blob["streamline_stats"] = stream_stats
 
     image_directory = _ensure_image_directory(image_directory, analysis_directory)
     tract_image_dir = os.path.join(image_directory, "tractography")
