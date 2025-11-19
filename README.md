@@ -163,39 +163,39 @@ All generated assets reside under the selected dataset folder inside `Analysis/`
 ---
 
 ## Representative results gallery
-The figures below summarize what a fully automatic run produces for a technically uniform cohort of 97 DCE-MRI scans from 58 participants with mild traumatic brain injury (mTBI) but no macroscopic lesions on structural MRI. Each dataset was processed with the same automated sequence of segmentation, vascular input extraction, concentration conversion, and kinetic modeling (Patlak + extended Tofts + deconvolution). The resulting deliverables span voxelwise maps, parcellated summaries, slice-wise distributions, cohort fingerprints, and compact QC dashboards. Use these placeholders to drop in your exported PNGs from `Images/` or `Plots/`.
+The figures below summarize what a fully automatic run produces for a technically uniform cohort of 97 DCE-MRI scans from 58 participants with mild traumatic brain injury (mTBI) but no macroscopic lesions on structural MRI. Each dataset was processed with the same automated sequence of segmentation, vascular input extraction, concentration conversion, and kinetic modeling (Patlak + extended Tofts + deconvolution). The resulting deliverables span voxelwise maps, parcellated summaries, slice-wise distributions, cohort fingerprints, and compact QC dashboards. The PNGs stored under `src/img/` are the actual exports from the pipeline.
 
 ### Voxelwise maps
 Voxelwise maps quantify physiological parameters at native spatial resolution so you can examine localized BBB leakage, perfusion, and vascular volume without aggregating over parcels. These maps constitute the foundation for every downstream summary in the pipeline.
 
 - **BBB influx (Ki)** – Patlak-derived unidirectional transfer constant that reflects blood–brain barrier permeability.
 
-  ![Voxelwise Ki map placeholder](Plots/ki_voxel_montage_patlak.png)
+  ![Voxelwise Ki map](src/img/ki_voxel_montage_patlak.png)
 
 - **Cerebral blood flow (CBF)** – Model-free residue deconvolution highlights expected perfusion contrast between cortical/subcortical gray matter and deep white matter and resolves major vessels such as the circle of Willis.
 
-  ![Voxelwise CBF map placeholder](Plots/cbf_montage.png)
+  ![Voxelwise CBF map](src/img/cbf_montage.png)
 
 - **Plasma volume (vp)** – Patlak intercept emphasizes the intravascular compartment along cortical ribbons and venous structures.
 
-  ![Voxelwise vp map placeholder](Plots/vp_per_voxel_patlak.png)
+  ![Voxelwise vp map](src/img/vp_per_voxel_patlak.png)
 
 - **Capillary transit-time heterogeneity (CTH)** – Derived from the normalized outflow $h(t)=-r'(t)/\int(-r')$, revealing spatial mottling that reflects variability in capillary passage times.
 
-  ![Voxelwise CTH map placeholder](Plots/cth_montage.png)
+  ![Voxelwise CTH map](src/img/cth_montage.png)
 
 - **Mean transit time (MTT)** – First-moment summary of the residue function that complements CTH by capturing overall transit duration.
 
-  ![Voxelwise MTT map placeholder](Plots/mtt_montage.png)
+  ![Voxelwise MTT map](src/img/mtt_montage.png)
 
 ### Regional and parcellated organization
 FastSurfer anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages.
 
-- ![Parcel-level CBF placeholder](Plots/cbf_parcel_montage_tikhonov.png)
-- ![Parcel-level CTH placeholder](Plots/cth_parcel_montage_tikhonov.png)
-- ![Parcel-level MTT placeholder](Plots/mtt_parcel_montage_tikhonov.png)
-- ![Parcel-level vp placeholder](Plots/vp_atlas_montage_patlak.png)
-- ![Parcel-level Ki placeholder](Plots/ki_atlas_montage_patlak.png)
+- ![Parcel-level CBF](src/img/cbf_parcel_montage_tikhonov.png)
+- ![Parcel-level CTH](src/img/cth_parcel_montage_tikhonov.png)
+- ![Parcel-level MTT](src/img/mtt_parcel_montage_tikhonov.png)
+- ![Parcel-level vp](src/img/vp_atlas_montage_patlak.png)
+- ![Parcel-level Ki](src/img/ki_atlas_montage_patlak.png)
 
 ### Cohort distributions and QC
 Slice-wise boxplots summarize how each metric evolves along the superior–inferior axis, preserving the expected gray/white hierarchy while flagging outliers or motion-contaminated slabs.
