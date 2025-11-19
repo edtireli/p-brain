@@ -218,6 +218,7 @@ def generate_parametric_montages(
     rows: int = ROWS,
     cols: int = COLS,
     dpi: int = DPI,
+    transparent_background: bool = False,
 ) -> None:
     """Render PNG montages for available parametric maps.
 
@@ -247,6 +248,9 @@ def generate_parametric_montages(
         Layout of the montage grid.
     dpi:
         Resolution of the saved PNG files.
+    transparent_background:
+        When True, montages are rendered without anatomical underlays and the
+        saved PNGs use a transparent background.
     """
 
     if not os.path.isdir(analysis_directory):
@@ -365,6 +369,7 @@ def generate_parametric_montages(
                 # Parcel/atlas montages should display every finite voxel from the map.
                 job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
 
+                render_overlay = None if transparent_background else overlay
                 _render_montage(
                     map_path,
                     out_path,
@@ -374,9 +379,10 @@ def generate_parametric_montages(
                     rows=rows,
                     cols=cols,
                     dpi=dpi,
-                    overlay=overlay,
+                    overlay=render_overlay,
                     brain_mask=job_brain_mask,
                     segmentation_img=segmentation_img,
+                    transparent_background=transparent_background,
                 )
                 generated_any = True
                 print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -397,8 +403,13 @@ def generate_projection_montages(
     cols: int = COLS,
     dpi: int = DPI,
     population_stats: ParcelStatistics | None = None,
+    transparent_background: bool = False,
 ) -> bool:
-    """Render parcel-level projection montages for atlas-based metrics."""
+    """Render parcel-level projection montages for atlas-based metrics.
+
+    When ``transparent_background`` is True the saved PNGs omit the default
+    grey canvas to simplify downstream compositing.
+    """
 
     if not os.path.isdir(analysis_directory):
         return False
@@ -482,6 +493,7 @@ def generate_projection_montages(
                     cols=cols,
                     dpi=dpi,
                     reference_img=reference_img,
+                    transparent_background=transparent_background,
                 )
                 generated_any = True
                 print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
@@ -1592,6 +1604,7 @@ def _render_montage(
     overlay: Dict[str, Any] | None = None,
     brain_mask: np.ndarray | None = None,
     segmentation_img: nib.Nifti1Image | None = None,
+    transparent_background: bool = False,
 ) -> None:
     is_atlas = job.base.endswith("_map_atlas")
     is_diffusion = _is_diffusion_job(job)
@@ -1743,11 +1756,13 @@ def _render_montage(
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
     # use solid figure background to avoid antialias bleed against transparency
+    figure_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
     fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="#e0e0e0"
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=figure_facecolor
     )
-    fig.patch.set_alpha(1.0)
+    fig.patch.set_alpha(0.0 if transparent_background else 1.0)
     axes = axes.ravel()
+    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
 
     overlay_volume = overlay.get("volume") if overlay else None
     overlay_mask_volume = overlay.get("mask_head") if overlay else None
@@ -1879,7 +1894,7 @@ def _render_montage(
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
-        ax.set_facecolor("#e0e0e0")
+        ax.set_facecolor(axis_facecolor)
         for spine in ax.spines.values():
             spine.set_visible(False)
 
@@ -2039,12 +2054,14 @@ def _render_montage(
     )
     # Match panel background and enforce full opacity; support both old and new Colorbar APIs.
     try:
-        cb.ax.set_facecolor("#e0e0e0")
+        cb_facecolor = axis_facecolor
+        cb.ax.set_facecolor(cb_facecolor)
+        target_alpha = 0.0 if transparent_background else 1.0
         if hasattr(cb.ax, "patch"):
-            cb.ax.patch.set_alpha(1.0)
+            cb.ax.patch.set_alpha(target_alpha)
         elif hasattr(cb, "patch"):
             # Some matplotlib builds use cb.patch instead of cb.ax.patch
-            cb.patch.set_alpha(1.0)
+            cb.patch.set_alpha(target_alpha)
     except Exception:
         pass
 
@@ -2063,7 +2080,13 @@ def _render_montage(
         spine.set_edgecolor("black")
 
     plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
-    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
+    save_kwargs = {"dpi": dpi, "edgecolor": "none"}
+    if transparent_background:
+        save_kwargs["facecolor"] = "none"
+        save_kwargs["transparent"] = True
+    else:
+        save_kwargs["facecolor"] = fig.get_facecolor()
+    plt.savefig(out_path, **save_kwargs)
     plt.close(fig)
 
 
@@ -2077,6 +2100,7 @@ def _render_projection_montage(
     cols: int,
     dpi: int,
     reference_img: nib.Nifti1Image,
+    transparent_background: bool = False,
 ) -> None:
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
@@ -2125,11 +2149,13 @@ def _render_projection_montage(
     cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
+    figure_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
     fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor="#e0e0e0"
+        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=figure_facecolor
     )
-    fig.patch.set_alpha(1.0)
+    fig.patch.set_alpha(0.0 if transparent_background else 1.0)
     axes = axes.ravel()
+    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
 
     nz = data.shape[2]
     if nz == 0:
@@ -2151,7 +2177,7 @@ def _render_projection_montage(
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect("equal")
-        ax.set_facecolor("#e0e0e0")
+        ax.set_facecolor(axis_facecolor)
         for spine in ax.spines.values():
             spine.set_visible(False)
 
@@ -2206,8 +2232,9 @@ def _render_projection_montage(
         extend=extend_flag,
         boundaries=boundaries,
     )
-    cb.ax.set_facecolor("#e0e0e0")
-    cb.patch.set_alpha(1.0)
+    cb_facecolor = axis_facecolor
+    cb.ax.set_facecolor(cb_facecolor)
+    cb.patch.set_alpha(0.0 if transparent_background else 1.0)
     try:
         cb.solids.set_edgecolor("face")
         cb.solids.set_alpha(1.0)
@@ -2220,7 +2247,13 @@ def _render_projection_montage(
         spine.set_edgecolor("black")
 
     plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
-    plt.savefig(out_path, dpi=dpi, facecolor=fig.get_facecolor(), edgecolor="none")
+    save_kwargs = {"dpi": dpi, "edgecolor": "none"}
+    if transparent_background:
+        save_kwargs["facecolor"] = "none"
+        save_kwargs["transparent"] = True
+    else:
+        save_kwargs["facecolor"] = fig.get_facecolor()
+    plt.savefig(out_path, **save_kwargs)
     plt.close(fig)
 
 
