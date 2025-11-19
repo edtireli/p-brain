@@ -66,6 +66,7 @@ Control cohorts live under `data/controls/<id>`. Set `PBRAIN_CONTROLS=1` or pass
 | `utils/` | Configuration, plotting helpers, and shared utilities. |
 | `AI/` | Default CNN weights for rICA/SSS slice detection and ROI segmentation. |
 | `addons/` | Optional plugins (e.g., GM/WM boundary ROIs). |
+| `src/img/` | Repository-owned images used exclusively in the README. |
 | `main.py` | Interactive runner used by the GUI/CLI. |
 | `enumerator.py` | Batch launcher that iterates over multiple datasets. |
 
