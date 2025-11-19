@@ -203,7 +203,7 @@ Aggregating parcel statistics across subjects produces cohort fingerprints that 
 ### End-to-end transparency
 Composite panels document the entire automation chain—segmentation, vascular input functions, tissue curves, Patlak fits, and resulting parameter maps—so every decision remains auditable.
 
-![Transparency panel placeholder](Plots/AI_Tissue_slice_5_segmented_median.png)
+<img width="3560" height="5721" alt="AI_Tissue_slice_5_segmented_median (1) (6)" src="https://github.com/user-attachments/assets/f6458d56-7f39-4e2e-a3e0-9b3b16ddef67" />
 
 ### Whole-brain medians
 For dashboards or EHR-style summaries, the pipeline reports tissue-specific medians that retain GM>WM ordering while condensing each scan to a few numbers.
