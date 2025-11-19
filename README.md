@@ -200,16 +200,8 @@ FastSurfer anatomical labels propagated to DCE space allow every quantitative ma
 ### Cohort distributions and QC
 Slice-wise boxplots summarize how each metric evolves along the superior–inferior axis, preserving the expected gray/white hierarchy while flagging outliers or motion-contaminated slabs.
 
-- ![Slice-wise Ki distributions placeholder](Plots/ki_boxplots_2x3.png)
-- ![Slice-wise vp distributions placeholder](Plots/vp_boxplots_2x3.png)
-
 ### Cohort-level atlas projection
 Aggregating parcel statistics across subjects produces cohort fingerprints that can be projected back onto a reference segmentation for quick visual baselines.
-
-- ![Cohort-mean Ki placeholder](Plots/ki_projection_parcel_patlak.png)
-- ![Cohort-mean CBF placeholder](Plots/cbf_projection_parcel_tikhonov.png)
-- ![Cohort-mean CTH placeholder](Plots/cth_projection_parcel_tikhonov.png)
-- ![Cohort-mean MTT placeholder](Plots/mtt_projection_parcel_tikhonov.png)
 
 ### End-to-end transparency
 Composite panels document the entire automation chain—segmentation, vascular input functions, tissue curves, Patlak fits, and resulting parameter maps—so every decision remains auditable.
@@ -218,14 +210,6 @@ Composite panels document the entire automation chain—segmentation, vascular i
 
 ### Whole-brain medians
 For dashboards or EHR-style summaries, the pipeline reports tissue-specific medians that retain GM>WM ordering while condensing each scan to a few numbers.
-
-![Whole-brain Ki medians placeholder](Plots/ki_wholebrain.png)
-
-### Automated comparison to a reference implementation
-Built-in validation plots contrast _p_-Brain metrics with the Perffit2 workflow so you can monitor agreement without manual scripting.
-
-![GM/WM Ki comparison placeholder](Plots/ki_validation_1.png)
-![Subject-wise Ki correspondence placeholder](Plots/ki_validation_2.png)
 
 #### Summary of findings
 The automated pipeline delivers physiologically consistent voxelwise maps, regional summaries, cohort-level projections, and QC figures without user interaction. Exporting these assets alongside transparent diagnostics provides a repeatable baseline for longitudinal monitoring, multi-site harmonization, and future research extensions.
