@@ -190,13 +190,9 @@ Voxelwise maps quantify physiological parameters at native spatial resolution so
   ![Voxelwise MTT map](src/img/mtt_montage.png)
 
 ### Regional and parcellated organization
-FastSurfer anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages.
+FastSurfer anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages, see e.g. the parcelwise CBF map. 
 
 - ![Parcel-level CBF](src/img/cbf_parcel_montage_tikhonov.png)
-- ![Parcel-level CTH](src/img/cth_parcel_montage_tikhonov.png)
-- ![Parcel-level MTT](src/img/mtt_parcel_montage_tikhonov.png)
-- ![Parcel-level vp](src/img/vp_atlas_montage_patlak.png)
-- ![Parcel-level Ki](src/img/ki_atlas_montage_patlak.png)
 
 ### Cohort distributions and QC
 Slice-wise boxplots summarize how each metric evolves along the superior–inferior axis, preserving the expected gray/white hierarchy while flagging outliers or motion-contaminated slabs.
