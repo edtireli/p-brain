@@ -312,6 +312,7 @@ def _run_montage_for_dataset(
     use_projection=False,
     projection_stats=None,
     use_anatomical=False,
+    transparent_background=False,
 ):
     """Render parametric montages for ``dataset_id`` if possible."""
 
@@ -400,6 +401,7 @@ def _run_montage_for_dataset(
             dce_path,
             anatomical_overlay=anatomical_overlay,
             segmentation_path=segmentation_path,
+            transparent_background=transparent_background,
         )
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")
@@ -416,6 +418,7 @@ def _run_montage_for_dataset(
                 nifti_directory,
                 dce_path,
                 population_stats=projection_stats,
+                transparent_background=transparent_background,
             )
             overall_success &= projection_ok
         except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
@@ -625,6 +628,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--montage_transparent",
+        action="store_true",
+        help=(
+            "Render montages with a transparent background and without anatomical underlays "
+            "(implies --montage and disables --montage_anatomical)."
+        ),
+    )
+    parser.add_argument(
         "--projection",
         action="store_true",
         help=(
@@ -768,6 +779,12 @@ def main():
         print("No datasets found to process.")
         sys.exit(0)
 
+    if args.montage_transparent:
+        args.montage = True
+        if args.montage_anatomical:
+            print("[montage] --montage_transparent disables anatomical overlays.")
+            args.montage_anatomical = False
+
     if args.montage_anatomical:
         args.montage = True
         args.diffusion = True
@@ -822,6 +839,7 @@ def main():
                     use_projection=args.projection,
                     projection_stats=projection_stats,
                     use_anatomical=args.montage_anatomical,
+                    transparent_background=args.montage_transparent,
                 )
                 if not success:
                     exit_code = 1
@@ -856,6 +874,7 @@ def main():
                 use_projection=args.projection,
                 projection_stats=projection_stats,
                 use_anatomical=args.montage_anatomical,
+                transparent_background=args.montage_transparent,
             )
             if not success:
                 exit_code = 1
@@ -891,6 +910,7 @@ def main():
             use_projection=args.projection,
             projection_stats=projection_stats,
             use_anatomical=args.montage_anatomical,
+            transparent_background=args.montage_transparent,
         )
 
         if args.tracks:
