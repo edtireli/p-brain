@@ -1,299 +1,321 @@
-# _p_-Brain: Advanced Neuroimaging Analysis Tool
-![411586563-4f8bdcba-dbe6-41c7-b644-c0cdaf031fe9](https://github.com/user-attachments/assets/3376d87a-26af-4b73-ba57-e906aaf8e13c)
+# _p_-Brain: Automated DCE-MRI Perfusion and Permeability Pipeline
 
-Author: Edis Devin Tireli, M.Sc, Ph.D. student
+_p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic contrast-enhanced (DCE) MRI series into quantitative maps of blood–brain barrier leakage, vascular volume, and perfusion. The toolkit combines classical pharmacokinetic modeling with CNN-based region-of-interest (ROI) extraction, anatomical parcellation, and transparent quality-control outputs so that a single command can deliver voxel-wise, parcel-wise, and whole-brain readouts of:
 
-Affiliation: [Copenhagen University](https://www.ku.dk/english/)
+- BBB influx constant Ki
+- Plasma volume vp
+- Extended Tofts parameters (Ktrans, kep, ve)
+- Cerebral blood flow (CBF)
+- Mean transit time (MTT)
+- Capillary transit-time heterogeneity (CTH)
 
-## Motivation
-Understanding blood-brain barrier permeability is essential for assessing neurological disease and treatment response. _p_-Brain integrates segmentation, neural network-based ROI detection, and advanced kinetic modeling to compute the blood-brain barrier permeability (Ki) and cerebral blood flow (CBF). The toolkit can operate fully automatically, minimizing user error while allowing manual ROI delineation when desired. Patlak analysis and a regularised two-compartment model underpin the Ki estimation workflow.
+> **Author:** Edis Devin Tireli, M.Sc., Ph.D. student  
+> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet, and Department of Neuroscience, University of Copenhagen.
 
+---
 
-# Table of Contents
-1. Introduction
-2. Directory & Data Structure
-3. Installation
-4. How to use
-5. Core Features
-6. Fully Automated Mode
-7. Contributions
-8. License
-9. Acknowledgments
+## Quick navigation
+1. [Why p-Brain?](#why-p-brain)
+2. [Data layout and repository structure](#data-layout-and-repository-structure)
+3. [Installation](#installation)
+4. [Running the script](#running-the-script)
+5. [Workflow details](#workflow-details)
+6. [Outputs and deliverables](#outputs-and-deliverables)
+7. [Automation features](#automation-features)
+8. [Configuration and environment variables](#configuration-and-environment-variables)
+9. [Addons](#addons)
+10. [Contributing & support](#contributing--support)
+11. [License & acknowledgments](#license--acknowledgments)
 
+---
 
-## 1. Introduction
-_p_-Brain is a Python toolkit for quantitative analysis of MRI data with a focus on dynamic contrast-enhanced (DCE) protocols. It supports both Philips PAR/REC and NIfTI files and provides a set of modules for converting, viewing and processing images. The pipeline covers the full workflow from T1/M0 fitting, input function extraction and tissue segmentation to blood‑brain barrier permeability estimation.
+## Why p-Brain?
+Traditional DCE-MRI analysis requires hand-drawn ROIs for arterial/venous input functions, manual tissue masking, and bespoke scripts for each pharmacokinetic model. _p_-Brain removes these bottlenecks:
 
-All core functionality resides in the `modules/` package while helper routines are located under `utils/`. Optional neural networks for artery and vein identification are stored in the `AI/` directory. A small GUI is used to select a dataset, after which a terminal menu guides the user through each processing step. For cohort processing the script `enumerator.py` can launch `main.py` for multiple subjects in sequence, enabling unattended analysis.
+- **Single script, full pipeline** – From T1/M0 fitting to Patlak, extended Tofts, and deconvolution-based residue analysis.
+- **CNN-driven automation** – Neural networks detect the right internal carotid artery (rICA) and superior sagittal sinus (SSS); FastSurfer-based anatomical segmentations define tissue ROIs.
+- **Multi-scale reporting** – Every run produces voxel mosaics, parcel tables, slice-wise distributions, and whole-brain medians for Ki, vp, CBF, MTT, and CTH.
+- **Reproducible QC** – Time-shifted concentration curves, Patlak fits, reference comparisons, and cohort projections are generated automatically so every decision is traceable.
+- **Batch-ready** – `enumerator.py` runs the pipeline over entire cohorts with optional control handling and environment-based overrides.
 
-## 2. Directory & Data Structure
-The software expects a specific directory structure for optimal functioning. By default the MRI data should be placed within the `Data` folder, though an alternative location can be supplied via the `--data-dir` command line option or by setting the `P_BRAIN_DATA_DIR` environment variable. The layout inside the chosen directory must follow this structure:
+---
+
+## Data layout and repository structure
+### Expected dataset tree
+By default the GUI scans the `data/` directory (override via `--data-dir` or `P_BRAIN_DATA_DIR`). Each exam folder should contain raw input as well as the derived analysis subfolders:
 
 ```
-data
-└── data_1
-    ├── x.PAR
-    ├── x.REC
-    └── Analysis
-        ├── TSCC Data
-        ├── CTC Data
-        ├── ITC Data
-        └── ROI Data
-    └── Images    
-    └── NIfTI    
-└── data_2
-...
+data/
+└── subject_id/
+    ├── x.PAR / x.REC   # raw Philips exports (optional if NIfTI already provided)
+    ├── NIfTI/          # populated automatically when converting PAR/REC
+    ├── Analysis/
+    │   ├── CTC Data/
+    │   ├── TSCC Data/
+    │   ├── ITC Data/
+    │   └── ROI Data/
+    └── Images/
 ```
-Place your .PAR/.REC MRI data in the `data` directory (or the directory passed via `--data-dir`) under any folder name of your choosing. p-Brain will create the required subdirectories (e.g. `Analysis`, `Images`, `NIfTI`) automatically. NIfTI files generated from PAR/REC input or provided directly are stored under `NIfTI`, while derived figures are written to the `Images` directory.
+
+Control cohorts live under `data/controls/<id>`. Set `PBRAIN_CONTROLS=1` or pass `--controls` to `enumerator.py` so the script automatically tags outputs with a `control.json` descriptor.
 
 ### Repository overview
-- **modules/** – menu implementations such as T1 fitting and permeability models.
-- **utils/** – utilities for configuration, plotting and file handling.
-- **AI/** – default neural network models used for the automated pipeline.
-- **addons/** – optional plugins (e.g. boundary ROI extraction).
-- **enumerator.py** – helper script that invokes `main.py` for multiple datasets.
+| Path | Description |
+|------|-------------|
+| `modules/` | CLI menus, modeling backends, and GUI hooks. |
+| `utils/` | Configuration, plotting helpers, and shared utilities. |
+| `AI/` | Default CNN weights for rICA/SSS slice detection and ROI segmentation. |
+| `addons/` | Optional plugins (e.g., GM/WM boundary ROIs). |
+| `main.py` | Interactive runner used by the GUI/CLI. |
+| `enumerator.py` | Batch launcher that iterates over multiple datasets. |
 
-Place control datasets in `data/controls/<id>` and enable control handling by
-setting the `CONTROLS` flag in `utils/settings.py` or by exporting
-`PBRAIN_CONTROLS=1`. The `enumerator.py` helper honours the `--controls` flag
-and will set this environment variable automatically. When a control run is
-processed, a small `control.json` file is written to the dataset directory.  The
-script accepts a list of log numbers or the `--all` flag. Combining
-`--controls` with `--all` processes every available control dataset.
-When the GUI encounters a `controls` folder it can be opened to reveal the
-contained datasets. A `controls.json` file is automatically created in this
-folder to indicate that its subfolders are control runs.
+Key filenames (configured in `utils/parameters.py`) include the axial 2D reference image, DCE series, inversion recovery stack (WIPTI_xxxxx.nii), and optional 3D T1/T2/FLAIR reconstructions. Dedicated `control_*` entries allow alternative names for control acquisitions.
 
-Placing an `apply_jumpfix.json` file next to a dataset enables automatic
-correction of sudden signal jumps during the analysis.
+---
 
-Usage examples:
+## Installation
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/edtireli/p-brain.git
+   cd p-brain
+   ```
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. *(Optional)* **Fetch addon submodules**
+   ```bash
+   git submodule update --init -- addons/<addon_name>
+   ```
+
+Version strings are derived automatically from `git describe --tags` inside `modules/__init__.py`, so releases always match the tag checked out locally.
+
+---
+
+## Running the script
+### Interactive GUI/CLI
+```bash
+python3 main.py
 ```
+1. A small GUI lists available dataset folders under the configured data directory. Select one and click **Accept**.
+2. The terminal menu appears and offers three modes:
+   - **Manual mode** – Step-by-step execution with GUI ROI drawing.
+   - **Automatic mode** – Fully automated pipeline (CNN inputs, FastSurfer segmentation, Patlak/Tofts/deconvolution, reporting).
+   - **Pseudo-automatic mode** – Hybrid workflow where the user can review intermediate ROIs before modeling.
+
+### Manual menu overview
+| Option | Purpose |
+|--------|---------|
+|0|View MRI series (axial/sagittal).|
+|1|Fit T1/M0 from the inversion recovery stack.|
+|2|Generate concentration time curves (CTCs) from user-drawn ROIs.|
+|3|Time-shift venous curves to arterial peaks (with amplitude rescaling if necessary).|
+|4|Create tissue-specific CTCs (GM, WM, cerebellum, boundary, etc.).|
+|5|Estimate BBB permeability (Patlak + extended Tofts) and residue-derived perfusion metrics.|
+|6|Add free-form analysis notes to the dataset.|
+|7|Invoke addons (boundary ROI extraction, screenshots, ...).|
+|9|Exit.|
+
+### Batch processing
+`enumerator.py` wraps `main.py` so whole cohorts can be processed unattended:
+```bash
 python enumerator.py 1001 1002
 python enumerator.py --all
 python enumerator.py --controls 01 02
 python enumerator.py --controls --all
 ```
+Use `--data-dir` or `P_BRAIN_DATA_DIR` to point to an alternate root. The script automatically toggles `PBRAIN_CONTROLS` when `--controls` is provided.
 
-Both `main.py` and `enumerator.py` accept the `--data-dir` flag to point to an
-alternative dataset directory. Setting the `P_BRAIN_DATA_DIR` environment
-variable achieves the same effect.
+---
 
-NIfTI files can also be used directly by simply creating a folder of the same name and placing the .nii files therein. This will avoid the automatic conversion from .PAR/.REC to .nii/.json. 
+## Workflow details
+The automated workflow mirrors the structure shown below. Gray boxes are completely unsupervised; white boxes correspond to manual overrides when running in manual or pseudo-automatic mode.
 
-There are several files that are important to the analysis, I will list the variables below, which can be changed in the parameters.py file to fit your naming scheme: 
+1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume, inversion recovery series (for T1/M0), and a 4D DCE time series. Optional diffusion data enables automated FA reporting.
+2. **Preprocessing** – Optional PAR/REC conversion via `dcm2niix`, rigid alignment of structural volumes to DCE space, and consistency checks on slice timing.
+3. **T1/M0 fitting** – Trust-region reflective solver fits the inversion recovery signal model with configurable inversion delays and relaxivity (default r1 = 4 s-1 mM-1).
+4. **Input-function extraction** – CNN slice classifier + ROI segmentation detect rICA and SSS. Venous curves are cross-correlated and rescaled to the arterial peak, compensating for transit delays and dispersion.
+5. **Tissue ROIs** – FastSurfer-based parcellations (with optional FSL anatomical priors) define cortical GM, subcortical GM, WM, cerebellar lobes, brainstem, and GM/WM boundary masks. Affine transforms propagate labels to DCE geometry.
+6. **Signal-to-concentration conversion** – Spoiled-GRE equation transforms signal intensity into gadolinium concentration using fitted T1, M0, flip angle, and TR. Guards prevent invalid logarithms or unstable tails.
+7. **Modeling**  
+   - **Patlak graphical analysis** for Ki and vp with user-configurable linear windows and residual-based uncertainty estimates.
+   - **Extended Tofts model** with Levenberg–Marquardt fitting for Ktrans, ve, vp, and kep.
+   - **Model-free deconvolution** (Tikhonov-regularized) providing CBF, MTT, and CTH from the residue function. An experimental gamma-variate estimator is also exposed for benchmarking.
+8. **Outputs** – Quantitative NIfTI maps, PNG mosaics, JSON summaries, CSV/TSV tables, cohort boxplots, atlas projections, and optional reference comparisons.
+9. **Quality assurance** – Automated checks for segmentation failures, mask overlaps, motion spikes, atypical AIFs, fit residuals, and log integrity. All warnings are logged alongside the outputs.
 
-- **axial_t2_2D_filename**: An axial 2D T2 weighted image that is in the same geometry as the DCE below. It can in essence also be a T1 weighted image, this is simply a naming convention.
-- **dce_filename**: The data for the dynamic contrast-enhanced (DCE) sequence. In the case of the default file, there are actually two filenames that this file can take. If your file only has one filename, then simply ignore the previous lines (dce_filename_primary, dce_filename_fallback) and name the dce_filename as you would otherwise. 
-- **WIPTI_xxxxx.nii**: A series of n inversion recovery sequences where the x's are times in ms (by default set to 120, 300, ..., 1e5). It is very important that your inversion sequence files are named in the same manor, as this is hardcoded into the fitting proceedure. 
-- Extra: The following files are not needed for the minimal case, but p-brain has an extended behavior (e.g. in GUI or plotting) if they are available.
-    - **flair_3D_filename**: A 3D FLAIR sequence.
-    - **t2_3D_filename**: A 3D T2 sequence.
-    - **t1_3D_filename**: A 3D T1 sequence.
-    - **axial_flair_3D_filename**: An axial reconstruction of the 3D FLAIR sequence above.
-    - **axial_t2_3D_filename**: An axial reconstruction of the 3D T2 sequence above.
-    - **axial_t1_3D_filename**: : An axial reconstruction of the 3D T1 sequence above.
+---
 
-### Control filenames
-Control datasets may use different filenames. These can be configured in the `control_filenames` function inside `utils/parameters.py`. Only the sequences required by the AI methods are listed:
-- **control_t1_3D_filename**
-- **control_axial_t1_3D_filename**
-- **control_t2_3D_filename**
-- **control_axial_t2_3D_filename**
-- **control_flair_3D_filename**
-- **control_axial_flair_3D_filename**
-- **control_axial_t2_2D_filename**
-- **control_dce_filename**
+## Outputs and deliverables
+Every automatic run produces the following without additional scripting:
 
-The above files can be renamed to suit different purposes/sequences which can be done globally in the `utils/parameters.py` file. This file also contains a `SEGMENTATION_METHOD` setting that controls which tool is used for the automated tissue segmentation (default `fastsurfer`). See below for some of the most useful, especially with the _boundary_ addon:
-![correlated_slices](https://github.com/edtireli/p-brain/assets/129996957/e2c952ea-25ce-431b-bedd-a3eb24e49d67)
+- **Voxel-wise maps** – Ki, vp, CBF, CTH, and MTT stored as NIfTI volumes plus pre-rendered mosaics.
+- **Parcellated summaries** – FastSurfer atlas statistics for each parameter, exported as tables and overlay images.
+- **Slice-wise distributions** – Boxplots showing superior–inferior trends for Ki, vp, and perfusion metrics; useful for QC and cohort comparisons.
+- **Whole-brain medians** – GM, WM, cerebellar, and boundary medians saved in JSON for rapid reporting or EHR integration.
+- **Cohort projections** – When multiple datasets exist, the script averages parcel values across subjects and projects them onto a reference segmentation to create cohort fingerprints.
+- **Reference comparisons** – Optional automated figures contrasting _p_-Brain outputs with the Perffit2 implementation (GM/WM boxplots and subject-wise scatter plots).
+- **Processing transparency** – Composite figures stacking segmentations, input functions, tissue curves, Patlak fits, and resulting parameter maps, ensuring every automated decision is reviewable.
+
+All generated assets reside under the selected dataset folder inside `Analysis/`, `Images/AI_patlak`, `Images/AI_tikhonov`, and companion JSON/CSV directories.
+
+---
+
+## Representative results gallery
+The figures below summarize what a fully automatic run produces for a technically uniform cohort of 97 DCE-MRI scans from 58 participants with mild traumatic brain injury (mTBI) but no macroscopic lesions on structural MRI. Each dataset was processed with the same automated sequence of segmentation, vascular input extraction, concentration conversion, and kinetic modeling (Patlak + extended Tofts + deconvolution). The resulting deliverables span voxelwise maps, parcellated summaries, slice-wise distributions, cohort fingerprints, and compact QC dashboards. Use these placeholders to drop in your exported PNGs from `Images/` or `Plots/`.
+
+### Voxelwise maps
+Voxelwise maps quantify physiological parameters at native spatial resolution so you can examine localized BBB leakage, perfusion, and vascular volume without aggregating over parcels. These maps constitute the foundation for every downstream summary in the pipeline.
+
+- **BBB influx (Ki)** – Patlak-derived unidirectional transfer constant that reflects blood–brain barrier permeability.
+
+  ![Voxelwise Ki map placeholder](Plots/ki_voxel_montage_patlak.png)
+
+- **Cerebral blood flow (CBF)** – Model-free residue deconvolution highlights expected perfusion contrast between cortical/subcortical gray matter and deep white matter and resolves major vessels such as the circle of Willis.
+
+  ![Voxelwise CBF map placeholder](Plots/cbf_montage.png)
+
+- **Plasma volume (vp)** – Patlak intercept emphasizes the intravascular compartment along cortical ribbons and venous structures.
+
+  ![Voxelwise vp map placeholder](Plots/vp_per_voxel_patlak.png)
+
+- **Capillary transit-time heterogeneity (CTH)** – Derived from the normalized outflow $h(t)=-r'(t)/\int(-r')$, revealing spatial mottling that reflects variability in capillary passage times.
+
+  ![Voxelwise CTH map placeholder](Plots/cth_montage.png)
+
+- **Mean transit time (MTT)** – First-moment summary of the residue function that complements CTH by capturing overall transit duration.
+
+  ![Voxelwise MTT map placeholder](Plots/mtt_montage.png)
+
+### Regional and parcellated organization
+FastSurfer anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages.
+
+- ![Parcel-level CBF placeholder](Plots/cbf_parcel_montage_tikhonov.png)
+- ![Parcel-level CTH placeholder](Plots/cth_parcel_montage_tikhonov.png)
+- ![Parcel-level MTT placeholder](Plots/mtt_parcel_montage_tikhonov.png)
+- ![Parcel-level vp placeholder](Plots/vp_atlas_montage_patlak.png)
+- ![Parcel-level Ki placeholder](Plots/ki_atlas_montage_patlak.png)
+
+### Cohort distributions and QC
+Slice-wise boxplots summarize how each metric evolves along the superior–inferior axis, preserving the expected gray/white hierarchy while flagging outliers or motion-contaminated slabs.
+
+- ![Slice-wise Ki distributions placeholder](Plots/ki_boxplots_2x3.png)
+- ![Slice-wise vp distributions placeholder](Plots/vp_boxplots_2x3.png)
+
+### Cohort-level atlas projection
+Aggregating parcel statistics across subjects produces cohort fingerprints that can be projected back onto a reference segmentation for quick visual baselines.
+
+- ![Cohort-mean Ki placeholder](Plots/ki_projection_parcel_patlak.png)
+- ![Cohort-mean CBF placeholder](Plots/cbf_projection_parcel_tikhonov.png)
+- ![Cohort-mean CTH placeholder](Plots/cth_projection_parcel_tikhonov.png)
+- ![Cohort-mean MTT placeholder](Plots/mtt_projection_parcel_tikhonov.png)
+
+### End-to-end transparency
+Composite panels document the entire automation chain—segmentation, vascular input functions, tissue curves, Patlak fits, and resulting parameter maps—so every decision remains auditable.
+
+![Transparency panel placeholder](Plots/AI_Tissue_slice_5_segmented_median.png)
+
+### Whole-brain medians
+For dashboards or EHR-style summaries, the pipeline reports tissue-specific medians that retain GM>WM ordering while condensing each scan to a few numbers.
+
+![Whole-brain Ki medians placeholder](Plots/ki_wholebrain.png)
+
+### Automated comparison to a reference implementation
+Built-in validation plots contrast _p_-Brain metrics with the Perffit2 workflow so you can monitor agreement without manual scripting.
+
+![GM/WM Ki comparison placeholder](Plots/ki_validation_1.png)
+![Subject-wise Ki correspondence placeholder](Plots/ki_validation_2.png)
+
+#### Summary of findings
+The automated pipeline delivers physiologically consistent voxelwise maps, regional summaries, cohort-level projections, and QC figures without user interaction. Exporting these assets alongside transparent diagnostics provides a repeatable baseline for longitudinal monitoring, multi-site harmonization, and future research extensions.
+
+---
 
 
-## 3. Installation
+## Automation features
+### Neural-network models
+Four CNNs orchestrate input-function detection:
+- Slice classifier (rICA)
+- ROI segmentation (rICA)
+- Slice classifier (SSS)
+- ROI segmentation (SSS)
 
-To get started with p-Brain, please follow the steps below to install the software on your local machine. Before you do so, make sure you have python and git installed. 
-
-### Required Installation
-
-1. **Clone the Repository**: Clone the p-Brain repository to your local machine using the following command:
-    ```bash
-    git clone https://github.com/edtireli/p-brain.git
-    ```
-
-2. **Navigate to the Directory**: Change to the directory containing the cloned repository:
-    ```bash
-    cd p-brain
-    ```
-
-3. **Install Dependencies**: Install the required Python packages listed in `requirements.txt`:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-At this point, p-Brain is installed and you can run the program.
-
-### Optional Addon Installation
-
-For advanced functionalities, p-Brain supports optional addons. To install the addons:
-
-1. **Initialize the Submodule**: While in the root directory of the p-Brain repository, run the following command to initialize and update the `addons`:
-    ```bash
-    git submodule update --init -- addons/addon_name
-    ```
-
-By following these steps, the `boundary` addon will be available for use within p-Brain.
-
-### Automatic Versioning
-
-The application derives its version directly from the Git tags. `modules/__init__.py`
-will read the most recent tag via `git describe --tags` when executed, so you do
-not need to manually update the version string.
-
-## 4. How to use
-To start p-Brain, navigate to the project directory and execute the following command:
-```bash
-python3 main.py
+Default paths live in `utils/settings.py` under `AI_MODEL_PATHS`. Override via environment variables:
 ```
-This will open up a GUI in which the subfolders of the data folder will be enumerated. Here you will need to select a subfolder (e.g. analysis ID, exam ID, log number etc.). Thereafter, you can press Accept and after the GUI will close, the following command line interface will be printed in the terminal:
-
-```bash
-         Welcome to p-brain - a neuroimaging & analysis tool
-=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
-
-        / /                                                  / /      
-       / /    eeeee      eeeee  eeeee  eeeee e  eeeee       / /       
-      / /     8   8      8   8  8   8  8   8 8  8   8      / /        
-eeee / /      8eee8 eeee 8eee8e 8eee8e 8eee8 8e 8e  8     / /    eeee 
-    / /       88         88   8 88   8 88  8 88 88  8    / /          
-   / /        88         88eee8 88   8 88  8 88 88  8   / /           
-                                                                      
-
-                  Developed by Edis Devin Tireli
-                     University of Copenhagen
-=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
-=-=-= Select analysis mode =-=-=
-| 1 | Manual mode
-| 2 | Automatic mode
-| 3 | Pseudo-Automatic mode
-| 9 | Exit program
-=-=-=---------------------=-=-=
-[!] Enter mode (1-3 or 9):
+SLICE_CLASSIFIER_RICA_MODEL
+RICA_ROI_MODEL
+SLICE_CLASSIFIER_SS_MODEL
+SS_ROI_MODEL
 ```
-
-After selecting **Manual mode**, the classic CLI appears:
-
-```bash
-=-=-= Choose between the following options =-=-==-=-==-=-==-=-==-=-=-=
-| 0 | View MRI images
-| 1 | Compute M0 and T1 map from MRI data
-| 2 | Generate Concentration Time Curves (CTC) based on ROI
-| 3 | Generate Time-Shifted Concentration Curves (TSCC) from CTC
-| 4 | Create Tissue (Grey/White matter) CTCs
-| 5 | Compute BBB permeability and perfusion parameters
-| 6 | Add analysis notes
-| 7 | Addons
-| 9 | Exit program
-=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=
-[!] Enter option (1-9):
-```
-
-The idea is to use the options in chronological order, as each step requires the files of each subsequent step. See below for a detailed description of the options and features. The software displays usage instructions as well.
-
-## 5. Core Features
-
-- Option 0 - View MRI images: This option opens a GUI that allows for the selection and viewing of axial and saggital images of the aforementioned data types.
-- Option 1 - T1/M0 Fitting: This option utilizes a standard least-squares non-linear curve fitting algorithms for precise T1/M0 fitting: it uses the WIPTI_xxxx.nii files to do so.
-- Option 2 - Concentration Time Curve (CTC) Generation: Generates signal time curves from the MRI data from a ROI drawn on DCE data (GUI): using the DCE file for this step.
-  
-  <img width="375" alt="Figure_1_github" src="https://github.com/edtireli/p-brain/assets/129996957/370ecb97-7dae-4148-b60e-93b72bfab24c">  
-  <img width="375" alt="Figure_2_github" src="https://github.com/edtireli/p-brain/assets/129996957/8f464073-1c6f-4cf2-91ff-5131f36bcfd5">
-
-- Option 3 - Time shifting:  The venous CTC is shifted in time to the arterial CTC this is done by peak analysis so that a sufficient input function can be used. If the arterial CTC has taller peaks than the venous, then the venous curve is also rescaled to match.
-- Option 4 - Tissue Concentration Time Curves: Generates Tissue CTCs via ROI selection (GUI) in the same way as in Option 2: using the DCE file and the 2D T2W image for this step.
-- Option 5 - BBB Permeability Estimation: Estimates BBB permeability using both Patlak and the extended Tofts models.
-- Automatic DWI processing computes Fractional Anisotropy (FA) maps per patient when DWI data are present. When a white matter mask is available the mean FA of that region is additionally reported and a WM-restricted FA map is produced.
-- Addons:
-    -  Boundary: Computes the concentration time function for Grey Matter/White Matter boundary (segmented with fsl_anat).
-    ![CTC+ROI_slice_7](https://github.com/edtireli/p-brain/assets/129996957/32bc922a-dcce-4b9c-a31e-053d021351e4)
-    -  Screenshot: A simple screenshot module that takes the reconstructed axial T1 slice, presents the user with a GUI to move through slices, and then a button to save the image to a png. 
-
-## 6. Fully Automated Mode
-From v2.0.0 onwards, a new fully automated implementation is available within which 4 neural networks were trained on carotid artery and sinus sagitalis vein identification and ROI drawing, see below: 
-
-![AI_input_function_ROIs](https://github.com/user-attachments/assets/adda1abb-c1b7-4a49-937b-cf64ea51acef)
-
-Further a fast AI segmentation tool, FastSurfer, is also implemented and segments the brain within few minutes. Our pipeline now integrates both AI utilities to conduct the entire analysis automatically: T1/M0 fit, vein/artery ROI drawing, tissue segmentation/ROIs and the final Patlak analysis of the determination of Ki (BBB permeability, slice by slice and voxelwise) as well as a CBF map (using a 2-compartment model) and a Ki map, as well as a whole-volume Ki calculation. The CBF values are scaled to ml/100g/min. The image below shows an example of the results of one such automated result (slice-by-slice Ki determination)
-
-![AI_Tissue_slice_5_segmented_median](https://github.com/user-attachments/assets/328c1a43-294d-42fa-bad5-518bd1af8439)
-
-The pipeline produces a large collection of data in the form of .nii files, e.g. the BBB permeability per voxel, per slice (as shown above) per tissue type, and per parcel from segmentation, as well as a global estimation (using whole-brain tissue segments as one large ROI per major tissue type). The following is a per-voxel BBB permeability over few slices:
-
-![kipervoxel](https://github.com/user-attachments/assets/560a42eb-1670-4b0a-a3ae-6bb3c004b359)
-
-Below is the BBB permeability per parcel from segmentation: 
-
-![kimap](https://github.com/user-attachments/assets/e80c23e6-8880-4c63-bd6e-7a10080ad9fe)
-
-And finally, a CBF estimation per voxel: 
-
-![cbfmap](https://github.com/user-attachments/assets/2fe56e0b-1d29-4f89-88f9-175105d4436e)
-
-
-### Custom AI model paths
-The four neural networks used for Right Internal Carotid Artery (RICA) and sinus
- sagittalis segmentation can be replaced with your own models. The default
- locations are defined in `utils/settings.py` under `AI_MODEL_PATHS`. Set these
- paths or provide the environment variables `SLICE_CLASSIFIER_RICA_MODEL`,
- `RICA_ROI_MODEL`, `SLICE_CLASSIFIER_SS_MODEL` and `SS_ROI_MODEL` to override the
- defaults.
-
-Pre-trained models are available at
-[Zenodo](https://doi.org/10.5281/zenodo.15655347). Download and extract them
-into the `AI/` directory so the default paths resolve.
+Pretrained weights are hosted on [Zenodo](https://doi.org/10.5281/zenodo.15655347); download them into the `AI/` directory.
 
 ### Kinetic model selection
-The permeability analysis defaults to executing both Patlak and
-two-compartment fits.  The two-compartment option solves the extended
-Tofts model with regularisation and estimates plasma volume, Ki and CBF
-via model-free deconvolution. Adjust the variable `KINETIC_MODEL` in
-`utils/settings.py` or export the environment variable `P_BRAIN_MODEL`
-with one of `patlak`, `two_compartment` or `both` to control which models are
-run. When both models are executed, output files are suffixed with
-`_patlak` and `_tikhonov` respectively.
-Image outputs are stored in `AI_patlak/` and `AI_tikhonov/` subfolders
-under the main `Images` directory.
-During execution the files are first written to an `AI/` directory and
-renamed to the model-specific location by the script once processing
-completes.
-When running the two-compartment model the tissue function slice images display
-the two-compartment fit instead of the Patlak plot.
+Set `P_BRAIN_MODEL` (or edit `KINETIC_MODEL` in `utils/settings.py`) to control which models run:
+- `patlak`
+- `two_compartment` (extended Tofts + deconvolution)
+- `both` (default)
 
-### T1 recovery model selection
-The T1/M0 fitting step supports both inversion recovery and saturation recovery
-signal models.  By default the inversion recovery equation is used, matching the
-previous behaviour.  Set the environment variable `P_BRAIN_T1_RECOVERY_MODEL`
-to `saturation` (or adjust `T1_RECOVERY_MODEL` in `utils/settings.py`) to fit a
-pure saturation recovery curve instead.
+Output files are suffixed with `_patlak` or `_tikhonov` and written to `Images/AI_patlak` and `Images/AI_tikhonov` respectively.
+
+### T1 recovery model
+Choose between inversion recovery (default) and saturation recovery by setting `P_BRAIN_T1_RECOVERY_MODEL` to `saturation`.
 
 ### Regularisation strength
-The Tikhonov parameter controlling the two-compartment fit is configured via
-`--lambda` on the command line or the `P_BRAIN_LAMBDA` environment variable.
-The default value is 5.0 and can also be changed in `utils/settings.py`.
+Adjust the Tikhonov parameter via `--lambda`, `P_BRAIN_LAMBDA`, or the corresponding entry inside `utils/settings.py`. The default value is 5.0.
 
 ### Global Ki slice exclusion
-The computation of global Ki for white matter, cortical grey matter and the
-boundary region ignores the first and last two slices of the volume by default.
-Adjust the number of excluded slices with the environment variables
-`P_BRAIN_GLOBAL_KI_SKIP_BOTTOM` and `P_BRAIN_GLOBAL_KI_SKIP_TOP` or modify the
-corresponding values in `utils/settings.py`.
+Skip inferior/superior slices when summarizing whole-brain Ki values by setting:
+```
+P_BRAIN_GLOBAL_KI_SKIP_BOTTOM
+P_BRAIN_GLOBAL_KI_SKIP_TOP
+```
+Both default to 2.
 
-## 7. Contributions
-For contributions, feature requests, and bug reporting, please contact me (Edis Tireli) through here, or add an issue.
+### Custom datasets and jump-fix
+- Drop an `apply_jumpfix.json` next to a dataset to enable automatic correction of sudden signal jumps.  
+- Provide your own neural-network weights by placing them inside `AI/` and updating `utils/settings.py`.
 
-## 8. License
-This project is licensed under the MIT License. For full license information, please refer to the LICENSE.md file in the repository.
+---
 
-## 9. Acknowledgments
-Special thanks to Henrik B. W. Larsson, Ulrich Lindberg, Stig P. Cramer, Mark Vestergaard and Antonis Asiminas for collaborations and discussions.
+## Configuration and environment variables
+Most behaviour is controlled through `utils/settings.py` and `utils/parameters.py`. Important toggles include:
 
+| Setting / Env var | Purpose |
+|-------------------|---------|
+| `DATA_DIR`, `P_BRAIN_DATA_DIR` | Root directory scanned by the GUI/CLI. |
+| `SEGMENTATION_METHOD` | Choose between FastSurfer and alternative segmentation backends. |
+| `CONTROLS`, `PBRAIN_CONTROLS` | Flag dataset as control during batch runs. |
+| `KINETIC_MODEL`, `P_BRAIN_MODEL` | Select Patlak, extended Tofts, or both. |
+| `T1_RECOVERY_MODEL`, `P_BRAIN_T1_RECOVERY_MODEL` | Toggle inversion vs. saturation recovery. |
+| `AI_MODEL_PATHS`, `SLICE_CLASSIFIER_*`, `*_ROI_MODEL` | Custom CNN checkpoints for input-function detection. |
+| `P_BRAIN_LAMBDA` | Tikhonov regularisation strength for deconvolution. |
+| `P_BRAIN_GLOBAL_KI_SKIP_*` | Number of slices ignored when computing whole-brain Ki medians. |
 
+Edit the Python files directly for permanent defaults or export environment variables for per-run overrides.
+
+---
+
+## Addons
+Addons extend the manual workflow via menu option 7:
+- **Boundary addon** – Generates GM/WM boundary ROIs (via `fsl_anat`) and associated CTCs.
+- **Screenshot addon** – Navigate through axial slices and export presentation-quality PNG images.
+
+Initialize individual addons with:
+```bash
+git submodule update --init -- addons/<addon_name>
+```
+
+---
+
+## Contributing & support
+- Open issues or feature requests on GitHub.
+- For direct contact, reach out to Edis Tireli.
+- Pull requests should follow the existing directory layout and reference the appropriate configuration flags in `utils/settings.py` and `utils/parameters.py`.
+
+---
+
+## License & acknowledgments
+- **License:** MIT (see `LICENSE`).
+- **Acknowledgments:** Henrik B. W. Larsson, Ulrich Lindberg, Stig P. Cramer, Mark Vestergaard, and Antonis Asiminas for continuous collaboration and discussions.
+
+_p_-Brain is developed within the Functional Imaging Unit, Department of Clinical Physiology and Nuclear Medicine, Copenhagen University Hospital – Rigshospitalet, and the University of Copenhagen. The released CNN weights are available on Zenodo for reproducible deployment.
