@@ -133,9 +133,9 @@ Use `--data-dir` or `P_BRAIN_DATA_DIR` to point to an alternate root. The script
 ## Workflow details
 The automated workflow mirrors the structure shown below. Gray boxes are completely unsupervised; white boxes correspond to manual overrides when running in manual or pseudo-automatic mode.
 
-1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume, inversion recovery series (for T1/M0), and a 4D DCE time series. Optional diffusion data enables automated FA reporting.
+1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume and a 4D DCE time series acquired with a spoiled gradient echo / fast field echo readout so that the spoiled-GRE signal model applies. A dedicated inversion recovery series (default) **or** a multi–flip angle stack can be used for the T1/M0 fit (`IsIR`/`IsVFA` toggles in `utils/parameters.py`). If neither is present, vendor-provided T1/M0 maps can be dropped into the dataset tree and referenced via the configuration file. Optional diffusion data unlocks the tensor workflow (FA, MD, AD, RD, MO, tensor residuals, parcel tables, tractography seeding, etc.).
 2. **Preprocessing** – Optional PAR/REC conversion via `dcm2niix`, rigid alignment of structural volumes to DCE space, and consistency checks on slice timing.
-3. **T1/M0 fitting** – Trust-region reflective solver fits the inversion recovery signal model with configurable inversion delays and relaxivity (default r1 = 4 s-1 mM-1).
+3. **T1/M0 fitting** – Trust-region reflective solver fits either the inversion recovery or variable flip angle signal model with configurable inversion delays/flip schedules and relaxivity (default r1 = 4 s-1 mM-1). Existing T1/M0 maps can bypass the fitting stage entirely when registered to the structural input.
 4. **Input-function extraction** – CNN slice classifier + ROI segmentation detect rICA and SSS. Venous curves are cross-correlated and rescaled to the arterial peak, compensating for transit delays and dispersion.
 5. **Tissue ROIs** – FastSurfer-based parcellations (with optional FSL anatomical priors) define cortical GM, subcortical GM, WM, cerebellar lobes, brainstem, and GM/WM boundary masks. Affine transforms propagate labels to DCE geometry.
 6. **Signal-to-concentration conversion** – Spoiled-GRE equation transforms signal intensity into gadolinium concentration using fitted T1, M0, flip angle, and TR. Guards prevent invalid logarithms or unstable tails.
@@ -158,6 +158,7 @@ Every automatic run produces the following without additional scripting:
 - **Cohort projections** – When multiple datasets exist, the script averages parcel values across subjects and projects them onto a reference segmentation to create cohort fingerprints.
 - **Reference comparisons** – Optional automated figures contrasting _p_-Brain outputs with the Perffit2 implementation (GM/WM boxplots and subject-wise scatter plots).
 - **Processing transparency** – Composite figures stacking segmentations, input functions, tissue curves, Patlak fits, and resulting parameter maps, ensuring every automated decision is reviewable.
+- **Diffusion tensor deliverables** – When `--diffusion` is enabled the pipeline stores FA/MD/AD/RD/MO maps, parcel tables, median JSON summaries, histogram figures, tensor residual maps, and optional tractography previews alongside perfusion outputs.
 
 All generated assets reside under the selected dataset folder inside `Analysis/`, `Images/AI_patlak`, `Images/AI_tikhonov`, and companion JSON/CSV directories.
 
