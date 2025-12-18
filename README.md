@@ -128,6 +128,15 @@ python enumerator.py --controls --all
 ```
 Use `--data-dir` or `P_BRAIN_DATA_DIR` to point to an alternate root. The script automatically toggles `PBRAIN_CONTROLS` when `--controls` is provided.
 
+#### Diffusion/tractography overrides
+- `--diffusion-file <filename>` lets you select a specific diffusion volume for both FA metrics and tractography. Pass either an absolute path or a filename relative to each dataset’s `NIfTI/` folder (e.g. `--diffusion-file WIPDWI_highres.nii.gz`).
+- `--orientation {tensor,dti,csd,mt_csd,qball,gqi}` continues to override the tractography model. `csd` uses the legacy single-shell fit, whereas `mt_csd` (alias: `msmt`, `msmt_csd`) runs the multi-tissue MSMT-CSD solver when multi-shell diffusion data are available. In both modes, the pipeline inspects how many non-b0 diffusion directions are available and automatically picks the largest safe spherical-harmonic (SH) order; sparse datasets fall back to lower SH orders to avoid ill-conditioned fits.
+- `--tracks_dont_recompute` skips streamline regeneration whenever `--tracks` (or `--tracks_only`) is present. This is handy for combos like `--diffusion_only --tracks_only --tracks_dont_recompute`, which recompute FA metrics but simply refresh tract renders/montages from an existing `tractography.trk`.
+- `--tracks_force` ignores cached streamlines and forces a fresh tractography build, even if `tractography.trk` already exists.
+- Advanced users can still pin the SH order via `P_BRAIN_TRACK_CSD_SH_ORDER`. Setting it to `auto` (default) keeps the adaptive behavior; numeric values force a specific even order.
+- Tractography attempts now support parallel execution via `P_BRAIN_TRACK_WORKERS`. Set it to the number of CPUs you want to dedicate (defaults to 1 to preserve historical behavior). The default backend uses threads; set `P_BRAIN_TRACK_PARALLEL_BACKEND=process` if you prefer separate worker processes. Combine this with `OMP_NUM_THREADS=1` when running on multi-socket machines so BLAS-heavy steps do not oversubscribe the system. Progress bars remain accurate even when attempts finish out of order.
+- To keep the CLI `--orientation csd` flag but still force multi-tissue MSMT-CSD, export `P_BRAIN_TRACK_FORCE_MT_CSD=1`. When set, every CSD request runs through the MSMT solver and logs the override inside `Analysis/diffusion/tractography_debug.json`.
+
 ---
 
 ## Workflow details

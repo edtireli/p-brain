@@ -107,8 +107,8 @@ MAP_JOBS: Sequence[MapJob] = (
     MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage"),
     MapJob("cth_map", "cth_montage"),
     MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage"),
-    MapJob("Ki_per_voxel", "ki_voxel_montage"),
-    MapJob("Ki_map_atlas", "ki_atlas_montage"),
+    MapJob("Ki_per_voxel", "ki_voxel_montage", metric="ki"),
+    MapJob("Ki_map_atlas", "ki_atlas_montage", metric="ki"),
     MapJob("vp_map_atlas", "vp_atlas_montage"),
     MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png"),
     MapJob(
@@ -1007,6 +1007,20 @@ def _build_head_mask(
     return head.astype(bool), icv.astype(bool)
 
 
+def _mask_erode_mm(mask: np.ndarray, img: nib.Nifti1Image, mm: float) -> np.ndarray:
+    source = np.asarray(mask, dtype=bool)
+    if not source.any() or mm <= 0:
+        return source.astype(bool)
+    try:
+        radius = max(1, _voxel_radius(img, mm))
+        eroded = binary_erosion(source, ball(radius))
+        if not eroded.any():
+            return source.astype(bool)
+        return eroded.astype(bool)
+    except Exception:
+        return source.astype(bool)
+
+
 def _alpha_feather_from_mask(
     head_mask: np.ndarray, img: nib.Nifti1Image, feather_mm: float
 ) -> np.ndarray:
@@ -1741,8 +1755,24 @@ def _render_montage(
     norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
     if is_atlas and head_support_3d is not None:
         norm_data = np.where(head_support_3d, norm_data, np.nan)
+    focus_data = None
+    metric_tag = (getattr(job, "metric", "") or "").lower()
+    if metric_tag == "ki":
+        core_mask = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            core_mask = _mask_erode_mm(brain_mask, img, mm=2.0)
+        elif head_support_3d is not None and head_support_3d.shape == data.shape:
+            core_mask = _mask_erode_mm(head_support_3d, img, mm=2.0)
+        if core_mask is not None and core_mask.any():
+            focus_data = np.where(core_mask, data, np.nan)
+        else:
+            focus_data = norm_data
+
     norm, tick_values = _build_normalizer(
-        norm_data, job, mask_zero_override=False if brain_mask is not None else None
+        norm_data,
+        job,
+        mask_zero_override=False if brain_mask is not None else None,
+        focus_data=focus_data,
     )
     if (getattr(job, "metric", None) or "").lower() == "fa":
         vmax = float(getattr(norm, "vmax", 1.0))
@@ -2262,9 +2292,11 @@ def _build_normalizer(
     job: MapJob,
     *,
     mask_zero_override: bool | None = None,
+    focus_data: np.ndarray | None = None,
 ) -> tuple[mpl.colors.Normalize, list[float]]:
     vmin = float(job.vmin) if job.vmin is not None else np.nan
     vmax = float(job.vmax) if job.vmax is not None else np.nan
+    metric = (getattr(job, "metric", "") or "").lower()
 
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         mask = np.isfinite(data)
@@ -2280,6 +2312,19 @@ def _build_normalizer(
     if vmax <= vmin:
         padding = abs(vmin) if vmin != 0 else 1.0
         vmax = vmin + padding
+
+    span = max(1e-6, float(vmax - vmin))
+    if metric == "ki":
+        roi_source = focus_data if focus_data is not None else data
+        central_vmax = _central_roi_percentile(
+            roi_source,
+            fraction=0.65,
+            percentile=97.5,
+        )
+        if central_vmax is not None and np.isfinite(central_vmax):
+            guard = float(vmin) + 0.1 * span
+            candidate = max(guard, float(central_vmax))
+            vmax = max(candidate, float(vmin) + 0.07 * span)
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
@@ -2300,6 +2345,45 @@ def _build_projection_normalizer(
 
     norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax, clip=False)
     return norm, _default_ticks(vmin, vmax)
+
+
+def _central_roi_percentile(
+    data: np.ndarray,
+    *,
+    fraction: float = 0.45,
+    percentile: float = 98.5,
+) -> float | None:
+    """Return a high-percentile value from the central in-plane ROI."""
+
+    if data is None:
+        return None
+
+    arr = np.asarray(data)
+    if arr.ndim < 2 or arr.size == 0:
+        return None
+
+    rows = arr.shape[0]
+    cols = arr.shape[1] if arr.ndim > 1 else 0
+    if rows == 0 or cols == 0:
+        return None
+
+    frac = float(np.clip(fraction, 0.1, 1.0))
+    roi_rows = max(1, int(round(rows * frac)))
+    roi_cols = max(1, int(round(cols * frac)))
+    r0 = max(0, (rows - roi_rows) // 2)
+    c0 = max(0, (cols - roi_cols) // 2)
+    r1 = min(rows, r0 + roi_rows)
+    c1 = min(cols, c0 + roi_cols)
+
+    roi = arr[r0:r1, c0:c1, ...]
+    finite = roi[np.isfinite(roi)]
+    if finite.size == 0:
+        return None
+
+    try:
+        return float(np.nanpercentile(finite, percentile))
+    except Exception:
+        return None
 
 
 def _robust_bounds(values: np.ndarray, lower_q: float = 2.0, upper_q: float = 98.0) -> tuple[float, float]:

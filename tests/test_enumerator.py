@@ -446,7 +446,7 @@ def test_diffusion_only_processes_patients(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_diffusion(data_root, dataset_id, is_control):
+    def fake_diffusion(data_root, dataset_id, is_control, *, diffusion_filename_override=None):
         calls.append((data_root, dataset_id, is_control))
         return True
 
@@ -486,7 +486,7 @@ def test_diffusion_only_with_montage_runs_once(monkeypatch, tmp_path):
     diffusion_calls = []
     montage_calls = []
 
-    def fake_diffusion(data_root, dataset_id, is_control):
+    def fake_diffusion(data_root, dataset_id, is_control, *, diffusion_filename_override=None):
         diffusion_calls.append((data_root, dataset_id, is_control))
         return True
 
@@ -556,7 +556,7 @@ def test_montage_anatomical_implies_montage(monkeypatch, tmp_path):
     montage_calls = []
     diffusion_calls = []
 
-    def fake_diffusion(data_root, dataset_id, is_control):
+    def fake_diffusion(data_root, dataset_id, is_control, *, diffusion_filename_override=None):
         diffusion_calls.append((data_root, dataset_id, is_control))
         return True
 

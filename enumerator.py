@@ -430,7 +430,13 @@ def _run_montage_for_dataset(
     return overall_success
 
 
-def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
+def _run_diffusion_for_dataset(
+    data_root,
+    dataset_id,
+    is_control,
+    *,
+    diffusion_filename_override: str | None = None,
+):
     """Execute the diffusion tensor processing workflow for ``dataset_id``."""
 
     dataset_root = _resolve_dataset_root(data_root, dataset_id, is_control)
@@ -459,7 +465,7 @@ def _run_diffusion_for_dataset(data_root, dataset_id, is_control):
         print(f"[diffusion] Failed to discover configured filenames for {dataset_id}: {exc}")
         return False
 
-    diffusion_filename = filenames[-2] if filenames else None
+    diffusion_filename = diffusion_filename_override or (filenames[-2] if filenames else None)
     dce_filename = filenames[-1] if filenames else None
     if not diffusion_filename:
         print(
@@ -500,6 +506,13 @@ def _run_tracks_for_dataset(
     *,
     create_montage=False,
     use_anatomical=False,
+    tracks_only=False,
+    render_only=False,
+    orientation_model: str | None = None,
+    diffusion_filename_override: str | None = None,
+    act_tracking: bool | None = None,
+    pft_tracking: bool | None = None,
+    force_regenerate: bool = False,
 ):
     """Compute tractography renderings for ``dataset_id`` when possible."""
 
@@ -529,7 +542,7 @@ def _run_tracks_for_dataset(
         print(f"[tracks] Failed to discover configured filenames for {dataset_id}: {exc}")
         return False
 
-    diffusion_filename = filenames[-2] if filenames else None
+    diffusion_filename = diffusion_filename_override or (filenames[-2] if filenames else None)
     dce_filename = filenames[-1] if filenames else None
 
     if not diffusion_filename:
@@ -564,6 +577,7 @@ def _run_tracks_for_dataset(
             analysis_directory,
             image_directory,
             diffusion_filename=diffusion_filename,
+            diffusion_model=orientation_model.upper() if orientation_model else None,
             anatomical_overlay=anatomical_overlay,
             create_montage=create_montage,
             montage_title=(
@@ -571,6 +585,10 @@ def _run_tracks_for_dataset(
                 if (create_montage and anatomical_overlay and use_anatomical)
                 else "Tractography overlay"
             ),
+            render_only=render_only,
+            force_regenerate=force_regenerate,
+            enable_act=act_tracking,
+            enable_pft=pft_tracking,
         )
     except Exception as exc:  # noqa: BLE001 - surface helpful context to CLI users
         print(f"[tracks] Failed to compute tractography for {dataset_id}: {exc}")
@@ -636,6 +654,13 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--tracks_force",
+        action="store_true",
+        help=(
+            "Force regeneration of tractography streamlines even if a prior tractography.trk exists."
+        ),
+    )
+    parser.add_argument(
         "--projection",
         action="store_true",
         help=(
@@ -658,6 +683,66 @@ def parse_args():
         help=(
             "Compute diffusion tractography streamlines and render visualisations. "
             "Implies --diffusion so the tensor fit is available."
+        ),
+    )
+    parser.add_argument(
+        "--tracks_only",
+        action="store_true",
+        help=(
+            "Re-render existing tractography outputs without recomputing streamlines. "
+            "Implies --tracks but skips diffusion/tract generation; requires prior run."
+        ),
+    )
+    parser.add_argument(
+        "--tracks_dont_recompute",
+        action="store_true",
+        help=(
+            "When used with --tracks/--tracks_only, skip streamline regeneration and only refresh "
+            "renders/montages (requires existing tractography.trk)."
+        ),
+    )
+    parser.add_argument(
+        "--tracks_act",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable anatomically constrained tractography (ACT) when tissue probability maps "
+            "are available. Without this flag the run falls back to legacy streamline tracking."
+        ),
+    )
+    parser.add_argument(
+        "--tracks_pft",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable particle filtering tractography (CMC/PFT). Can be combined with --tracks_act; "
+            "defaults to disabled."
+        ),
+    )
+    parser.add_argument(
+        "--tracks_advanced",
+        action="store_true",
+        help=(
+            "Convenience flag that enables both ACT and PFT (equivalent to --tracks_act --tracks_pft)."
+        ),
+    )
+    parser.add_argument(
+        "--diffusion-file",
+        dest="diffusion_filename",
+        type=str,
+        help=(
+            "Explicit diffusion NIfTI filename (relative to each dataset's NIfTI folder or absolute) "
+            "to use for diffusion metrics and tractography."
+        ),
+    )
+    parser.add_argument(
+        "--orientation",
+        dest="orientation_model",
+        type=str,
+        choices=("tensor", "dti", "csd", "mt_csd", "msmt", "msmt_csd", "qball", "gqi"),
+        help=(
+            "Override the diffusion orientation model for tractography. "
+            "Examples: --orientation csd (single-shell) or --orientation mt_csd (multi-tissue)."
         ),
     )
     return parser.parse_args()
@@ -741,6 +826,12 @@ def collect_datasets(data_directory, use_all, ids, *, use_controls=False):
 
 def main():
     args = parse_args()
+    if getattr(args, "tracks_advanced", False):
+        args.tracks_act = True
+        args.tracks_pft = True
+    if args.tracks_dont_recompute and not (args.tracks or args.tracks_only):
+        # Allow --tracks_dont_recompute to work on its own by falling back to rerender mode.
+        args.tracks_only = True
     data_directory = os.path.abspath(args.data_dir)
     use_all = args.all
     ids = args.ids
@@ -792,8 +883,17 @@ def main():
     if args.diffusion_only:
         args.diffusion = True
 
-    if args.tracks:
+    if args.tracks_only:
+        args.tracks = True
+        if not args.diffusion_only:
+            args.diffusion = False
+            args.diffusion_only = False
+    elif args.tracks:
         args.diffusion = True
+
+    args.tracks_render_only = bool(args.tracks_dont_recompute or args.tracks_only)
+    args.tracks_force = bool(getattr(args, "tracks_force", False))
+    force_tracks_regen = bool(args.tracks_force or (args.tracks_only and not args.tracks_render_only))
 
     projection_stats = None
     if args.projection:
@@ -802,6 +902,41 @@ def main():
         except RuntimeError as exc:
             print(f"[projection] {exc}")
             sys.exit(1)
+
+    if args.tracks_only and not args.diffusion_only:
+        exit_code = 0
+        for dataset_id, is_control in datasets:
+            tracks_ok = _run_tracks_for_dataset(
+                data_directory,
+                dataset_id,
+                is_control,
+                create_montage=args.montage,
+                use_anatomical=args.montage_anatomical,
+                tracks_only=True,
+                render_only=args.tracks_render_only,
+                force_regenerate=force_tracks_regen,
+                orientation_model=args.orientation_model,
+                diffusion_filename_override=args.diffusion_filename,
+                act_tracking=args.tracks_act,
+                pft_tracking=args.tracks_pft,
+            )
+            if not tracks_ok:
+                exit_code = 1
+
+            if args.montage:
+                success = _run_montage_for_dataset(
+                    data_directory,
+                    dataset_id,
+                    is_control,
+                    use_projection=args.projection,
+                    projection_stats=projection_stats,
+                    use_anatomical=args.montage_anatomical,
+                    transparent_background=args.montage_transparent,
+                )
+                if not success:
+                    exit_code = 1
+
+        sys.exit(exit_code)
 
     if args.diffusion_only:
         exit_code = 0
@@ -816,6 +951,7 @@ def main():
                 data_directory,
                 dataset_id,
                 is_control,
+                diffusion_filename_override=args.diffusion_filename,
             )
             if not diffusion_ok:
                 exit_code = 1
@@ -827,6 +963,13 @@ def main():
                     is_control,
                     create_montage=args.montage,
                     use_anatomical=args.montage_anatomical,
+                    tracks_only=args.tracks_only,
+                    render_only=args.tracks_render_only,
+                    force_regenerate=force_tracks_regen,
+                    orientation_model=args.orientation_model,
+                    diffusion_filename_override=args.diffusion_filename,
+                    act_tracking=args.tracks_act,
+                    pft_tracking=args.tracks_pft,
                 )
                 if not tracks_ok:
                     exit_code = 1
@@ -854,6 +997,7 @@ def main():
                     data_directory,
                     dataset_id,
                     is_control,
+                    diffusion_filename_override=args.diffusion_filename,
                 )
                 if not diffusion_ok:
                     exit_code = 1
@@ -864,6 +1008,13 @@ def main():
                     is_control,
                     create_montage=True,
                     use_anatomical=args.montage_anatomical,
+                    tracks_only=args.tracks_only,
+                    render_only=args.tracks_render_only,
+                    force_regenerate=force_tracks_regen,
+                    orientation_model=args.orientation_model,
+                    diffusion_filename_override=args.diffusion_filename,
+                    act_tracking=args.tracks_act,
+                    pft_tracking=args.tracks_pft,
                 )
                 if not tracks_ok:
                     exit_code = 1
@@ -920,6 +1071,12 @@ def main():
                 is_control,
                 create_montage=False,
                 use_anatomical=args.montage_anatomical,
+                tracks_only=args.tracks_only,
+                render_only=args.tracks_render_only,
+                orientation_model=args.orientation_model,
+                diffusion_filename_override=args.diffusion_filename,
+                act_tracking=args.tracks_act,
+                pft_tracking=args.tracks_pft,
             )
 
 

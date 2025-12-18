@@ -26,6 +26,106 @@ def get_diffusion_filename(candidates, nifti_directory):
         candidates = (candidates,)
     return _get_first_existing_file(candidates, nifti_directory)
 
+
+# Diffusion acquisition configuration -------------------------------------------------
+
+_LEGACY_DIFFUSION_FILENAMES = (
+    "WIPDTI_RSI_P.nii",
+    "WIPDTI_RSI_P.nii.gz",
+    "WIPDTI_RSI_A.nii",
+    "WIPDTI_RSI_A.nii.gz",
+    "WIPDWI_RSI_P.nii",
+    "WIPDWI_RSI_P.nii.gz",
+)
+
+
+DIFFUSION_FILE_GROUPS: dict[str, tuple[str, ...]] = {
+    "dti": _LEGACY_DIFFUSION_FILENAMES,
+    # Drift-corrected registered diffusion volume (preferred when available)
+    "dwi_reg": (
+        "Reg-DWInySENSE.nii",
+        "Reg-DWInySENSE.nii.gz",
+        "Reg-DWInySENSE_ADC.nii",
+        "Reg-DWInySENSE_ADC.nii.gz",
+    ),
+    # Legacy isoDWI volumes retained for compatibility
+    "dwi_iso": (
+        "isoDWIb-1000.nii",
+        "isoDWIb-1000.nii.gz",
+    ),
+}
+
+
+_DEFAULT_DIFFUSION_PRIORITY = (
+    "dti",
+    "dwi_reg",
+    "dwi_iso",
+    "dwi",
+)
+
+_SUPPORTED_DIFFUSION_MODELS = {"DTI", "CSD"}
+
+_DIFFUSION_MODEL_BY_GROUP = {
+    "dti": "DTI",
+    "dwi": "CSD",
+    "dwi_reg": "CSD",
+    "dwi_iso": "CSD",
+}
+
+
+def _parse_priority_list(raw: str) -> tuple[str, ...]:
+    entries = []
+    for token in raw.split(","):
+        cleaned = token.strip().lower()
+        if cleaned:
+            entries.append(cleaned)
+    return tuple(entries)
+
+
+def diffusion_file_priority() -> tuple[str, ...]:
+    env_value = os.environ.get("P_BRAIN_DIFFUSION_PRIORITY", "")
+    if env_value:
+        parsed = _parse_priority_list(env_value)
+        if parsed:
+            return parsed
+    return _DEFAULT_DIFFUSION_PRIORITY
+
+
+def diffusion_file_groups() -> dict[str, tuple[str, ...]]:
+    return DIFFUSION_FILE_GROUPS
+
+
+def diffusion_model_map() -> dict[str, str]:
+    model_map: dict[str, str] = {}
+    for group, default_model in _DIFFUSION_MODEL_BY_GROUP.items():
+        env_key = f"P_BRAIN_DIFFUSION_MODEL_{group.upper()}"
+        override = os.environ.get(env_key)
+        if override:
+            override_value = override.strip().upper()
+            if override_value in _SUPPORTED_DIFFUSION_MODELS:
+                model_map[group] = override_value
+                continue
+        model_map[group] = default_model
+    return model_map
+
+
+def ordered_diffusion_filenames() -> tuple[str, ...]:
+    seen = set()
+    ordered: list[str] = []
+    groups = diffusion_file_priority()
+    for group in groups:
+        for pattern in DIFFUSION_FILE_GROUPS.get(group, ()):  # type: ignore[index]
+            normalized = pattern.strip()
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            ordered.append(normalized)
+            seen.add(normalized)
+    if not ordered:
+        ordered.extend(_LEGACY_DIFFUSION_FILENAMES)
+    return tuple(ordered)
+
 # Global parameters: 
 
 def global_parameters():
@@ -65,16 +165,9 @@ def global_filenames(nifti_directory):
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
-    diffusion_filenames = (
-        'WIPDTI_RSI_P.nii',
-        'WIPDTI_RSI_P.nii.gz',
-        'WIPDTI_RSI_A.nii',
-        'WIPDTI_RSI_A.nii.gz',
-        'WIPDWI_RSI_P.nii',
-        'WIPDWI_RSI_P.nii.gz',
-    )
+    diffusion_candidates = ordered_diffusion_filenames()
 
-    diffusion_filename = get_diffusion_filename(diffusion_filenames, nifti_directory)
+    diffusion_filename = get_diffusion_filename(diffusion_candidates, nifti_directory)
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
 
     return (
@@ -105,16 +198,9 @@ def control_filenames(nifti_directory):
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
-    diffusion_filenames = (
-        'WIPDTI_RSI_P.nii',
-        'WIPDTI_RSI_P.nii.gz',
-        'WIPDTI_RSI_A.nii',
-        'WIPDTI_RSI_A.nii.gz',
-        'WIPDWI_RSI_P.nii',
-        'WIPDWI_RSI_P.nii.gz',
-    )
+    diffusion_candidates = ordered_diffusion_filenames()
 
-    diffusion_filename = get_diffusion_filename(diffusion_filenames, nifti_directory)
+    diffusion_filename = get_diffusion_filename(diffusion_candidates, nifti_directory)
     dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
 
     return (

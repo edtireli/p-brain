@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -8,6 +9,8 @@ import nibabel as nib
 from nibabel.nifti1 import Nifti1Header
 from dipy.core.gradients import gradient_table
 from dipy.reconst.dti import TensorModel
+
+from utils import parameters as parameter_config
 
 try:  # Matplotlib is optional in some deployment setups.
     import matplotlib.pyplot as plt
@@ -20,12 +23,31 @@ except ImportError:  # pragma: no cover - nibabel ships the helper in supported 
     resample_from_to = None
 
 
-_ATLAS_SEGMENTATION_PATH = (
-    "segmentation",
-    "segmentation",
-    "mri",
-    "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+_ATLAS_SEGMENTATION_CANDIDATES = (
+    ("segmentation", "mri", "aparc.DKTatlas+aseg.deep.nii.gz"),
+    ("segmentation", "mri", "aparc.DKTatlas+aseg.deep.mgz"),
+    (
+        "segmentation",
+        "segmentation",
+        "mri",
+        "aparc.DKTatlas+aseg.deep.nii.gz",
+    ),
+    (
+        "segmentation",
+        "segmentation",
+        "mri",
+        "aparc.DKTatlas+aseg.deep_in_DCE.nii.gz",
+    ),
 )
+
+
+@dataclass(frozen=True)
+class DiffusionAcquisition:
+    volume_path: str
+    bval_path: str
+    bvec_path: str
+    label: str
+    model: str
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +133,18 @@ _TISSUE_PATTERNS: Dict[str, Dict[str, Iterable[str]]] = {
             "brainstem.nii.gz",
             "brainstem_wm.nii",
             "brainstem_wm.nii.gz",
+        ),
+    },
+    "csf": {
+        "json_label": "csf",
+        "plot_label": "CSF",
+        "patterns": (
+            "csf.nii",
+            "csf.nii.gz",
+            "pve_csf.nii",
+            "pve_csf.nii.gz",
+            "csf_mask.nii",
+            "csf_mask.nii.gz",
         ),
     },
 }
@@ -414,6 +448,27 @@ def _collect_tissue_masks(
         if mask is None:
             continue
         masks[tissue] = (mask, info)
+
+    atlas = _load_atlas_segmentation(nifti_directory, reference_img)
+    if atlas is not None:
+        atlas_data, atlas_labels = atlas
+        label_lookup = _load_label_lookup()
+        derived_masks = _derive_tissue_masks_from_atlas(
+            atlas_data,
+            atlas_labels,
+            label_lookup,
+        )
+        for tissue, derived_mask in derived_masks.items():
+            info = _TISSUE_PATTERNS.get(tissue)
+            if info is None:
+                continue
+            derived_bool = np.asarray(derived_mask, dtype=bool)
+            if tissue in masks:
+                existing_mask, existing_info = masks[tissue]
+                combined = np.asarray(existing_mask, dtype=bool) | derived_bool
+                masks[tissue] = (combined, existing_info)
+            else:
+                masks[tissue] = (derived_bool, info)
     return masks
 
 
@@ -424,6 +479,16 @@ def _classify_atlas_label(label_name: str) -> Optional[str]:
         return None
 
     lower = label_name.lower()
+
+    if (
+        "ventricle" in lower
+        or lower.endswith("vent")
+        or "choroid" in lower
+        or "plexus" in lower
+        or lower.endswith("csf")
+        or "csf" in lower
+    ):
+        return "csf"
 
     if "cerebellum" in lower:
         if "white" in lower:
@@ -475,8 +540,12 @@ def _derive_tissue_masks_from_atlas(
     return tissue_masks
 
 
-def _atlas_segmentation_path(nifti_directory: str) -> str:
-    return os.path.join(nifti_directory, *_ATLAS_SEGMENTATION_PATH)
+def _atlas_segmentation_path(nifti_directory: str) -> Optional[str]:
+    for rel_parts in _ATLAS_SEGMENTATION_CANDIDATES:
+        candidate = os.path.join(nifti_directory, *rel_parts)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 
 def _load_label_lookup(lut_path: Optional[str] = None) -> Dict[int, str]:
@@ -514,7 +583,7 @@ def _load_atlas_segmentation(
     """
 
     atlas_path = _atlas_segmentation_path(nifti_directory)
-    if not os.path.isfile(atlas_path):
+    if not atlas_path or not os.path.isfile(atlas_path):
         return None
 
     atlas_img = nib.load(atlas_path)
@@ -563,7 +632,7 @@ def _load_atlas_segmentation_dce(
     """Load the atlas segmentation in DCE space without resampling."""
 
     atlas_path = _atlas_segmentation_path(nifti_directory)
-    if not os.path.isfile(atlas_path):
+    if not atlas_path or not os.path.isfile(atlas_path):
         return None
 
     atlas_img = nib.load(atlas_path)
@@ -765,19 +834,41 @@ def find_wm_mask(nifti_directory):
 
 
 def find_dwi_files(
-    nifti_directory: str, preferred_filenames: Optional[Sequence[str]] = None
+    nifti_directory: str,
+    preferred_filenames: Optional[Sequence[str]] = None,
+    *,
+    include_metadata: bool = False,
 ):
     """Locate a diffusion NIfTI and its ``.bval``/``.bvec`` files.
 
-    ``preferred_filenames`` allows callers to specify explicit filenames that
-    should be considered before falling back to heuristic discovery.  The
-    conversion step may create ``.nii`` *or* ``.nii.gz`` files.  This function
-    therefore checks for both extensions and strips them correctly when forming
-    the paths to the gradient files.  If both DTI- and DWI-labelled files are
-    present, DTI remains preferred.
+    When ``include_metadata`` is ``True`` a :class:`DiffusionAcquisition`
+    describing the file label and preferred reconstruction model is returned.
+    Otherwise the legacy ``(nifti, bval, bvec)`` tuple is preserved.
     """
 
-    def candidate_from(path: str) -> Optional[Tuple[str, str, str]]:
+    file_groups = parameter_config.diffusion_file_groups()
+    group_priority = parameter_config.diffusion_file_priority()
+    model_map = parameter_config.diffusion_model_map()
+
+    def _label_for_path(path: str) -> str:
+        lower = os.path.basename(path).lower()
+        for group, patterns in file_groups.items():
+            for pattern in patterns:
+                pattern_lower = pattern.lower()
+                if pattern_lower and lower.endswith(pattern_lower):
+                    return group
+        if "dti" in lower:
+            return "dti"
+        if "dwi" in lower:
+            return "dwi"
+        return "unknown"
+
+    def _default_model(label: str) -> str:
+        if "dwi" in label:
+            return "CSD"
+        return "DTI"
+
+    def candidate_from(path: str) -> Optional[tuple[str, str, str]]:
         if not path.lower().endswith((".nii", ".nii.gz")):
             return None
         if not os.path.exists(path):
@@ -790,6 +881,14 @@ def find_dwi_files(
         if os.path.exists(bval) and os.path.exists(bvec):
             return path, bval, bvec
         return None
+
+    def _build_acquisition(path: str) -> Optional[DiffusionAcquisition]:
+        candidate = candidate_from(path)
+        if not candidate:
+            return None
+        label = _label_for_path(path)
+        model = model_map.get(label, _default_model(label))
+        return DiffusionAcquisition(*candidate, label=label, model=model)
 
     def _preferred_paths(filename: str) -> Iterable[str]:
         if not filename:
@@ -822,16 +921,22 @@ def find_dwi_files(
             seen.add(candidate_path)
             yield candidate_path
 
+    def _format_return(acquisition: DiffusionAcquisition):
+        if include_metadata:
+            return acquisition
+        return acquisition.volume_path, acquisition.bval_path, acquisition.bvec_path
+
     if preferred_filenames:
         for filename in preferred_filenames:
             for candidate_path in _preferred_paths(filename):
-                candidate = candidate_from(candidate_path)
-                if candidate:
-                    return candidate
+                acquisition = _build_acquisition(candidate_path)
+                if acquisition:
+                    return _format_return(acquisition)
 
-    diffusion_candidates: Dict[str, List[Tuple[str, str, str]]] = {
-        "dti": [],
-        "dwi": [],
+    # Prepare candidate buckets honouring configured priority plus fallbacks.
+    priority_labels = list(dict.fromkeys(group_priority + ("dti", "dwi", "unknown")))
+    diffusion_candidates: Dict[str, List[DiffusionAcquisition]] = {
+        label: [] for label in priority_labels
     }
 
     for root, _, files in os.walk(nifti_directory):
@@ -841,26 +946,19 @@ def find_dwi_files(
             if not (file.endswith(".nii") or file.endswith(".nii.gz")):
                 continue
 
-            lower = file.lower()
-            diffusion_label: Optional[str] = None
-            if "dti" in lower:
-                diffusion_label = "dti"
-            elif "dwi" in lower:
-                diffusion_label = "dwi"
-
-            if diffusion_label is None:
+            acquisition = _build_acquisition(os.path.join(root, file))
+            if acquisition is None:
                 continue
+            diffusion_candidates.setdefault(acquisition.label, []).append(acquisition)
 
-            candidate = candidate_from(os.path.join(root, file))
-            if candidate:
-                diffusion_candidates[diffusion_label].append(candidate)
+    for label in priority_labels:
+        candidates = diffusion_candidates.get(label) or []
+        if not candidates:
+            continue
+        selected = sorted(candidates, key=lambda item: item.volume_path)[0]
+        return _format_return(selected)
 
-    for label in ("dti", "dwi"):
-        if diffusion_candidates[label]:
-            # Sorting ensures deterministic selection if multiple files match.
-            return sorted(diffusion_candidates[label])[0]
-
-    return None, None, None
+    return (None, None, None) if not include_metadata else None
 
 
 def _brain_union_mask(masks: Dict[str, Tuple[np.ndarray, Dict[str, str]]]) -> Optional[np.ndarray]:
@@ -965,16 +1063,32 @@ def compute_fa(
     dce_path: Optional[str] = None,
 ):
     preferred = (diffusion_filename,) if diffusion_filename else None
-    dwi_path, bval_path, bvec_path = find_dwi_files(
-        nifti_directory, preferred_filenames=preferred
+    acquisition = find_dwi_files(
+        nifti_directory,
+        preferred_filenames=preferred,
+        include_metadata=True,
     )
-    if dwi_path is None:
+    if acquisition is None:
         print(
             "[!] No diffusion volume found; update utils/parameters.py with the correct filename."
         )
         return
 
-    print(f"[!] Computing FA from {os.path.basename(dwi_path)}")
+    if isinstance(acquisition, DiffusionAcquisition):
+        dwi_path = acquisition.volume_path
+        bval_path = acquisition.bval_path
+        bvec_path = acquisition.bvec_path
+        acquisition_label = acquisition.label or "unknown"
+        acquisition_model = acquisition.model or "DTI"
+    else:
+        dwi_path, bval_path, bvec_path = acquisition
+        acquisition_label = "unknown"
+        acquisition_model = "DTI"
+
+    print(
+        f"[!] Computing FA from {os.path.basename(dwi_path)}"
+        f" using {acquisition_model} workflow ({acquisition_label})"
+    )
     img = nib.load(dwi_path)
     data = img.get_fdata()
 

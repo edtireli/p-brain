@@ -133,3 +133,82 @@ def test_load_streamlines_world_invokes_to_world(monkeypatch):
     assert first.shape == (2, 3)
     np.testing.assert_allclose(first[0], np.array([10.0, -5.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(first[1], np.array([12.0, -2.0, 5.0], dtype=np.float32))
+
+
+def test_select_stopping_prefers_act(monkeypatch):
+    fa = np.ones((2, 2, 2), dtype=np.float32)
+    fake_act = object()
+    strategy = {"use_act": True, "act": fake_act, "use_pft": False}
+    criterion = tractography._select_stopping_criterion(0.2, fa, strategy)
+    assert criterion is fake_act
+
+    fallback = tractography._select_stopping_criterion(0.2, fa, None)
+    assert isinstance(fallback, tractography.ThresholdStoppingCriterion)
+
+
+def test_voxel_sizes_from_affine_returns_axis_lengths():
+    affine = np.diag([2.0, 3.0, 4.5, 1.0])
+    sizes = tractography._voxel_sizes_from_affine(affine)
+    np.testing.assert_allclose(sizes, np.array([2.0, 3.0, 4.5], dtype=np.float64))
+
+
+def test_tracking_config_defaults_include_act_and_pft(monkeypatch):
+    filter_defaults = {"min_length": None, "max_length": None, "subsample_stride": 1, "subsample_min_count": 0}
+    config = tractography._tracking_config_defaults(filter_defaults)
+    assert "act_enabled" in config
+    assert "pft_enabled" in config
+
+
+def test_prepare_anatomical_strategy_passes_pft_geometry(monkeypatch, tmp_path):
+    fake_maps = {
+        "wm": np.ones((2, 2, 2), dtype=np.float32),
+        "gm": np.ones((2, 2, 2), dtype=np.float32) * 0.5,
+        "csf": np.ones((2, 2, 2), dtype=np.float32) * 0.2,
+    }
+
+    def _fake_gather(nifti_dir, analysis_dir, reference_img):
+        meta = {"search_roots": [nifti_dir], "sources": {t: "stub" for t in fake_maps}}
+        return fake_maps, meta
+
+    monkeypatch.setattr(tractography, "_gather_tissue_probability_maps", _fake_gather)
+
+    act_called = {}
+
+    class _FakeAct:
+        @staticmethod
+        def from_pve(wm, gm, csf):
+            act_called["wm"] = wm
+            return "act"
+
+    cmc_kwargs = {}
+
+    class _FakeCmc:
+        @staticmethod
+        def from_pve(wm, gm, csf, **kwargs):
+            cmc_kwargs.update(kwargs)
+            return "cmc"
+
+    monkeypatch.setattr(tractography, "ActStoppingCriterion", type("_", (), {"from_pve": _FakeAct.from_pve}))
+    monkeypatch.setattr(tractography, "CmcStoppingCriterion", type("_", (), {"from_pve": _FakeCmc.from_pve}))
+
+    reference_img = nib.Nifti1Image(
+        np.zeros((2, 2, 2), dtype=np.float32),
+        np.diag([2.0, 3.0, 4.0, 1.0]),
+    )
+
+    filter_defaults = {"min_length": None, "max_length": None, "subsample_stride": 1, "subsample_min_count": 0}
+    tracking_config = tractography._tracking_config_defaults(filter_defaults)
+    tracking_config["act_enabled"] = True
+    tracking_config["pft_enabled"] = True
+
+    strategy, debug = tractography._prepare_anatomical_strategy(
+        str(tmp_path),
+        str(tmp_path),
+        reference_img,
+        tracking_config,
+    )
+
+    assert strategy["use_pft"] is True
+    assert strategy["pft_kwargs"]["voxel_size"] == (2.0, 3.0, 4.0)
+    assert np.isclose(cmc_kwargs["step_size"], tracking_config["pft_step_size"])
+    assert np.isclose(cmc_kwargs["average_voxel_size"], np.mean([2.0, 3.0, 4.0]))

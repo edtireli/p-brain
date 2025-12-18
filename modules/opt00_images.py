@@ -1,11 +1,20 @@
 import os
-import nibabel as nib
-import matplotlib.pyplot as plt
 import re
-from termcolor import colored
 import numpy as np
+import nibabel as nib
 import matplotlib
-matplotlib.use("TkAgg")
+
+_MPL_ENV_BACKEND = os.environ.get("P_BRAIN_MPL_BACKEND") or os.environ.get("MPLBACKEND")
+if _MPL_ENV_BACKEND:
+    matplotlib.use(_MPL_ENV_BACKEND)
+else:
+    try:
+        matplotlib.use("TkAgg")
+    except Exception:
+        matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+from termcolor import colored
 
 turbo_mode = True  # When True, suppress interactive plotting
 

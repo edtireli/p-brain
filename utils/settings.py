@@ -12,7 +12,14 @@ try:
     from importlib import metadata as importlib_metadata
 except ImportError:  # pragma: no cover - fallback for very old Python versions
     import importlib_metadata  # type: ignore
-matplotlib.use("TkAgg")
+_MPL_ENV_BACKEND = os.environ.get("P_BRAIN_MPL_BACKEND") or os.environ.get("MPLBACKEND")
+if _MPL_ENV_BACKEND:
+    matplotlib.use(_MPL_ENV_BACKEND)
+else:
+    try:
+        matplotlib.use("TkAgg")
+    except Exception:
+        matplotlib.use("Agg")
 
 # Global toggle for analysing control data. The flag can also be
 # overridden by setting the environment variable ``PBRAIN_CONTROLS`` to
