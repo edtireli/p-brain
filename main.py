@@ -1,5 +1,10 @@
 import argparse
 import os
+
+# When running in batch/headless mode, ensure matplotlib uses a non-GUI backend.
+# This must be set before any modules import matplotlib.pyplot.
+if os.environ.get("PBRAIN_TURBO") == "1":
+    os.environ.setdefault("MPLBACKEND", "Agg")
 import time
 from utils import *
 import utils.settings as settings

@@ -66,6 +66,13 @@ def build_voxel_matrix(dce_data):
     if not dce_data:
         raise ValueError("No data files provided.")
 
+    missing = [idx for idx, path in enumerate(dce_data) if not path]
+    if missing:
+        raise FileNotFoundError(
+            "One or more input NIfTI paths are missing (None/empty) at indices "
+            f"{missing}. This usually means the expected series was not found in the NIfTI directory."
+        )
+
     # Load the first file to determine the shape
     first_data_shape = nib.load(dce_data[0]).get_fdata().shape
     # Adjust the shape to accommodate all data files
@@ -524,6 +531,13 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 TI_values = [int(times) for times in TI]
                 patterns = ['WIPTI_', 'WIPDelRec-TI_']
                 dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
+                missing_ti = [ti for ti, path in zip(TI, dce_data) if not path]
+                if missing_ti:
+                    raise FileNotFoundError(
+                        "Missing inversion-recovery NIfTI files for TI "
+                        f"{missing_ti} in {nifti_directory}. Expected filenames like "
+                        f"{patterns[0]}<TI>.nii or {patterns[1]}<TI>.nii."
+                    )
                 if voxel_matrix is None:
                     voxel_matrix = build_voxel_matrix(dce_data)
                 M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
