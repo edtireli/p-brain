@@ -195,6 +195,10 @@ def _patch_matplotlib() -> None:
             path = args[0]
         elif "fname" in kwargs:
             path = kwargs["fname"]
+        if isinstance(path, (str, os.PathLike)):
+            directory = os.path.dirname(os.fspath(path))
+            if directory:
+                os.makedirs(directory, exist_ok=True)
         result = original_savefig(*args, **kwargs)
         if isinstance(path, (str, os.PathLike)):
             log_generated_image(path)
