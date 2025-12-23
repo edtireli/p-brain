@@ -13,7 +13,11 @@ from utils.fonts import *
 from utils.parameters import * #Change global parameters here!! Important!
 from utils.settings import *
 from utils.loading import *
-from .start import * # welcome screen
+try:
+	from .start import * # welcome screen
+except Exception:
+	# Headless environments (no Tk) can still run the pipeline.
+	pass
 from .opt00_images import * # option 0
 from .opt01_T1_fit import * # option 1
 from .opt02_input_functions import * # option 2
