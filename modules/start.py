@@ -1,7 +1,18 @@
-#A GUI that enumerates over the data directory's subfolders and shows them to the user so that they may continue with analysis of a single subfolder.
-#The idea is the user has MRI data within the subfolders, and analyses them sequentially or individually, and not in bulk. 
-import tkinter as tk
-from tkinter import ttk
+"""Interactive start/menu helpers.
+
+This module contains both GUI helpers (Tkinter) and headless helpers used by
+batch runs (e.g. PAR/REC conversion). Tkinter is optional so the pipeline can
+run on headless machines.
+"""
+
+# A GUI that enumerates over the data directory's subfolders and shows them to the user so that they may continue with analysis of a single subfolder.
+# The idea is the user has MRI data within the subfolders, and analyses them sequentially or individually, and not in bulk.
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except Exception:  # pragma: no cover
+    tk = None
+    ttk = None
 import sys
 import os
 import gzip
@@ -47,6 +58,9 @@ def select_log_number(data_root=None):
         if data_root is None:
             data_root = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'Data')
     data_root = os.path.abspath(data_root)
+
+    if tk is None or ttk is None:
+        raise RuntimeError("tkinter is not available in this Python; run with --id/--mode or install a Python build with Tk support")
 
     root = tk.Tk()
     root.title('Select Log Number')
