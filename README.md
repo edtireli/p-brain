@@ -18,16 +18,17 @@ _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic c
 
 ## Quick navigation
 1. [Why p-Brain?](#why-p-brain)
-2. [Data layout and repository structure](#data-layout-and-repository-structure)
-3. [Installation](#installation)
-4. [Running the script](#running-the-script)
-5. [Workflow details](#workflow-details)
-6. [Outputs and deliverables](#outputs-and-deliverables)
-7. [Automation features](#automation-features)
-8. [Configuration and environment variables](#configuration-and-environment-variables)
-9. [Addons](#addons)
-10. [Contributing & support](#contributing--support)
-11. [License & acknowledgments](#license--acknowledgments)
+2. [p-brain Platform (Desktop app)](#p-brain-platform-desktop-app)
+3. [Data layout and repository structure](#data-layout-and-repository-structure)
+4. [Installation](#installation)
+5. [Running the script](#running-the-script)
+6. [Workflow details](#workflow-details)
+7. [Outputs and deliverables](#outputs-and-deliverables)
+8. [Automation features](#automation-features)
+9. [Configuration and environment variables](#configuration-and-environment-variables)
+10. [Addons](#addons)
+11. [Contributing & support](#contributing--support)
+12. [License & acknowledgments](#license--acknowledgments)
 
 ---
 
@@ -39,6 +40,51 @@ Traditional DCE-MRI analysis requires hand-drawn ROIs for arterial/venous input 
 - **Multi-scale reporting** – Every run produces voxel mosaics, parcel tables, slice-wise distributions, and whole-brain medians for Ki, vp, CBF, MTT, and CTH.
 - **Reproducible QC** – Time-shifted concentration curves, Patlak fits, reference comparisons, and cohort projections are generated automatically so every decision is traceable.
 - **Batch-ready** – `enumerator.py` runs the pipeline over entire cohorts with optional control handling and environment-based overrides.
+
+---
+
+## p-brain Platform (Desktop app)
+
+If you want a **production-style UI** on top of the pipeline (projects/subjects, job monitoring, and a rich QC/review workspace), see:
+
+- p-brain Platform: https://github.com/edtireli/p-brain-platform
+
+Most users should just download the **macOS desktop app** (a `.dmg`) from GitHub Releases:
+
+- Releases: https://github.com/edtireli/p-brain-platform/releases
+
+The platform surfaces p-brain outputs in a review-first workflow:
+
+- Project/subject browser and pipeline status
+- QC overlays for DCE outputs (maps, curves, fit diagnostics)
+- Interactive diffusion/tractography viewer
+- Local desktop launcher that bundles the UI and runs a small local bridge for file access
+
+### Platform screenshots (v1.0.0)
+
+![p-brain Platform dashboard](src/img/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
+
+![Tractography viewer](src/img/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
+
+![DCE series with AI overlay](src/img/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
+
+![Voxelwise map example](src/img/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
+
+![Parcelwise map example](src/img/platform/Screenshot%202026-01-08%20at%2017.45.56.png)
+
+![AIF/VIF and tissue functions](src/img/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
+
+![Function isolation / selection](src/img/platform/Screenshot%202026-01-08%20at%2017.46.20.png)
+
+![Patlak analysis](src/img/platform/Screenshot%202026-01-08%20at%2017.46.35.png)
+
+![Extended Tofts estimation](src/img/platform/Screenshot%202026-01-08%20at%2017.46.54.png)
+
+![Segmentation results table](src/img/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
+
+![Additional visualization](src/img/platform/Screenshot%202026-01-08%20at%2017.47.18.png)
+
+![Subjects overview / job status](src/img/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
 
 ---
 
