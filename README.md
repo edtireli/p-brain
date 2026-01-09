@@ -1,5 +1,6 @@
-# _p_-Brain: Automated DCE-MRI Perfusion and Permeability Pipeline
-<img width="3324" height="964" alt="411586563-4f8bdcba-dbe6-41c7-b644-c0cdaf031fe9" src="https://github.com/user-attachments/assets/378d2e8d-0e88-430e-86aa-7bff88181c07" />
+# _p_-Brain: Advanced Neuroimaging platform
+<img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
+
 
 _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic contrast-enhanced (DCE) MRI series into quantitative maps of blood–brain barrier leakage, vascular volume, and perfusion. The toolkit combines classical pharmacokinetic modeling with CNN-based region-of-interest (ROI) extraction, anatomical parcellation, and transparent quality-control outputs so that a single command can deliver voxel-wise, parcel-wise, and whole-brain readouts of:
 
