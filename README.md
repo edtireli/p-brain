@@ -19,16 +19,17 @@ _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic c
 ## Quick navigation
 1. [Why p-Brain?](#why-p-brain)
 2. [p-brain Platform (Desktop app)](#p-brain-platform-desktop-app)
-3. [Data layout and repository structure](#data-layout-and-repository-structure)
-4. [Installation](#installation)
-5. [Running the script](#running-the-script)
-6. [Workflow details](#workflow-details)
-7. [Outputs and deliverables](#outputs-and-deliverables)
-8. [Automation features](#automation-features)
-9. [Configuration and environment variables](#configuration-and-environment-variables)
-10. [Addons](#addons)
-11. [Contributing & support](#contributing--support)
-12. [License & acknowledgments](#license--acknowledgments)
+3. [p-brain (Standalone pipeline)](#p-brain-standalone-pipeline)
+4. [Data layout and repository structure](#data-layout-and-repository-structure)
+5. [Installation](#installation)
+6. [Running the script](#running-the-script)
+7. [Workflow details](#workflow-details)
+8. [Outputs and deliverables](#outputs-and-deliverables)
+9. [Automation features](#automation-features)
+10. [Configuration and environment variables](#configuration-and-environment-variables)
+11. [Addons](#addons)
+12. [Contributing & support](#contributing--support)
+13. [License & acknowledgments](#license--acknowledgments)
 
 ---
 
@@ -87,6 +88,12 @@ The platform surfaces p-brain outputs in a review-first workflow:
 ![Subjects overview / job status](src/img/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
 
 ---
+
+## p-brain (Standalone pipeline)
+
+The screenshots above are from the optional **p-brain Platform** desktop app.
+
+Everything below describes **p-brain as a standalone pipeline** in this repository: the expected `data/` layout, how to install dependencies, and how to run `main.py` / `enumerator.py` directly.
 
 ## Data layout and repository structure
 ### Expected dataset tree
