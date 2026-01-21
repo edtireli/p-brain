@@ -22,8 +22,8 @@ def load_from_pickle(file_path):
     return matrix
 
 
-def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True):
-    theta = 90 #flip angle
+def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True, flip_angle_deg=None):
+    theta = 90.0 if flip_angle_deg is None else float(flip_angle_deg)
     theta_rad = np.radians(theta)
 
     #times in ms and not sec. 
@@ -441,8 +441,32 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
         C_t_adaptive = np.array(compute_CTC_VFA(adaptive_voxel_time_courses, M0, FA_rad, TR, r1=1/T1, beta_tissue=beta_tissue))
     else:  
         radius = 10 # radius between boluses, assuming double bolus input   
-        C_t_standard = np.array(compute_CTC(voxel_time_course_max, T1, TD, r1=4000, m0=M0, slice=slice_index))
-        C_t_adaptive = np.array(compute_CTC(adaptive_voxel_time_courses, T1, TD, r1=4000, m0=M0, slice=slice_index))
+        flip_angle_deg = resolve_flip_angle_deg(
+            os.path.join(nifti_directory, dce_filename),
+            default=None,
+        )
+        C_t_standard = np.array(
+            compute_CTC(
+                voxel_time_course_max,
+                T1,
+                TD,
+                r1=4000,
+                m0=M0,
+                slice=slice_index,
+                flip_angle_deg=flip_angle_deg,
+            )
+        )
+        C_t_adaptive = np.array(
+            compute_CTC(
+                adaptive_voxel_time_courses,
+                T1,
+                TD,
+                r1=4000,
+                m0=M0,
+                slice=slice_index,
+                flip_angle_deg=flip_angle_deg,
+            )
+        )
     
     C_t_standard = interp_nans(C_t_standard)
     C_t_adaptive = interp_nans(C_t_adaptive)
@@ -554,8 +578,32 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
         C_t_adaptive = np.array(compute_CTC_VFA(adaptive_voxel_time_courses, M0, FA_rad, TR, r1=1/T1, beta_tissue=beta_tissue))
     else:  
         radius = 10 # radius between boluses, assuming double bolus input   
-        C_t_standard = np.array(compute_CTC(voxel_time_course_max, T1, TD, r1=4000, m0=M0, slice=slice_index))
-        C_t_adaptive = np.array(compute_CTC(adaptive_voxel_time_courses, T1, TD, r1=4000, m0=M0, slice=slice_index))
+        flip_angle_deg = resolve_flip_angle_deg(
+            os.path.join(nifti_directory, dce_filename),
+            default=None,
+        )
+        C_t_standard = np.array(
+            compute_CTC(
+                voxel_time_course_max,
+                T1,
+                TD,
+                r1=4000,
+                m0=M0,
+                slice=slice_index,
+                flip_angle_deg=flip_angle_deg,
+            )
+        )
+        C_t_adaptive = np.array(
+            compute_CTC(
+                adaptive_voxel_time_courses,
+                T1,
+                TD,
+                r1=4000,
+                m0=M0,
+                slice=slice_index,
+                flip_angle_deg=flip_angle_deg,
+            )
+        )
     
     C_t_standard = interp_nans(C_t_standard)
     C_t_adaptive = interp_nans(C_t_adaptive)

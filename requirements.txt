@@ -10,3 +10,5 @@ dipy
 opencv-python
 scikit-image
 tensorflow
+Pillow
+networkx

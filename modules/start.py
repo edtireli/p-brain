@@ -19,6 +19,14 @@ import gzip
 import glob
 import json
 
+import utils.settings as settings
+from utils.loading import (
+    inject_flip_angle_into_sidecar_json,
+    read_flip_angle_deg_from_par,
+    read_protocol_name_from_par,
+    sanitize_dcm2niix_basename,
+)
+
 from termcolor import colored
 
 def print_banner():
@@ -222,28 +230,111 @@ import os
 
 
 def decompress_gz_in_directory(directory):
+    """Decompress .gz files under a directory.
+
+    WARNING: This can be extremely expensive on large cohorts.
+    By default we skip decompressing `.nii.gz` because most tooling supports
+    compressed NIfTI directly.
+    """
+
+    decompress_nii_gz = os.environ.get("PBRAIN_DECOMPRESS_NIFTI_GZ") == "1"
     for root, _, files in os.walk(directory):
         for file in files:
-            if file.endswith('.gz'):
-                gz_path = os.path.join(root, file)
-                with gzip.open(gz_path, 'rb') as f_in:
-                    with open(gz_path[:-3], 'wb') as f_out:
-                        f_out.write(f_in.read())
-                print(f'Decompressed: {gz_path}')
+            if not file.endswith('.gz'):
+                continue
+
+            # Avoid expanding compressed NIfTI unless explicitly requested.
+            if (not decompress_nii_gz) and file.endswith('.nii.gz'):
+                continue
+
+            gz_path = os.path.join(root, file)
+            with gzip.open(gz_path, 'rb') as f_in:
+                with open(gz_path[:-3], 'wb') as f_out:
+                    f_out.write(f_in.read())
+            print(f'Decompressed: {gz_path}')
 
 
 def parrec2nifti(directory, nifti_directory):
-    # Check if any .nii files are already present; if so, return
-    if any(file.endswith('.nii') for file in os.listdir(nifti_directory)):
-        return
+    os.makedirs(nifti_directory, exist_ok=True)
+
+    def _nifti_path_from_json(json_path: str) -> str:
+        base = json_path[:-5] if json_path.endswith('.json') else os.path.splitext(json_path)[0]
+        gz = base + '.nii.gz'
+        nii = base + '.nii'
+        if os.path.exists(gz):
+            return gz
+        return nii
 
     # Check for .PAR files in the directory
-    par_files = [f for f in os.listdir(directory) if f.endswith('.PAR')]
+    try:
+        par_files = [
+            f
+            for f in os.listdir(directory)
+            if f.lower().endswith('.par')
+        ]
+    except Exception:
+        par_files = []
+
+    # If NIfTI already exists, we still try to enrich JSON metadata from PAR.
+    nifti_present = False
+    try:
+        nifti_files = os.listdir(nifti_directory)
+        nifti_present = any(f.endswith('.nii') or f.endswith('.nii.gz') for f in nifti_files)
+    except Exception:
+        nifti_present = False
+
+    if nifti_present and par_files:
+        for file in par_files:
+            file_to_convert = os.path.join(directory, file)
+            flip_angle_deg = settings.FLIP_ANGLE_DEG
+            if flip_angle_deg is None:
+                flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
+            if flip_angle_deg is None:
+                continue
+
+            protocol_name = read_protocol_name_from_par(file_to_convert, default=None)
+            protocol_sanitized = sanitize_dcm2niix_basename(protocol_name) if protocol_name else None
+
+            candidate_jsons = []
+            try:
+                for fname in os.listdir(nifti_directory):
+                    if not fname.lower().endswith('.json'):
+                        continue
+                    if protocol_sanitized:
+                        base = os.path.splitext(fname)[0]
+                        base_sanitized = sanitize_dcm2niix_basename(base)
+                        if base_sanitized.lower() == protocol_sanitized.lower():
+                            candidate_jsons.append(os.path.join(nifti_directory, fname))
+                if not candidate_jsons and protocol_sanitized:
+                    # Fallback: substring match.
+                    for fname in os.listdir(nifti_directory):
+                        if not fname.lower().endswith('.json'):
+                            continue
+                        base = os.path.splitext(fname)[0]
+                        if protocol_sanitized.lower() in sanitize_dcm2niix_basename(base).lower():
+                            candidate_jsons.append(os.path.join(nifti_directory, fname))
+            except Exception:
+                candidate_jsons = []
+
+            for json_path in candidate_jsons:
+                inject_flip_angle_into_sidecar_json(
+                    _nifti_path_from_json(json_path),
+                    flip_angle_deg,
+                )
+        return
 
     if par_files:
         # Convert each .PAR file
         for file in par_files:
             file_to_convert = os.path.join(directory, file)
+            before_json = set()
+            try:
+                before_json = {
+                    f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
+                }
+            except Exception:
+                before_json = set()
+
             command = f"dcm2niix -f %p -o {nifti_directory} -v n {file_to_convert}"
             try:
                 process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -254,10 +345,31 @@ def parrec2nifti(directory, nifti_directory):
                 else:
                     # If conversion was successful, print a confirmation message
                     print(f"Converted {file} successfully.")
+
+                    flip_angle_deg = settings.FLIP_ANGLE_DEG
+                    if flip_angle_deg is None:
+                        flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
+                    if flip_angle_deg is not None:
+                        after_json = set()
+                        try:
+                            after_json = {
+                                f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
+                            }
+                        except Exception:
+                            after_json = set()
+                        new_json = sorted(after_json - before_json)
+                        for fname in new_json:
+                            json_path = os.path.join(nifti_directory, fname)
+                            inject_flip_angle_into_sidecar_json(
+                                _nifti_path_from_json(json_path),
+                                flip_angle_deg,
+                            )
             except Exception as e:
                 # If there was an exception, output the exception details
                 print(f"Exception during conversion of {file}: {e}")
     else:
-        # No .PAR files, so decompress gzipped files if present
-        decompress_gz_in_directory(nifti_directory)
+        # No .PAR files. Avoid decompressing by default (can be hours on large cohorts).
+        # Opt-in via: PBRAIN_DECOMPRESS_NIFTI_GZ=1
+        if os.environ.get("PBRAIN_DECOMPRESS_NIFTI_GZ") == "1":
+            decompress_gz_in_directory(nifti_directory)
 

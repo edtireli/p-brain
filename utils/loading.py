@@ -10,6 +10,201 @@ import time
 import utils.settings as settings
 
 
+def _nifti_sidecar_json_path(nifti_path: str) -> str:
+    """Return the expected dcm2niix JSON sidecar path for a NIfTI file."""
+
+    if nifti_path.endswith('.nii.gz'):
+        return nifti_path[:-7] + '.json'
+    if nifti_path.endswith('.nii'):
+        return nifti_path[:-4] + '.json'
+    base, _ext = os.path.splitext(nifti_path)
+    return base + '.json'
+
+
+def read_nifti_sidecar_json(nifti_path: str):
+    """Load the JSON sidecar produced by dcm2niix for a NIfTI file.
+
+    Returns the parsed dict, or None when the sidecar is missing/unreadable.
+    """
+
+    if not nifti_path:
+        return None
+    json_path = _nifti_sidecar_json_path(nifti_path)
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def read_flip_angle_deg_from_sidecar(nifti_path: str, default=None):
+    """Return excitation flip angle (degrees) from the NIfTI JSON sidecar."""
+
+    data = read_nifti_sidecar_json(nifti_path)
+    if not isinstance(data, dict):
+        return default
+    for key in (
+        'FlipAngle',
+        'FlipAngleDeg',
+        'FlipAngleDegrees',
+        'FlipAngle_deg',
+        'FlipAngle(deg)',
+    ):
+        if key not in data:
+            continue
+        try:
+            return float(data[key])
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def resolve_flip_angle_deg(nifti_path: str, default=None):
+    """Resolve flip angle (degrees) from config override or metadata.
+
+    Resolution order:
+    1) `P_BRAIN_FLIP_ANGLE=<number>` override.
+    2) NIfTI JSON sidecar `FlipAngle` (or equivalent keys).
+    """
+
+    override = getattr(settings, "FLIP_ANGLE_DEG", None)
+    if override is not None:
+        try:
+            return float(override)
+        except (TypeError, ValueError):
+            pass
+    return read_flip_angle_deg_from_sidecar(nifti_path, default=default)
+
+
+def _sanitize_dcm2niix_basename(name: str) -> str:
+    """Approximate dcm2niix filename sanitisation for matching outputs."""
+
+    if name is None:
+        return ""
+    text = str(name).strip()
+    # Replace whitespace with underscores, drop obvious path separators.
+    text = re.sub(r"\s+", "_", text)
+    text = text.replace(os.sep, "_")
+    # Keep alphanumerics, underscore, dash.
+    text = re.sub(r"[^0-9A-Za-z_\-]+", "", text)
+    return text
+
+
+sanitize_dcm2niix_basename = _sanitize_dcm2niix_basename
+
+
+def read_protocol_name_from_par(par_path: str, default=None):
+    """Extract protocol name from a Philips PAR header (used by dcm2niix %p)."""
+
+    if not par_path or not os.path.exists(par_path):
+        return default
+    try:
+        with open(par_path, "r", errors="ignore") as f:
+            for line in f:
+                if "protocol name" in line.lower():
+                    # Typical: "Protocol name                         : WIPhperf120long"
+                    if ":" in line:
+                        value = line.split(":", 1)[1].strip()
+                        return value or default
+        return default
+    except OSError:
+        return default
+
+
+def read_flip_angle_deg_from_par(par_path: str, default=None):
+    """Extract excitation flip angle (degrees) from a Philips PAR file."""
+
+    if not par_path or not os.path.exists(par_path):
+        return default
+
+    try:
+        with open(par_path, "r", errors="ignore") as f:
+            lines = f.readlines()
+    except OSError:
+        return default
+
+    col_index_1based = None
+    for line in lines:
+        if not line.lstrip().startswith("#"):
+            continue
+        lower = line.lower()
+        if "image_flip_angle" not in lower:
+            continue
+        # Example: "#  10. image_flip_angle (in degrees)        (float)"
+        m = re.search(r"#\s*(\d+)\s*\.\s*image_flip_angle", lower)
+        if m:
+            try:
+                col_index_1based = int(m.group(1))
+                break
+            except ValueError:
+                col_index_1based = None
+
+    if not col_index_1based:
+        return default
+
+    # Find IMAGE INFORMATION section (not DEFINITION) and parse data lines.
+    in_image_info = False
+    values = []
+    for line in lines:
+        lower = line.lower()
+        if line.lstrip().startswith("#") and "=== image information" in lower and "definition" not in lower:
+            in_image_info = True
+            continue
+        if not in_image_info:
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        tokens = line.strip().split()
+        if len(tokens) < col_index_1based:
+            continue
+        try:
+            values.append(float(tokens[col_index_1based - 1]))
+        except ValueError:
+            continue
+
+    if not values:
+        return default
+    try:
+        return float(np.median(np.asarray(values, dtype=float)))
+    except Exception:
+        return default
+
+
+def inject_flip_angle_into_sidecar_json(nifti_path: str, flip_angle_deg: float) -> bool:
+    """Ensure NIfTI JSON sidecar includes `FlipAngle`.
+
+    Returns True when the file was written/updated.
+    """
+
+    if not nifti_path:
+        return False
+    json_path = _nifti_sidecar_json_path(nifti_path)
+    if not os.path.exists(json_path):
+        return False
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "FlipAngle" in data:
+        return False
+    try:
+        data["FlipAngle"] = float(flip_angle_deg)
+    except (TypeError, ValueError):
+        return False
+    try:
+        with open(json_path, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        return True
+    except OSError:
+        return False
+
+
 
 def list_addons():
     addon_folders = [f for f in os.listdir("addons") if os.path.isdir(os.path.join("addons", f))]

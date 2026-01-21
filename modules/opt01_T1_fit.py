@@ -22,6 +22,66 @@ import threading
 
 turbo_mode = True #doesnt show plots
 
+
+def _reference_img_for_t1fit(nifti_directory, dce_filename, *, prefer_ir=True):
+    """Resolve a reference NIfTI for affine/header when exporting T1/M0 maps.
+
+    Prefer an inversion-recovery/VFA source volume if present so that the
+    exported maps match the fitted voxel grid.
+    """
+
+    def _try_load(path):
+        if not path:
+            return None
+        if not os.path.exists(path):
+            return None
+        try:
+            return nib.load(path)
+        except Exception:
+            return None
+
+    if prefer_ir:
+        # Inversion recovery series naming conventions used in this module.
+        for ti in ("00120", "00300", "00600", "01000", "02000", "04000", "10000"):
+            for prefix in ("WIPTI_", "WIPDelRec-TI_"):
+                candidate = os.path.join(nifti_directory, f"{prefix}{ti}.nii")
+                img = _try_load(candidate)
+                if img is not None:
+                    return img
+
+    # Fall back to the DCE reference if available.
+    if dce_filename:
+        img = _try_load(os.path.join(nifti_directory, dce_filename))
+        if img is not None:
+            return img
+
+    return None
+
+
+def _export_map_nifti(map_data, reference_img, out_path):
+    if reference_img is None:
+        return False
+    data = np.asarray(map_data)
+    if data.ndim != 3:
+        data = np.squeeze(data)
+    if data.ndim != 3:
+        return False
+
+    header = None
+    try:
+        header = reference_img.header.copy() if reference_img.header is not None else None
+        if header is not None:
+            header.set_data_dtype(np.float32)
+    except Exception:
+        header = None
+
+    img = nib.Nifti1Image(data.astype(np.float32, copy=False), reference_img.affine, header)
+    try:
+        nib.save(img, out_path)
+        return True
+    except Exception:
+        return False
+
 def close_plot_after_delay_plt(delay):
     """Close the plot after ``delay`` seconds when running in turbo mode."""
     if turbo_mode:
@@ -554,6 +614,17 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
         if not voxel_matrix_exists:
             save_as_pickle(voxel_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_matrix.pkl'))
+
+    # Export fitted volumes as NIfTI so the montage pipeline can render them.
+    # These live alongside the cached pickles under Analysis/Fitting.
+    try:
+        ref_img = _reference_img_for_t1fit(nifti_directory, dce_filename, prefer_ir=bool(IsIR))
+        fitting_dir = os.path.join(analysis_directory, 'Fitting')
+        os.makedirs(fitting_dir, exist_ok=True)
+        _export_map_nifti(T1_matrix, ref_img, os.path.join(fitting_dir, 't1_map.nii.gz'))
+        _export_map_nifti(M0_matrix, ref_img, os.path.join(fitting_dir, 'm0_map.nii.gz'))
+    except Exception:
+        pass
 
 
 

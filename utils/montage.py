@@ -9,10 +9,21 @@ from __future__ import annotations
 import glob
 import os
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
+# Ensure a non-interactive backend for reproducible, headless rendering.
+# This also makes PNG transparency behave consistently on macOS.
+if os.environ.get("MPLBACKEND") is None:
+    os.environ["MPLBACKEND"] = "Agg"
+
 import matplotlib as mpl
+
+try:  # pragma: no cover - backend selection is environment-dependent
+    mpl.use(os.environ.get("MPLBACKEND", "Agg"), force=True)
+except Exception:
+    pass
+
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -39,6 +50,539 @@ from skimage.morphology import (
     remove_small_holes,
     remove_small_objects,
 )
+
+try:  # optional; used for non-matplotlib PNG rendering
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:  # pragma: no cover
+    Image = None  # type: ignore[assignment]
+    ImageDraw = None  # type: ignore[assignment]
+    ImageFont = None  # type: ignore[assignment]
+
+
+def _load_pillow_font(size: int) -> Any:
+    """Best-effort font loader for Pillow rendering."""
+    if ImageFont is None:
+        return None
+    try:
+        # Common on many Python installs.
+        return ImageFont.truetype("DejaVuSans.ttf", size=size)
+    except Exception:
+        pass
+    for path in (
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Helvetica.ttf",
+        "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+    ):
+        try:
+            if os.path.isfile(path):
+                return ImageFont.truetype(path, size=size)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _units_for_job(job: MapJob) -> str | None:
+    base = (job.base or "").lower()
+    metric = (getattr(job, "metric", "") or "").lower()
+    # Match manuscript captions (human-readable equivalents of siunitx strings).
+    if metric == "ki" or base.startswith("ki_"):
+        return "mL/100g/min"
+    if "cbf" in base:
+        return "mL/100g/min"
+    if base.startswith("vp_") or metric == "vp":
+        return "mL/100g"
+    if base.startswith("mtt") or "mtt" in base:
+        return "seconds"
+    if base.startswith("cth") or "cth" in base:
+        return "seconds"
+    # Diffusion captions in article.tex don't specify units, so omit by default.
+    if metric == "fa" or base.startswith("fa_"):
+        return None
+    if base.startswith(("md_", "ad_", "rd_", "mo_")):
+        return None
+    if base.startswith("tensor_residual"):
+        return None
+    if base.startswith("t1_") or base == "t1_map" or "t1_map" in base:
+        return "ms"
+    # M0 is typically in arbitrary units; omit by default.
+    if base.startswith("m0_") or base == "m0_map" or "m0_map" in base:
+        return None
+    return None
+
+
+# Pillow colorbar defaults (can be overridden via env vars)
+PILLOW_COLORBAR_TICK_FONT_SIZE = int(os.environ.get("PBRAIN_COLORBAR_TICK_FONT_SIZE", "24"))
+PILLOW_COLORBAR_UNITS_FONT_SIZE = int(os.environ.get("PBRAIN_COLORBAR_UNITS_FONT_SIZE", "28"))
+PILLOW_COLORBAR_UNITS_POSITION = os.environ.get("PBRAIN_COLORBAR_UNITS_POSITION", "right_rot").lower()
+PILLOW_COLORBAR_UNITS_GAP_PX = int(os.environ.get("PBRAIN_COLORBAR_UNITS_GAP_PX", "10"))
+PILLOW_OUTPUT_DPI = int(os.environ.get("PBRAIN_PNG_DPI", "300"))
+PILLOW_TILE_INNER_MARGIN_PX = int(os.environ.get("PBRAIN_TILE_INNER_MARGIN_PX", "10"))
+PILLOW_TILE_GAP_PX = int(os.environ.get("PBRAIN_TILE_GAP_PX", "18"))
+PILLOW_OUTER_MARGIN_PX = int(os.environ.get("PBRAIN_OUTER_MARGIN_PX", "0"))
+PILLOW_TRANSPARENT_GUTTERS = os.environ.get("PBRAIN_TRANSPARENT_GUTTERS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+    "",
+)
+PILLOW_TRANSPARENT_COLORBAR_BG = os.environ.get("PBRAIN_TRANSPARENT_COLORBAR_BG", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+    "",
+)
+
+
+def _pillow_paint_grid_background(
+    canvas: Any,
+    *,
+    x0: int,
+    y0: int,
+    rows: int,
+    cols: int,
+    tile_w: int,
+    tile_h: int,
+    gap: int,
+    color: tuple[int, int, int, int],
+) -> None:
+    if ImageDraw is None:
+        return
+    w = cols * tile_w + (cols - 1) * gap
+    h = rows * tile_h + (rows - 1) * gap
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([x0, y0, x0 + w - 1, y0 + h - 1], fill=color)
+
+
+def _pillow_punch_transparent_gutters(
+    canvas: Any,
+    *,
+    grid_x0: int,
+    grid_y0: int,
+    rows: int,
+    cols: int,
+    tile_w: int,
+    tile_h: int,
+    gap: int,
+    include_grid_to_colorbar_gap: bool,
+) -> None:
+    """Make the inter-tile gaps transparent while keeping tiles opaque."""
+    if ImageDraw is None or gap <= 0:
+        return
+
+    grid_w = cols * tile_w + (cols - 1) * gap
+    grid_h = rows * tile_h + (rows - 1) * gap
+    alpha = canvas.getchannel("A")
+    draw = ImageDraw.Draw(alpha)
+
+    # Vertical gaps between tile columns.
+    for c in range(cols - 1):
+        x = grid_x0 + (c + 1) * tile_w + c * gap
+        draw.rectangle([x, grid_y0, x + gap - 1, grid_y0 + grid_h - 1], fill=0)
+
+    # Horizontal gaps between tile rows.
+    for r in range(rows - 1):
+        y = grid_y0 + (r + 1) * tile_h + r * gap
+        draw.rectangle([grid_x0, y, grid_x0 + grid_w - 1, y + gap - 1], fill=0)
+
+    # Gap separating the tile grid from the colorbar.
+    if include_grid_to_colorbar_gap:
+        x = grid_x0 + grid_w
+        draw.rectangle([x, grid_y0, x + gap - 1, grid_y0 + grid_h - 1], fill=0)
+
+    canvas.putalpha(alpha)
+
+
+def _pillow_colorbar_required_width(
+    *,
+    norm: mcolors.Normalize,
+    tick_values: list[float] | None,
+    units: str | None,
+    units_position: str,
+    units_gap_px: int = 12,
+    tick_font_size: int,
+    units_font_size: int,
+) -> int:
+    """Compute a safe colorbar slot width so tick labels/units never clip."""
+    if Image is None or ImageDraw is None:
+        return 150
+
+    # Layout constants (must match _draw_colorbar_pillow).
+    left_pad = 10
+    right_pad = 12
+    tick_line = 10
+    tick_pad = 14
+    bar_w = 32
+    units_gap = int(max(0, units_gap_px))
+
+    font = _load_pillow_font(int(tick_font_size))
+    units_font = _load_pillow_font(int(units_font_size))
+
+    dummy = Image.new("RGBA", (10, 10), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(dummy)
+
+    ticks = tick_values or _default_ticks(float(norm.vmin), float(norm.vmax))
+    finite_ticks = [float(tv) for tv in ticks if np.isfinite(tv)]
+    tick_labels = _format_tick_labels(finite_ticks)
+    max_tick_w = 0
+    for label in tick_labels:
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            w = int(bbox[2] - bbox[0])
+        except Exception:
+            w = len(label) * max(6, int(tick_font_size * 0.6))
+        max_tick_w = max(max_tick_w, w)
+
+    label_w = max_tick_w
+    pos = (units_position or "above").lower().strip()
+    if units and pos in {"beside", "right", "right_rot", "right-rot", "beside_rot", "beside-rot"}:
+        try:
+            bbox = draw.textbbox((0, 0), units, font=units_font)
+            tw = int(bbox[2] - bbox[0])
+            th = int(bbox[3] - bbox[1])
+        except Exception:
+            tw = len(units) * max(6, int(units_font_size * 0.6))
+            th = max(10, int(units_font_size))
+
+        # Units are placed to the right of tick labels. For rotated variants, measure the
+        # actual rotated image width so we don't underestimate and cause overlap/clipping.
+        if pos in {"right_rot", "right-rot", "beside_rot", "beside-rot"}:
+            try:
+                bbox = draw.textbbox((0, 0), units, font=units_font)
+                x0b, y0b, x1b, y1b = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+                pad = 2
+                tw = max(1, x1b - x0b)
+                th = max(1, y1b - y0b)
+                txt_img = Image.new(
+                    "RGBA",
+                    (max(1, tw + pad * 2), max(1, th + pad * 2)),
+                    (0, 0, 0, 0),
+                )
+                txt_draw = ImageDraw.Draw(txt_img)
+                txt_draw.text((pad - x0b, pad - y0b), units, fill=(0, 0, 0, 255), font=units_font)
+                rot = txt_img.rotate(-90, expand=True)
+                units_w = int(rot.size[0])
+            except Exception:
+                units_w = int(max(th, 10))
+        else:
+            units_w = int(tw)
+        label_w = max_tick_w + units_gap + units_w
+
+    needed = left_pad + bar_w + tick_line + tick_pad + label_w + right_pad
+    return int(max(150, needed))
+
+
+def _pillow_required_colorbar_width_for_projection(data: np.ndarray, job: MapJob) -> int:
+    """Compute required Pillow colorbar width for a projection montage."""
+    cmap = _get_cmap(job.cmap_name)
+    norm, tick_values = _build_projection_normalizer(data, job)
+    if (getattr(job, "metric", None) or "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+    units = _units_for_job(job)
+    return _pillow_colorbar_required_width(
+        norm=norm,
+        tick_values=tick_values,
+        units=units,
+        units_position=PILLOW_COLORBAR_UNITS_POSITION,
+        units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+        tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+        units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+    )
+
+
+def _pillow_required_colorbar_width_for_montage(
+    map_path: str,
+    job: MapJob,
+    *,
+    reference_img: nib.Nifti1Image,
+    overlay: Dict[str, Any] | None,
+    brain_mask: np.ndarray | None,
+    segmentation_img: nib.Nifti1Image | None,
+) -> int:
+    """Compute required Pillow colorbar width for a parametric montage."""
+
+    is_atlas = job.base.endswith("_map_atlas")
+    is_diffusion = _is_diffusion_job(job)
+
+    img = nib.load(map_path)
+    target = (reference_img.shape, reference_img.affine)
+    if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+        img = resample_from_to(img, target, order=0 if is_atlas else 1)
+    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+
+    if not is_atlas:
+        try:
+            zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
+            zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
+            ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
+            if ratio > 1.4:
+                data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
+        except Exception:
+            pass
+    else:
+        data = _fill_empty_slices_nearest(data)
+
+    if is_diffusion and not is_atlas:
+        inpaint_domain = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            inpaint_domain = np.asarray(brain_mask, dtype=bool)
+        else:
+            finite = np.isfinite(data)
+            try:
+                from scipy.ndimage import binary_closing
+
+                inpaint_domain = binary_closing(finite, structure=np.ones((3, 3, 3), bool))
+            except Exception:
+                inpaint_domain = finite
+        data = _inpaint_nans_nearest(data, inside_mask=inpaint_domain)
+
+    # Display-domain mask (matches _render_montage_pillow)
+    if brain_mask is not None and not is_atlas:
+        mask_data = np.asarray(brain_mask, dtype=bool)
+        if mask_data.shape != data.shape:
+            if segmentation_img is None:
+                raise ValueError("Brain mask shape does not match parametric map")
+            target2 = (data.shape, img.affine)
+            seg_img = segmentation_img
+            if (
+                segmentation_img.shape != data.shape
+                or not np.allclose(segmentation_img.affine, img.affine)
+            ):
+                seg_img = resample_from_to(segmentation_img, target2, order=0)
+            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+            mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
+        brain_mask = mask_data
+
+    head_support_3d = None
+    if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
+        head_support_3d = overlay["mask_head"].astype(bool)
+        if head_support_3d.shape != data.shape:
+            head_img = nib.Nifti1Image(head_support_3d.astype(np.float32), reference_img.affine)
+            head_img = resample_from_to(head_img, (data.shape, img.affine), order=0)
+            head_support_3d = np.asarray(head_img.get_fdata(), dtype=np.float32) > 0.5
+
+    norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
+    if is_atlas and head_support_3d is not None:
+        norm_data = np.where(head_support_3d, norm_data, np.nan)
+
+    focus_data = None
+    if (getattr(job, "metric", "") or "").lower() == "ki":
+        core_mask = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            core_mask = _mask_erode_mm(brain_mask, img, mm=2.0)
+        elif head_support_3d is not None and head_support_3d.shape == data.shape:
+            core_mask = _mask_erode_mm(head_support_3d, img, mm=2.0)
+        if core_mask is not None and core_mask.any():
+            focus_data = np.where(core_mask, data, np.nan)
+        else:
+            focus_data = norm_data
+
+    norm, tick_values = _build_normalizer(
+        norm_data,
+        job,
+        mask_zero_override=False if brain_mask is not None else None,
+        focus_data=focus_data,
+    )
+    if (getattr(job, "metric", None) or "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+
+    units = _units_for_job(job)
+    return _pillow_colorbar_required_width(
+        norm=norm,
+        tick_values=tick_values,
+        units=units,
+        units_position=PILLOW_COLORBAR_UNITS_POSITION,
+        units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+        tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+        units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+    )
+
+
+def _draw_colorbar_pillow(
+    canvas: Any,
+    *,
+    norm: mcolors.Normalize,
+    cmap: mpl.colors.Colormap,
+    tick_values: list[float] | None,
+    transparent_background: bool,
+    units: str | None,
+    units_position: str = "above",
+    units_gap_px: int = 10,
+    x0: int,
+    y0: int,
+    w: int,
+    h: int,
+    tick_font_size: int = 18,
+    units_font_size: int = 18,
+) -> None:
+    if Image is None or ImageDraw is None:
+        return
+
+    lut = cmap(np.linspace(0, 1, 256)).astype(np.float32)
+    lut[:, 3] = 1.0
+
+    # Deterministic layout so required width can be computed reliably.
+    left_pad = 10
+    right_pad = 12
+    bar_w = 32
+    bar_x0 = x0 + left_pad
+    cb_y0 = y0
+    cb_h = h
+
+    grad = np.linspace(1.0, 0.0, cb_h, dtype=np.float32)
+    idx = (grad * 255.0 + 0.5).astype(np.int32)
+    bar_rgb = (lut[idx, :3] * 255.0 + 0.5).astype(np.uint8)
+    bar_img = np.zeros((cb_h, bar_w, 4), dtype=np.uint8)
+    bar_img[..., :3] = bar_rgb[:, None, :]
+    bar_img[..., 3] = 255
+    bar = Image.fromarray(bar_img, mode="RGBA")
+    canvas.alpha_composite(bar, (bar_x0, cb_y0))
+
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle(
+        [bar_x0, cb_y0, bar_x0 + bar_w - 1, cb_y0 + cb_h - 1],
+        outline=(0, 0, 0, 255),
+        width=2,
+    )
+
+    ticks = tick_values or _default_ticks(float(norm.vmin), float(norm.vmax))
+    font = _load_pillow_font(int(tick_font_size))
+    units_font = _load_pillow_font(int(units_font_size))
+
+    # Measure max tick label width for unit placement to the right.
+    finite_ticks = [float(tv) for tv in ticks if np.isfinite(tv)]
+    tick_labels = _format_tick_labels(finite_ticks)
+    max_tick_w = 0
+    for label in tick_labels:
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            w_lbl = int(bbox[2] - bbox[0])
+        except Exception:
+            w_lbl = len(label) * max(6, int(tick_font_size * 0.6))
+        max_tick_w = max(max_tick_w, w_lbl)
+
+    # Tick labels normally sit to the right of the bar, but clamp them so they
+    # can never be pushed off-canvas if width estimation differs across fonts.
+    tick_text_x = bar_x0 + bar_w + 14
+    max_tick_text_x = x0 + w - right_pad - max_tick_w
+    if max_tick_text_x < tick_text_x:
+        tick_text_x = max(x0, int(max_tick_text_x))
+
+    units_position = (units_position or "above").lower().strip()
+    if units:
+        label = units
+        try:
+            bbox = draw.textbbox((0, 0), label, font=units_font)
+            tw = int(bbox[2] - bbox[0])
+            th = int(bbox[3] - bbox[1])
+        except Exception:
+            tw = len(label) * max(6, int(units_font_size * 0.6))
+            th = max(10, int(units_font_size))
+
+        if units_position in {"right_rot", "right-rot", "beside_rot", "beside-rot"}:
+            # Rotated 90° clockwise, centered on bar height, placed to the right of tick labels.
+            if Image is not None:
+                try:
+                    bbox = draw.textbbox((0, 0), label, font=units_font)
+                    x0b, y0b, x1b, y1b = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+                except Exception:
+                    x0b, y0b, x1b, y1b = 0, 0, tw, th
+                pad = 2
+                tw_img = max(1, int(x1b - x0b))
+                th_img = max(1, int(y1b - y0b))
+                txt_img = Image.new(
+                    "RGBA",
+                    (max(1, tw_img + pad * 2), max(1, th_img + pad * 2)),
+                    (0, 0, 0, 0),
+                )
+                txt_draw = ImageDraw.Draw(txt_img)
+                # Use bbox offsets so descenders/negative font bearings never clip.
+                txt_draw.text((pad - x0b, pad - y0b), label, fill=(0, 0, 0, 255), font=units_font)
+                rot = txt_img.rotate(-90, expand=True)
+                rw, rh = rot.size
+                min_x_units = tick_text_x + max_tick_w + int(max(0, units_gap_px))
+                max_x_units = x0 + w - right_pad - rw
+                if max_x_units < x0:
+                    x_units = x0
+                elif max_x_units < min_x_units:
+                    # Not enough room to keep a gap; keep it visible even if it overlaps.
+                    x_units = max_x_units
+                else:
+                    # Right-align within the allocated slot.
+                    x_units = max_x_units
+                y_units = cb_y0 + (cb_h - rh) // 2
+                canvas.alpha_composite(rot, (x_units, int(np.clip(y_units, cb_y0, cb_y0 + cb_h - rh))))
+        elif units_position in {"right"}:
+            # Unrotated, centered vertically, to the right of tick labels.
+            min_x_units = tick_text_x + max_tick_w + int(max(0, units_gap_px))
+            max_x_units = x0 + w - right_pad - tw
+            if max_x_units < x0:
+                x_units = x0
+            elif max_x_units < min_x_units:
+                x_units = max_x_units
+            else:
+                x_units = max_x_units
+            y_units = cb_y0 + (cb_h - th) // 2
+            draw.text((x_units, int(np.clip(y_units, cb_y0, cb_y0 + cb_h - th))), label, fill=(0, 0, 0, 255), font=units_font)
+        elif units_position == "beside":
+            # Legacy: to the right of the bar, near the top.
+            draw.text(
+                (bar_x0 + bar_w + 12, max(0, cb_y0 - th // 2)),
+                label,
+                fill=(0, 0, 0, 255),
+                font=units_font,
+            )
+        elif units_position == "on":
+            # Put on top of the bar itself; add a tiny outline for readability.
+            tx = bar_x0 + (bar_w - tw) // 2
+            ty = cb_y0 + 6
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                draw.text((tx + dx, ty + dy), label, fill=(255, 255, 255, 255), font=units_font)
+            draw.text((tx, ty), label, fill=(0, 0, 0, 255), font=units_font)
+        else:
+            # Default: above the bar.
+            draw.text(
+                (bar_x0 + (bar_w - tw) // 2, max(0, cb_y0 - th - int(units_gap_px))),
+                label,
+                fill=(0, 0, 0, 255),
+                font=units_font,
+            )
+
+    last_y: int | None = None
+    min_sep = max(8, int(tick_font_size * 1.05))
+    for tv, label in zip(finite_ticks, tick_labels):
+        t = (float(tv) - float(norm.vmin)) / max(1e-12, float(norm.vmax) - float(norm.vmin))
+        t = float(np.clip(t, 0.0, 1.0))
+        y = cb_y0 + int(round((1.0 - t) * (cb_h - 1)))
+        if last_y is not None and abs(y - last_y) < min_sep:
+            continue
+        draw.line(
+            [bar_x0 + bar_w, y, bar_x0 + bar_w + 10, y],
+            fill=(0, 0, 0, 255),
+            width=2,
+        )
+        # Use a compact significant-figure formatter (avoids all-zero labels for small ranges).
+        y_text = y - int(tick_font_size * 0.45)
+        y_text = int(np.clip(y_text, cb_y0, cb_y0 + cb_h - tick_font_size))
+        # Clamp X per label to prevent complete off-canvas rendering when font
+        # measurements differ across environments.
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            w_lbl = int(bbox[2] - bbox[0])
+        except Exception:
+            w_lbl = len(label) * max(6, int(tick_font_size * 0.6))
+        max_x_lbl = x0 + w - right_pad - w_lbl
+        x_lbl = int(np.clip(tick_text_x, x0, max_x_lbl if max_x_lbl >= x0 else x0))
+        draw.text((x_lbl, y_text), label, fill=(0, 0, 0, 255), font=font)
+        last_y = y
 
 ROWS = 2
 COLS = 5
@@ -103,10 +647,10 @@ class MapJob:
 MAP_JOBS: Sequence[MapJob] = (
     MapJob("CBF_per_voxel_tikhonov", "cbf_montage"),
     MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage"),
-    MapJob("mtt_map", "mtt_montage"),
-    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage"),
-    MapJob("cth_map", "cth_montage"),
-    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage"),
+    MapJob("mtt_map", "mtt_montage", vmin=0.0),
+    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", vmin=0.0),
+    MapJob("cth_map", "cth_montage", vmin=0.0),
+    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", vmin=0.0),
     MapJob("Ki_per_voxel", "ki_voxel_montage", metric="ki"),
     MapJob("Ki_map_atlas", "ki_atlas_montage", metric="ki"),
     MapJob("vp_map_atlas", "vp_atlas_montage"),
@@ -145,6 +689,19 @@ MAP_JOBS: Sequence[MapJob] = (
         "tensor_residual_parcel_montage",
         search_directories=("", "diffusion"),
     ),
+    MapJob(
+        "t1_map",
+        "t1_montage",
+        vmin=0.0,
+        search_directories=("", "Fitting"),
+        cmap_name="specthl",
+    ),
+    MapJob(
+        "m0_map",
+        "m0_montage",
+        search_directories=("", "Fitting"),
+        cmap_name="specthl",
+    ),
 )
 
 MAP_JOB_LOOKUP: Dict[str, MapJob] = {job.base: job for job in MAP_JOBS}
@@ -174,6 +731,62 @@ PROJECTION_TARGETS: Dict[str, str] = {
     "tensor_residual_map_atlas": "tensor_residual_projection_parcel",
 }
 
+
+def _strip_nii_suffix(name: str) -> str:
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii"):
+        return name[:-4]
+    return os.path.splitext(name)[0]
+
+
+def _is_appledouble(name: str) -> bool:
+    # macOS resource fork files (AppleDouble) start with '._' and often look like
+    # real files (e.g., '._Ki_map_atlas_patlak.nii.gz') but are not NIfTI.
+    return name.startswith("._")
+
+
+def _best_map_job_base(stem: str) -> tuple[str, str]:
+    """Return (base, suffix) by matching the longest known MapJob base prefix."""
+    best_base = ""
+    for base in MAP_JOB_LOOKUP:
+        if stem == base or stem.startswith(base):
+            if len(base) > len(best_base):
+                best_base = base
+    if best_base:
+        return best_base, stem[len(best_base) :]
+    return stem, ""
+
+
+def _discover_atlas_maps(analysis_directory: str) -> Dict[str, Dict[str, str]]:
+    """Discover all atlas-based NIfTI maps under an Analysis directory."""
+    discovered: Dict[str, Dict[str, str]] = defaultdict(dict)
+    if not os.path.isdir(analysis_directory):
+        return {}
+
+    for root, _, files in os.walk(analysis_directory):
+        for fname in files:
+            if _is_appledouble(fname) or fname.startswith("."):
+                continue
+            lower = fname.lower()
+            if not (lower.endswith(".nii") or lower.endswith(".nii.gz")):
+                continue
+            stem = _strip_nii_suffix(fname)
+            if "atlas" not in stem.lower():
+                continue
+            base, suffix = _best_map_job_base(stem)
+            path = os.path.join(root, fname)
+            existing = discovered[base].get(suffix)
+            if existing is None or (existing.endswith(".nii") and path.endswith(".nii.gz")):
+                discovered[base][suffix] = path
+
+    return dict(discovered)
+
+
+def _default_projection_job(base: str) -> MapJob:
+    # Use robust bounds by default; most atlas projections use NaNs for background.
+    return MapJob(base=base, output_base=f"{base}_projection", cmap_name="specthl")
+
 ParcelStatistics = Dict[Tuple[str, str], Dict[int, float]]
 
 _ATLAS_SEGMENTATION_PATH = (
@@ -188,7 +801,9 @@ def _atlas_segmentation_path(nifti_directory: str) -> str:
     return os.path.join(nifti_directory, *_ATLAS_SEGMENTATION_PATH)
 
 
-def _load_atlas_segmentation(nifti_directory: str) -> tuple[np.ndarray, np.ndarray]:
+def _load_atlas_segmentation_img(
+    nifti_directory: str,
+) -> tuple[nib.Nifti1Image, np.ndarray, np.ndarray]:
     atlas_path = _atlas_segmentation_path(nifti_directory)
     if not os.path.isfile(atlas_path):
         raise FileNotFoundError(atlas_path)
@@ -203,6 +818,11 @@ def _load_atlas_segmentation(nifti_directory: str) -> tuple[np.ndarray, np.ndarr
     if atlas_labels.size == 0:
         raise ValueError("Atlas segmentation contains no labelled parcels")
 
+    return atlas_img, atlas_data, atlas_labels
+
+
+def _load_atlas_segmentation(nifti_directory: str) -> tuple[np.ndarray, np.ndarray]:
+    _, atlas_data, atlas_labels = _load_atlas_segmentation_img(nifti_directory)
     return atlas_data, atlas_labels
 
 
@@ -219,6 +839,7 @@ def generate_parametric_montages(
     cols: int = COLS,
     dpi: int = DPI,
     transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
 ) -> None:
     """Render PNG montages for available parametric maps.
 
@@ -355,6 +976,9 @@ def generate_parametric_montages(
     os.makedirs(out_dir, exist_ok=True)
 
     generated_any = False
+
+    # First, discover what we will render so we can precompute a fixed width.
+    render_jobs: list[tuple[MapJob, str, str, str, np.ndarray | None, Dict[str, Any] | None]] = []
     for job in MAP_JOBS:
         # Keep atlas maps for perfusion/BBB metrics.
         # Skip only diffusion *_map_atlas* montages. Parcel projections still render below.
@@ -362,35 +986,257 @@ def generate_parametric_montages(
             continue
 
         for suffix, map_path in _find_available_maps(job, analysis_directory).items():
-            try:
-                output_name = job.output_base + suffix + job.output_ext
-                out_path = os.path.join(out_dir, output_name)
+            output_name = job.output_base + suffix + job.output_ext
+            out_path = os.path.join(out_dir, output_name)
+            job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
+            render_overlay = None if transparent_background else overlay
+            render_jobs.append((job, suffix, map_path, out_path, job_brain_mask, render_overlay))
 
-                # Parcel/atlas montages should display every finite voxel from the map.
-                job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
+    if not render_jobs:
+        print("[montage] No parametric maps found for montage rendering.")
+        return
 
-                render_overlay = None if transparent_background else overlay
-                _render_montage(
-                    map_path,
-                    out_path,
-                    job,
-                    ref_info,
-                    reference_img=reference_img,
-                    rows=rows,
-                    cols=cols,
-                    dpi=dpi,
-                    overlay=render_overlay,
-                    brain_mask=job_brain_mask,
-                    segmentation_img=segmentation_img,
-                    transparent_background=transparent_background,
-                )
-                generated_any = True
-                print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
-            except Exception as exc:
-                print(f"[montage] Failed to render {map_path}: {exc}")
+    # Enforce identical PNG widths across all montages by using the maximum required
+    # Pillow colorbar width for this batch.
+    fixed_cb_w = None
+    if Image is not None:
+        if fixed_colorbar_width is not None and int(fixed_colorbar_width) > 0:
+            fixed_cb_w = int(fixed_colorbar_width)
+        else:
+            max_w = 0
+            for job, _suffix, map_path, _out_path, job_brain_mask, render_overlay in render_jobs:
+                try:
+                    needed = _pillow_required_colorbar_width_for_montage(
+                        map_path,
+                        job,
+                        reference_img=reference_img,
+                        overlay=render_overlay,
+                        brain_mask=job_brain_mask,
+                        segmentation_img=segmentation_img,
+                    )
+                    max_w = max(max_w, int(needed))
+                except Exception:
+                    continue
+            fixed_cb_w = int(max(150, max_w)) if max_w else None
+
+    for job, _suffix, map_path, out_path, job_brain_mask, render_overlay in render_jobs:
+        try:
+            _render_montage(
+                map_path,
+                out_path,
+                job,
+                ref_info,
+                reference_img=reference_img,
+                rows=rows,
+                cols=cols,
+                dpi=dpi,
+                overlay=render_overlay,
+                brain_mask=job_brain_mask,
+                segmentation_img=segmentation_img,
+                transparent_background=transparent_background,
+                fixed_colorbar_width=fixed_cb_w,
+            )
+            generated_any = True
+            print(f"[montage] Saved {os.path.relpath(out_path, start=image_directory)}")
+        except Exception as exc:
+            print(f"[montage] Failed to render {map_path}: {exc}")
 
     if not generated_any:
         print("[montage] No parametric maps found for montage rendering.")
+
+
+def compute_fixed_colorbar_width(
+    analysis_directory: str,
+    nifti_directory: str,
+    dce_path: str,
+    *,
+    anatomical_overlay: str | None = None,
+    segmentation_path: str | None = None,
+    head_mask_path: str | None = None,
+    icv_mask_path: str | None = None,
+    rows: int = ROWS,
+    cols: int = COLS,
+    dpi: int = DPI,
+    population_stats: ParcelStatistics | None = None,
+    transparent_background: bool = False,
+    include_projections: bool = True,
+) -> int | None:
+    """Return a single fixed Pillow colorbar width for all outputs.
+
+    The returned value is intended to be passed as ``fixed_colorbar_width`` to both
+    ``generate_parametric_montages`` and ``generate_projection_montages`` so every
+    rendered PNG shares the same final pixel width.
+    """
+
+    if Image is None:
+        return None
+    if not os.path.isdir(analysis_directory):
+        return None
+    if not os.path.isfile(dce_path):
+        return None
+
+    reference = _load_reference_volume(dce_path)
+    if reference is None:
+        return None
+
+    try:
+        raw_reference_img = nib.load(dce_path)
+    except Exception:
+        return None
+
+    reference_img = nib.Nifti1Image(
+        reference,
+        np.array(raw_reference_img.affine, copy=True),
+        raw_reference_img.header.copy() if raw_reference_img.header is not None else None,
+    )
+
+    segmentation_img = None
+    brain_mask: np.ndarray | None = None
+    if segmentation_path:
+        try:
+            segmentation_img = nib.load(segmentation_path)
+            segmentation_data = np.asarray(segmentation_img.get_fdata(), dtype=np.float32)
+            if segmentation_data.ndim != 3:
+                raise ValueError("Segmentation volume is not 3D")
+            target = (reference.shape, reference_img.affine)
+            if (
+                segmentation_img.shape != reference.shape
+                or not np.allclose(segmentation_img.affine, reference_img.affine)
+            ):
+                segmentation_img = resample_from_to(segmentation_img, target, order=0)
+            segmentation_resampled = np.asarray(segmentation_img.get_fdata(), dtype=np.float32)
+            brain_mask = np.isfinite(segmentation_resampled) & (segmentation_resampled > 0.5)
+            if not brain_mask.any():
+                brain_mask = None
+        except FileNotFoundError:
+            segmentation_img = None
+        except Exception:
+            segmentation_img = None
+            brain_mask = None
+
+    ext_head_mask, ext_icv_mask = _load_external_masks(
+        dce_path,
+        reference_img,
+        explicit_head=head_mask_path,
+        explicit_icv=icv_mask_path,
+    )
+
+    overlay = None
+    head_mask: np.ndarray | None = None
+    if anatomical_overlay:
+        overlay, overlay_error = _prepare_anatomical_overlay(
+            anatomical_overlay,
+            reference_img,
+            segmentation_img,
+            head_mask_override=ext_head_mask,
+            icv_mask_override=ext_icv_mask,
+        )
+        if overlay_error:
+            overlay = None
+        if brain_mask is None and overlay is not None and isinstance(overlay.get("mask_brain"), np.ndarray):
+            brain_mask = overlay["mask_brain"].astype(bool)
+        if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
+            head_mask = overlay["mask_head"].astype(bool)
+    else:
+        if ext_head_mask is not None:
+            head_mask = ext_head_mask
+        if brain_mask is None and ext_icv_mask is not None:
+            brain_mask = ext_icv_mask
+
+    render_overlay = None if transparent_background else overlay
+
+    max_w = 0
+    # Parametric montages.
+    for job in MAP_JOBS:
+        if _is_diffusion_job(job) and job.base.endswith("_map_atlas"):
+            continue
+
+        for _suffix, map_path in _find_available_maps(job, analysis_directory).items():
+            try:
+                job_brain_mask = None if job.base.endswith("_map_atlas") else brain_mask
+                needed = _pillow_required_colorbar_width_for_montage(
+                    map_path,
+                    job,
+                    reference_img=reference_img,
+                    overlay=render_overlay,
+                    brain_mask=job_brain_mask,
+                    segmentation_img=segmentation_img,
+                )
+                max_w = max(max_w, int(needed))
+            except Exception:
+                continue
+
+    # Projection montages.
+    if include_projections and os.path.isdir(nifti_directory):
+        try:
+            atlas_img, atlas_data, atlas_labels = _load_atlas_segmentation_img(nifti_directory)
+        except Exception:
+            atlas_img = None
+            atlas_data = None
+            atlas_labels = None
+
+        if atlas_data is not None and atlas_labels is not None:
+            stats_lookup: Mapping[Tuple[str, str], Dict[int, float]] = population_stats or {}
+            discovered = _discover_atlas_maps(analysis_directory)
+            targets: Dict[str, str] = dict(PROJECTION_TARGETS)
+            for base in discovered:
+                if base not in targets:
+                    targets[base] = f"{base.lower()}_projection_parcel"
+
+            render_items: list[tuple[np.ndarray, MapJob]] = []
+            for base in sorted(targets):
+                job = MAP_JOB_LOOKUP.get(base) or _default_projection_job(base)
+                if _is_diffusion_job(job) and job.base.endswith("_map_atlas") and not job.mask_zero:
+                    job = replace(job, mask_zero=True)
+                available_maps = discovered.get(base, {})
+                suffixes = set(available_maps)
+                if stats_lookup:
+                    suffixes.update(suffix for stat_base, suffix in stats_lookup if stat_base == base)
+
+                for suffix in sorted(suffixes):
+                    map_path = available_maps.get(suffix)
+                    projected = None
+                    label_means = stats_lookup.get((base, suffix)) if stats_lookup else None
+                    if label_means is None and suffix and stats_lookup:
+                        label_means = stats_lookup.get((base, ""))
+
+                    try:
+                        if label_means:
+                            projected = _projection_from_label_means(atlas_data, label_means)
+                        if projected is None and map_path and atlas_img is not None:
+                            projected = _parcel_mean_projection(
+                                map_path,
+                                atlas_data,
+                                atlas_labels,
+                                atlas_img=atlas_img,
+                            )
+                        if projected is None:
+                            continue
+                        render_items.append((projected, job))
+                    except Exception:
+                        continue
+
+            try:
+                seg_job = MapJob(
+                    base="atlas_segmentation",
+                    output_base="atlas_segmentation_projection",
+                    vmin=float(np.min(atlas_labels)),
+                    vmax=float(np.max(atlas_labels)),
+                    cmap_name="tab20",
+                    mask_zero=True,
+                )
+                render_items.append((atlas_data.astype(np.float32), seg_job))
+            except Exception:
+                pass
+
+            for arr, job in render_items:
+                try:
+                    needed = _pillow_required_colorbar_width_for_projection(arr, job)
+                    max_w = max(max_w, int(needed))
+                except Exception:
+                    continue
+
+    return int(max(150, max_w)) if max_w else None
 
 
 def generate_projection_montages(
@@ -404,6 +1250,7 @@ def generate_projection_montages(
     dpi: int = DPI,
     population_stats: ParcelStatistics | None = None,
     transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
 ) -> bool:
     """Render parcel-level projection montages for atlas-based metrics.
 
@@ -421,7 +1268,7 @@ def generate_projection_montages(
         return False
 
     try:
-        atlas_data, atlas_labels = _load_atlas_segmentation(nifti_directory)
+        atlas_img, atlas_data, atlas_labels = _load_atlas_segmentation_img(nifti_directory)
     except FileNotFoundError as exc:
         print(f"[projection] Atlas segmentation missing – skipping: {exc}")
         return False
@@ -458,11 +1305,20 @@ def generate_projection_montages(
     generated_any = False
     stats_lookup: Mapping[Tuple[str, str], Dict[int, float]] = population_stats or {}
 
-    for base, output_base in PROJECTION_TARGETS.items():
-        job = MAP_JOB_LOOKUP.get(base)
-        if job is None:
-            continue
-        available_maps = _find_available_maps(job, analysis_directory)
+    discovered = _discover_atlas_maps(analysis_directory)
+    targets: Dict[str, str] = dict(PROJECTION_TARGETS)
+    for base in discovered:
+        if base not in targets:
+            targets[base] = f"{base.lower()}_projection_parcel"
+
+    # Build a render plan first so we can enforce identical widths.
+    render_items: list[tuple[np.ndarray, MapJob, str]] = []
+    for base in sorted(targets):
+        output_base = targets[base]
+        job = MAP_JOB_LOOKUP.get(base) or _default_projection_job(base)
+        if _is_diffusion_job(job) and job.base.endswith("_map_atlas") and not job.mask_zero:
+            job = replace(job, mask_zero=True)
+        available_maps = discovered.get(base, {})
         suffixes = set(available_maps)
         if stats_lookup:
             suffixes.update(suffix for stat_base, suffix in stats_lookup if stat_base == base)
@@ -478,28 +1334,74 @@ def generate_projection_montages(
                 if label_means:
                     projected = _projection_from_label_means(atlas_data, label_means)
                 if projected is None and map_path:
-                    projected = _parcel_mean_projection(map_path, atlas_data, atlas_labels)
+                    projected = _parcel_mean_projection(
+                        map_path,
+                        atlas_data,
+                        atlas_labels,
+                        atlas_img=atlas_img,
+                    )
                 if projected is None:
                     continue
 
                 output_name = output_base + suffix + job.output_ext
                 out_path = os.path.join(out_dir, output_name)
-                _render_projection_montage(
-                    projected,
-                    ref_info,
-                    job,
-                    out_path,
-                    rows=rows,
-                    cols=cols,
-                    dpi=dpi,
-                    reference_img=reference_img,
-                    transparent_background=transparent_background,
-                )
-                generated_any = True
-                print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
+                render_items.append((projected, job, out_path))
             except Exception as exc:
                 target = map_path if map_path else f"population statistics for {base}{suffix}"
                 print(f"[projection] Failed to render {target}: {exc}")
+
+    # Always render the atlas segmentation itself as a reference projection.
+    try:
+        seg_job = MapJob(
+            base="atlas_segmentation",
+            output_base="atlas_segmentation_projection",
+            vmin=float(np.min(atlas_labels)),
+            vmax=float(np.max(atlas_labels)),
+            cmap_name="tab20",
+            mask_zero=True,
+        )
+        seg_out = os.path.join(out_dir, "atlas_segmentation_projection.png")
+        render_items.append((atlas_data.astype(np.float32), seg_job, seg_out))
+    except Exception as exc:
+        print(f"[projection] Failed to render atlas segmentation projection: {exc}")
+
+    if not render_items:
+        if not generated_any:
+            print("[projection] No atlas maps found for projection rendering.")
+        return generated_any
+
+    fixed_cb_w = None
+    if Image is not None:
+        if fixed_colorbar_width is not None and int(fixed_colorbar_width) > 0:
+            fixed_cb_w = int(fixed_colorbar_width)
+        else:
+            max_w = 0
+            for arr, job, _out_path in render_items:
+                try:
+                    needed = _pillow_required_colorbar_width_for_projection(arr, job)
+                    max_w = max(max_w, int(needed))
+                except Exception:
+                    continue
+            fixed_cb_w = int(max(150, max_w)) if max_w else None
+
+    for arr, job, out_path in render_items:
+        try:
+            _render_projection_montage(
+                arr,
+                ref_info,
+                job,
+                out_path,
+                rows=rows,
+                cols=cols,
+                dpi=dpi,
+                reference_img=reference_img,
+                transparent_background=transparent_background,
+                fixed_colorbar_width=fixed_cb_w,
+            )
+            generated_any = True
+            print(f"[projection] Saved {os.path.relpath(out_path, start=image_directory)}")
+        except Exception as exc:
+            print(f"[projection] Failed to render {out_path}: {exc}")
 
     if not generated_any:
         print("[projection] No atlas maps found for projection rendering.")
@@ -526,18 +1428,37 @@ def _projection_from_label_means(
 
 
 def _parcel_label_means(
-    map_path: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+    map_path: str,
+    atlas_data: np.ndarray,
+    atlas_labels: np.ndarray,
+    *,
+    atlas_img: nib.Nifti1Image | None = None,
 ) -> Dict[int, float]:
     img = nib.load(map_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
-    if data.shape != atlas_data.shape:
+
+    atlas_for_map = atlas_data
+    if atlas_img is not None and (
+        data.shape != atlas_data.shape
+        or not np.allclose(np.asarray(atlas_img.affine), np.asarray(img.affine))
+    ):
+        try:
+            from nibabel.processing import resample_from_to
+
+            resampled = resample_from_to(atlas_img, img, order=0)
+            atlas_for_map = np.asarray(resampled.get_fdata(), dtype=np.int32)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(
+                "Atlas segmentation and parametric map shapes do not match"
+            ) from exc
+    elif data.shape != atlas_data.shape:
         raise ValueError("Atlas segmentation and parametric map shapes do not match")
 
     label_means: Dict[int, float] = {}
     for label in atlas_labels:
-        mask = atlas_data == int(label)
+        mask = atlas_for_map == int(label)
         if not np.any(mask):
             continue
         values = data[mask]
@@ -550,16 +1471,26 @@ def _parcel_label_means(
 
 
 def _collect_dataset_parcel_means(
-    analysis_directory: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+    analysis_directory: str,
+    atlas_data: np.ndarray,
+    atlas_labels: np.ndarray,
+    *,
+    atlas_img: nib.Nifti1Image | None = None,
 ) -> Dict[Tuple[str, str], Dict[int, float]]:
     dataset_means: Dict[Tuple[str, str], Dict[int, float]] = {}
 
-    for base in PROJECTION_TARGETS:
-        job = MAP_JOB_LOOKUP.get(base)
-        if job is None:
-            continue
-        for suffix, map_path in _find_available_maps(job, analysis_directory).items():
-            label_means = _parcel_label_means(map_path, atlas_data, atlas_labels)
+    discovered = _discover_atlas_maps(analysis_directory)
+    for base, suffix_map in discovered.items():
+        for suffix, map_path in suffix_map.items():
+            try:
+                label_means = _parcel_label_means(
+                    map_path,
+                    atlas_data,
+                    atlas_labels,
+                    atlas_img=atlas_img,
+                )
+            except Exception:  # noqa: BLE001 - skip unreadable/corrupt files
+                continue
             if label_means:
                 dataset_means[(base, suffix)] = label_means
 
@@ -612,13 +1543,18 @@ def build_population_projection_stats(
             continue
 
         try:
-            atlas_data, atlas_labels = _load_atlas_segmentation(nifti_directory)
+            atlas_img, atlas_data, atlas_labels = _load_atlas_segmentation_img(
+                nifti_directory
+            )
         except (FileNotFoundError, ValueError):
             continue
 
         try:
             dataset_means = _collect_dataset_parcel_means(
-                analysis_directory, atlas_data, atlas_labels
+                analysis_directory,
+                atlas_data,
+                atlas_labels,
+                atlas_img=atlas_img,
             )
         except Exception as exc:  # noqa: BLE001 - surface helpful context
             print(f"[projection] Failed to collect parcel means for {dataset_dir}: {exc}")
@@ -1567,18 +2503,37 @@ def _find_available_maps(job: MapJob, analysis_directory: str) -> Dict[str, str]
 
 
 def _parcel_mean_projection(
-    map_path: str, atlas_data: np.ndarray, atlas_labels: np.ndarray
+    map_path: str,
+    atlas_data: np.ndarray,
+    atlas_labels: np.ndarray,
+    *,
+    atlas_img: nib.Nifti1Image | None = None,
 ) -> np.ndarray | None:
     img = nib.load(map_path)
     data = np.asarray(img.get_fdata(), dtype=np.float32)
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
-    if data.shape != atlas_data.shape:
+
+    atlas_for_map = atlas_data
+    if atlas_img is not None and (
+        data.shape != atlas_data.shape
+        or not np.allclose(np.asarray(atlas_img.affine), np.asarray(img.affine))
+    ):
+        try:
+            from nibabel.processing import resample_from_to
+
+            resampled = resample_from_to(atlas_img, img, order=0)
+            atlas_for_map = np.asarray(resampled.get_fdata(), dtype=np.int32)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(
+                "Atlas segmentation and parametric map shapes do not match"
+            ) from exc
+    elif data.shape != atlas_data.shape:
         raise ValueError("Atlas segmentation and parametric map shapes do not match")
 
     projected = np.full_like(data, np.nan, dtype=np.float32)
     for label in atlas_labels:
-        mask = atlas_data == label
+        mask = atlas_for_map == label
         if not np.any(mask):
             continue
         values = data[mask]
@@ -1619,7 +2574,28 @@ def _render_montage(
     brain_mask: np.ndarray | None = None,
     segmentation_img: nib.Nifti1Image | None = None,
     transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
 ) -> None:
+    # Prefer deterministic Pillow rendering (no Matplotlib figure/colorbar).
+    # Fall back to the Matplotlib renderer only when Pillow is unavailable.
+    if Image is not None:
+        _render_montage_pillow(
+            map_path,
+            out_path,
+            job,
+            ref_info,
+            reference_img=reference_img,
+            rows=rows,
+            cols=cols,
+            dpi=dpi,
+            overlay=overlay,
+            brain_mask=brain_mask,
+            segmentation_img=segmentation_img,
+            transparent_background=transparent_background,
+            fixed_colorbar_width=fixed_colorbar_width,
+        )
+        return
+
     is_atlas = job.base.endswith("_map_atlas")
     is_diffusion = _is_diffusion_job(job)
     img = nib.load(map_path)
@@ -1785,14 +2761,11 @@ def _render_montage(
     cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
-    # use solid figure background to avoid antialias bleed against transparency
-    figure_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=figure_facecolor
-    )
+    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
+    fig_facecolor = (0, 0, 0, 0) if transparent_background else axis_facecolor
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=fig_facecolor)
     fig.patch.set_alpha(0.0 if transparent_background else 1.0)
     axes = axes.ravel()
-    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
 
     overlay_volume = overlay.get("volume") if overlay else None
     overlay_mask_volume = overlay.get("mask_head") if overlay else None
@@ -2109,14 +3082,15 @@ def _render_montage(
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
 
-    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
-    save_kwargs = {"dpi": dpi, "edgecolor": "none"}
-    if transparent_background:
-        save_kwargs["facecolor"] = "none"
-        save_kwargs["transparent"] = True
-    else:
-        save_kwargs["facecolor"] = fig.get_facecolor()
-    plt.savefig(out_path, **save_kwargs)
+    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.08, hspace=0.08)
+    save_facecolor = "none" if transparent_background else axis_facecolor
+    plt.savefig(
+        out_path,
+        dpi=dpi,
+        edgecolor="none",
+        facecolor=save_facecolor,
+        transparent=bool(transparent_background),
+    )
     plt.close(fig)
 
 
@@ -2131,7 +3105,25 @@ def _render_projection_montage(
     dpi: int,
     reference_img: nib.Nifti1Image,
     transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
 ) -> None:
+    # Prefer deterministic Pillow rendering (no Matplotlib figure/colorbar).
+    # Fall back to the Matplotlib renderer only when Pillow is unavailable.
+    if Image is not None:
+        _render_projection_montage_pillow(
+            data,
+            ref_info,
+            job,
+            out_path,
+            rows=rows,
+            cols=cols,
+            dpi=dpi,
+            reference_img=reference_img,
+            transparent_background=transparent_background,
+            fixed_colorbar_width=fixed_colorbar_width,
+        )
+        return
+
     if data.ndim != 3:
         raise ValueError("Expected a 3D parametric map")
 
@@ -2179,13 +3171,11 @@ def _render_projection_montage(
     cmap_img = _opaque_for_image(cmap)
     cmap_cb = _opaque_colormap_for_colorbar(cmap)
 
-    figure_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=figure_facecolor
-    )
+    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
+    fig_facecolor = (0, 0, 0, 0) if transparent_background else axis_facecolor
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2), facecolor=fig_facecolor)
     fig.patch.set_alpha(0.0 if transparent_background else 1.0)
     axes = axes.ravel()
-    axis_facecolor = (0, 0, 0, 0) if transparent_background else "#e0e0e0"
 
     nz = data.shape[2]
     if nz == 0:
@@ -2219,13 +3209,10 @@ def _render_projection_montage(
 
         union_crop = union_xy_r[r0:r1, c0:c1]
         if job.mask_zero:
-            finite_vals = slc[np.isfinite(slc) & (slc > 0)]
-            if finite_vals.size:
-                cutoff = np.percentile(finite_vals, 0.1)
-                eps_dyn = max(cutoff, 1e-6)
-            else:
-                eps_dyn = 1e-6
-            mask_slice = np.isfinite(slc) & (slc > eps_dyn)
+            # Only mask true zeros / numerical near-zeros. Using a data-driven
+            # cutoff (e.g., a low percentile) can incorrectly hide legitimate
+            # low values, making the low end of the colormap appear blank.
+            mask_slice = np.isfinite(slc) & (np.abs(slc) > EPS)
         else:
             mask_slice = np.isfinite(slc)
 
@@ -2262,9 +3249,17 @@ def _render_projection_montage(
         extend=extend_flag,
         boundaries=boundaries,
     )
-    cb_facecolor = axis_facecolor
-    cb.ax.set_facecolor(cb_facecolor)
-    cb.patch.set_alpha(0.0 if transparent_background else 1.0)
+    # Match panel background and enforce full opacity; support both old and new Colorbar APIs.
+    try:
+        cb_facecolor = axis_facecolor
+        cb.ax.set_facecolor(cb_facecolor)
+        target_alpha = 0.0 if transparent_background else 1.0
+        if hasattr(cb.ax, "patch") and cb.ax.patch is not None:
+            cb.ax.patch.set_alpha(target_alpha)
+        elif hasattr(cb, "patch"):
+            cb.patch.set_alpha(target_alpha)
+    except Exception:
+        pass
     try:
         cb.solids.set_edgecolor("face")
         cb.solids.set_alpha(1.0)
@@ -2276,15 +3271,651 @@ def _render_projection_montage(
     for spine in cb.ax.spines.values():
         spine.set_edgecolor("black")
 
-    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.02, hspace=0.02)
-    save_kwargs = {"dpi": dpi, "edgecolor": "none"}
-    if transparent_background:
-        save_kwargs["facecolor"] = "none"
-        save_kwargs["transparent"] = True
-    else:
-        save_kwargs["facecolor"] = fig.get_facecolor()
-    plt.savefig(out_path, **save_kwargs)
+    plt.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.02, wspace=0.08, hspace=0.08)
+    save_facecolor = "none" if transparent_background else axis_facecolor
+    plt.savefig(
+        out_path,
+        dpi=dpi,
+        edgecolor="none",
+        facecolor=save_facecolor,
+        transparent=bool(transparent_background),
+    )
     plt.close(fig)
+
+
+def _render_projection_montage_pillow(
+    data: np.ndarray,
+    ref_info: Dict[str, np.ndarray],
+    job: MapJob,
+    out_path: str,
+    *,
+    rows: int,
+    cols: int,
+    dpi: int,
+    reference_img: nib.Nifti1Image,
+    transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
+) -> None:
+    """Render projection montage without Matplotlib (Pillow backend).
+
+    Goal: match the Ki projection appearance reliably across platforms/viewers.
+    - opaque tile backgrounds by default
+    - NaNs masked out to the background
+    - colorbar always shows the full [vmin, vmax] ramp with no transparency
+    """
+
+    if Image is None:
+        raise RuntimeError("Pillow is required for non-matplotlib montage rendering")
+
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+
+    data = _fill_empty_slices_nearest(data)
+    finite_mask = np.isfinite(data)
+    if job.mask_zero:
+        finite_mask &= np.abs(data) > EPS
+    if not finite_mask.any():
+        raise ValueError("Projection map contains no finite values")
+
+    union_xy = np.any(finite_mask, axis=2)
+    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
+
+    # Use the same slice mapping as the matplotlib version.
+    slice_valid_initial = np.isfinite(data).any(axis=(0, 1))
+    slice_valid = np.any(finite_mask, axis=(0, 1))
+    zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    try:
+        if (job.base or "").endswith("_map_atlas"):
+            zmin, zmax = 0, data.shape[2] - 1
+    except Exception:
+        pass
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax)
+    if z_indices.size < rows * cols:
+        pad_value = z_indices[-1] if z_indices.size else 0
+        z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
+    else:
+        z_indices = z_indices[: rows * cols]
+
+    # Colormap + normalizer
+    cmap = _get_cmap(job.cmap_name)
+    norm, tick_values = _build_projection_normalizer(data, job)
+    if (getattr(job, "metric", None) or "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+
+    units = _units_for_job(job)
+    cb_w = (
+        int(fixed_colorbar_width)
+        if fixed_colorbar_width is not None and int(fixed_colorbar_width) > 0
+        else _pillow_colorbar_required_width(
+            norm=norm,
+            tick_values=tick_values,
+            units=units,
+            units_position=PILLOW_COLORBAR_UNITS_POSITION,
+            units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+            tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+            units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+        )
+    )
+
+    # Prepare a simple RGB LUT for speed.
+    lut = cmap(np.linspace(0, 1, 256)).astype(np.float32)
+    lut[:, 3] = 1.0
+
+    tile_h = 260
+    tile_w = 260
+    gap = int(PILLOW_TILE_GAP_PX)
+    pad = int(max(0, PILLOW_OUTER_MARGIN_PX))
+    inner_margin = int(max(0, PILLOW_TILE_INNER_MARGIN_PX))
+    bg_rgb = np.array([224, 224, 224], dtype=np.uint8)
+    tile_bg_rgba = (0, 0, 0, 0) if transparent_background else (int(bg_rgb[0]), int(bg_rgb[1]), int(bg_rgb[2]), 255)
+
+    canvas_w = pad * 2 + cols * tile_w + (cols - 1) * gap + cb_w + gap
+    canvas_h = pad * 2 + rows * tile_h + (rows - 1) * gap
+    # Start fully transparent; for opaque montages, optionally paint only the tile grid background.
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    if not transparent_background:
+        if PILLOW_TRANSPARENT_COLORBAR_BG:
+            _pillow_paint_grid_background(
+                canvas,
+                x0=pad,
+                y0=pad,
+                rows=rows,
+                cols=cols,
+                tile_w=tile_w,
+                tile_h=tile_h,
+                gap=gap,
+                color=tile_bg_rgba,
+            )
+        else:
+            ImageDraw.Draw(canvas).rectangle([0, 0, canvas_w - 1, canvas_h - 1], fill=tile_bg_rgba)
+
+    def to_rgba(arr2d: np.ndarray, mask2d: np.ndarray) -> np.ndarray:
+        # arr2d expected float32
+        out = np.zeros((arr2d.shape[0], arr2d.shape[1], 4), dtype=np.uint8)
+        out[..., 0:3] = bg_rgb
+        out[..., 3] = 255 if not transparent_background else 0
+
+        m = mask2d & np.isfinite(arr2d)
+        if job.mask_zero:
+            m &= np.abs(arr2d) > EPS
+        if not np.any(m):
+            return out
+        vals = arr2d[m]
+        t = (vals - float(norm.vmin)) / max(1e-12, float(norm.vmax) - float(norm.vmin))
+        t = np.clip(t, 0.0, 1.0)
+        idx = (t * 255.0 + 0.5).astype(np.int32)
+        colors = (lut[idx, :3] * 255.0 + 0.5).astype(np.uint8)
+        out[m, 0:3] = colors
+        out[m, 3] = 255
+        return out
+
+    # Render tiles
+    for tile_i, z in enumerate(z_indices):
+        rr = tile_i // cols
+        cc = tile_i % cols
+        x0 = pad + cc * (tile_w + gap)
+        y0 = pad + rr * (tile_h + gap)
+
+        zi = int(np.clip(int(z), 0, data.shape[2] - 1))
+        sl = data[:, :, zi]
+        slr = np.rot90(sl, ref_info["rotate"])
+        slc = slr[r0:r1, c0:c1]
+        union_crop = union_xy_r[r0:r1, c0:c1]
+        mask_slice = np.isfinite(slc)
+        if job.mask_zero:
+            mask_slice &= np.abs(slc) > EPS
+        valid = union_crop & mask_slice
+
+        rgba = to_rgba(slc.astype(np.float32), valid)
+        tile_img = Image.fromarray(rgba, mode="RGBA")
+        if inner_margin > 0:
+            inner_w = max(1, tile_w - 2 * inner_margin)
+            inner_h = max(1, tile_h - 2 * inner_margin)
+            tile_img = tile_img.resize((inner_w, inner_h), resample=Image.NEAREST)
+            tile_base = Image.new("RGBA", (tile_w, tile_h), tile_bg_rgba)
+            tile_base.alpha_composite(tile_img, (inner_margin, inner_margin))
+            tile_img = tile_base
+        else:
+            tile_img = tile_img.resize((tile_w, tile_h), resample=Image.NEAREST)
+        canvas.alpha_composite(tile_img, (x0, y0))
+
+    # Colorbar
+    cb_h = int(tile_h * 1.05)
+    cb_x0 = pad + cols * tile_w + (cols - 1) * gap + gap
+    cb_y0 = max(pad, pad + (canvas_h - 2 * pad - cb_h) // 2)
+    _draw_colorbar_pillow(
+        canvas,
+        norm=norm,
+        cmap=cmap,
+        tick_values=tick_values,
+        transparent_background=transparent_background,
+        units=units,
+        units_position=PILLOW_COLORBAR_UNITS_POSITION,
+        units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+        x0=cb_x0,
+        y0=cb_y0,
+        w=cb_w,
+        h=cb_h,
+        tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+        units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+    )
+
+    if PILLOW_TRANSPARENT_GUTTERS and not transparent_background:
+        _pillow_punch_transparent_gutters(
+            canvas,
+            grid_x0=pad,
+            grid_y0=pad,
+            rows=rows,
+            cols=cols,
+            tile_w=tile_w,
+            tile_h=tile_h,
+            gap=gap,
+            include_grid_to_colorbar_gap=True,
+        )
+
+    # (When PILLOW_TRANSPARENT_COLORBAR_BG is enabled, the right side remains transparent because
+    # we never painted a background there.)
+
+    # Save
+    canvas.save(out_path, dpi=(PILLOW_OUTPUT_DPI, PILLOW_OUTPUT_DPI))
+
+
+def _render_montage_pillow(
+    map_path: str,
+    out_path: str,
+    job: MapJob,
+    ref_info: Dict[str, np.ndarray],
+    *,
+    reference_img: nib.Nifti1Image,
+    rows: int,
+    cols: int,
+    dpi: int,
+    overlay: Dict[str, Any] | None = None,
+    brain_mask: np.ndarray | None = None,
+    segmentation_img: nib.Nifti1Image | None = None,
+    transparent_background: bool = False,
+    fixed_colorbar_width: int | None = None,
+) -> None:
+    if Image is None:
+        raise RuntimeError("Pillow is required for non-matplotlib montage rendering")
+
+    is_atlas = job.base.endswith("_map_atlas")
+    is_diffusion = _is_diffusion_job(job)
+
+    img = nib.load(map_path)
+    target = (reference_img.shape, reference_img.affine)
+    if img.shape != reference_img.shape or not np.allclose(img.affine, reference_img.affine):
+        img = resample_from_to(img, target, order=0 if is_atlas else 1)
+    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+
+    if not is_atlas:
+        try:
+            zoom_src = np.array(img.header.get_zooms()[:3], dtype=float)
+            zoom_ref = np.array(reference_img.header.get_zooms()[:3], dtype=float)
+            ratio = max(zoom_src[0] / zoom_ref[0], zoom_src[1] / zoom_ref[1])
+            if ratio > 1.4:
+                data = gaussian_filter(data, sigma=(0.6, 0.6, 0.0), mode="nearest")
+        except Exception:
+            pass
+    else:
+        data = _fill_empty_slices_nearest(data)
+
+    if is_diffusion and not is_atlas:
+        inpaint_domain = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            inpaint_domain = np.asarray(brain_mask, dtype=bool)
+        else:
+            finite = np.isfinite(data)
+            try:
+                from scipy.ndimage import binary_closing
+
+                inpaint_domain = binary_closing(finite, structure=np.ones((3, 3, 3), bool))
+            except Exception:
+                inpaint_domain = finite
+        data = _inpaint_nans_nearest(data, inside_mask=inpaint_domain)
+
+    slice_valid_initial = np.isfinite(data).any(axis=(0, 1))
+
+    # Display-domain mask
+    if brain_mask is not None and not is_atlas:
+        mask_data = np.asarray(brain_mask, dtype=bool)
+        if mask_data.shape != data.shape:
+            if segmentation_img is None:
+                raise ValueError("Brain mask shape does not match parametric map")
+            target2 = (data.shape, img.affine)
+            seg_img = segmentation_img
+            if (
+                segmentation_img.shape != data.shape
+                or not np.allclose(segmentation_img.affine, img.affine)
+            ):
+                seg_img = resample_from_to(segmentation_img, target2, order=0)
+            seg_data = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+            mask_data = np.isfinite(seg_data) & (seg_data > 0.5)
+        brain_mask = mask_data
+        valmask3d = np.isfinite(data) & mask_data
+    else:
+        if is_atlas:
+            atlas_support = None
+            if segmentation_img is not None:
+                target2 = (data.shape, img.affine)
+                seg_img = segmentation_img
+                if (
+                    segmentation_img.shape != data.shape
+                    or not np.allclose(segmentation_img.affine, img.affine)
+                ):
+                    seg_img = resample_from_to(segmentation_img, target2, order=0)
+                seg = np.asarray(seg_img.get_fdata(), dtype=np.float32)
+                atlas_support = np.isfinite(seg) & (seg > 0.5)
+            if atlas_support is None:
+                finite = np.isfinite(data)
+                try:
+                    from scipy.ndimage import binary_closing, binary_fill_holes
+
+                    atlas_support = binary_fill_holes(
+                        binary_closing(finite, structure=np.ones((3, 3, 3), bool))
+                    )
+                except Exception:
+                    atlas_support = finite
+            valmask3d = atlas_support.astype(bool)
+        else:
+            valmask3d = np.isfinite(data)
+
+    # Frame crop
+    union_xy = (
+        np.any(brain_mask, axis=2) if (brain_mask is not None and not is_atlas) else np.any(valmask3d, axis=2)
+    )
+    union_xy_r = np.rot90(union_xy, ref_info["rotate"])
+    r0, r1, c0, c1 = _map_bbox_from_ref(ref_info["bbox_fracs"], union_xy_r.shape)
+
+    slice_valid = np.any(valmask3d, axis=(0, 1))
+    if is_atlas:
+        zmin, zmax = 0, data.shape[2] - 1
+    else:
+        zmin, zmax = _slice_valid_bounds(slice_valid_initial, slice_valid)
+    z_indices = _map_z_from_ref(ref_info["z_fracs"], data.shape[2], zmin=zmin, zmax=zmax)
+    if z_indices.size < rows * cols:
+        pad_value = z_indices[-1] if z_indices.size else 0
+        z_indices = np.pad(z_indices, (0, rows * cols - z_indices.size), constant_values=pad_value)
+    else:
+        z_indices = z_indices[: rows * cols]
+
+    cmap = _get_cmap(job.cmap_name)
+    base_under = list(cmap(0.0))
+    base_under[-1] = 1.0
+    cmap = cmap.with_extremes(bad=(0, 0, 0, 0), under=tuple(base_under))
+
+    # Normalizer uses the same logic as the Matplotlib path.
+    head_support_3d = None
+    if overlay is not None and isinstance(overlay.get("mask_head"), np.ndarray):
+        head_support_3d = overlay["mask_head"].astype(bool)
+        if head_support_3d.shape != data.shape:
+            head_img = nib.Nifti1Image(head_support_3d.astype(np.float32), reference_img.affine)
+            head_img = resample_from_to(head_img, (data.shape, img.affine), order=0)
+            head_support_3d = np.asarray(head_img.get_fdata(), dtype=np.float32) > 0.5
+    norm_data = data if brain_mask is None else np.where(brain_mask, data, np.nan)
+    if is_atlas and head_support_3d is not None:
+        norm_data = np.where(head_support_3d, norm_data, np.nan)
+    focus_data = None
+    if (getattr(job, "metric", "") or "").lower() == "ki":
+        core_mask = None
+        if brain_mask is not None and brain_mask.shape == data.shape:
+            core_mask = _mask_erode_mm(brain_mask, img, mm=2.0)
+        elif head_support_3d is not None and head_support_3d.shape == data.shape:
+            core_mask = _mask_erode_mm(head_support_3d, img, mm=2.0)
+        if core_mask is not None and core_mask.any():
+            focus_data = np.where(core_mask, data, np.nan)
+        else:
+            focus_data = norm_data
+
+    norm, tick_values = _build_normalizer(
+        norm_data,
+        job,
+        mask_zero_override=False if brain_mask is not None else None,
+        focus_data=focus_data,
+    )
+    if (getattr(job, "metric", None) or "").lower() == "fa":
+        vmax = float(getattr(norm, "vmax", 1.0))
+        norm = mcolors.Normalize(vmin=0.0, vmax=vmax, clip=False)
+
+    units = _units_for_job(job)
+    cb_w = (
+        int(fixed_colorbar_width)
+        if fixed_colorbar_width is not None and int(fixed_colorbar_width) > 0
+        else _pillow_colorbar_required_width(
+            norm=norm,
+            tick_values=tick_values,
+            units=units,
+            units_position=PILLOW_COLORBAR_UNITS_POSITION,
+            units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+            tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+            units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+        )
+    )
+
+    lut = cmap(np.linspace(0, 1, 256)).astype(np.float32)
+    lut[:, 3] = 1.0
+
+    tile_h = 260
+    tile_w = 260
+    gap = int(PILLOW_TILE_GAP_PX)
+    pad = int(max(0, PILLOW_OUTER_MARGIN_PX))
+    inner_margin = int(max(0, PILLOW_TILE_INNER_MARGIN_PX))
+    bg_rgb = np.array([224, 224, 224], dtype=np.uint8)
+    tile_bg_rgba = (0, 0, 0, 0) if transparent_background else (224, 224, 224, 255)
+
+    canvas_w = pad * 2 + cols * tile_w + (cols - 1) * gap + cb_w + gap
+    canvas_h = pad * 2 + rows * tile_h + (rows - 1) * gap
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    if not transparent_background:
+        if PILLOW_TRANSPARENT_COLORBAR_BG:
+            _pillow_paint_grid_background(
+                canvas,
+                x0=pad,
+                y0=pad,
+                rows=rows,
+                cols=cols,
+                tile_w=tile_w,
+                tile_h=tile_h,
+                gap=gap,
+                color=tile_bg_rgba,
+            )
+        else:
+            ImageDraw.Draw(canvas).rectangle([0, 0, canvas_w - 1, canvas_h - 1], fill=tile_bg_rgba)
+
+    # Overlay prep (grayscale underlay)
+    overlay_volume = overlay.get("volume") if overlay else None
+    overlay_mask_volume = overlay.get("mask_head") if overlay else None
+    overlay_affine = overlay.get("affine") if overlay else None
+    overlay_header = overlay.get("header") if overlay else None
+    overlay_alpha = float(overlay.get("alpha", 0.65)) if overlay else 1.0
+    overlay_alpha_map = overlay.get("alpha_map") if overlay else None
+    overlay_vmin = overlay.get("vmin") if overlay else None
+    overlay_vmax = overlay.get("vmax") if overlay else None
+
+    overlay_data = None
+    overlay_mask_data = None
+    overlay_alpha_data = None
+    overlay_z_indices = None
+    overlay_slice_valid_initial = None
+    overlay_slice_valid_masked = None
+    if overlay_volume is not None:
+        ovl_img = None
+        if isinstance(overlay_volume, str):
+            ovl_img = nib.load(overlay_volume)
+        elif hasattr(overlay_volume, "shape") and hasattr(overlay_volume, "affine"):
+            ovl_img = overlay_volume
+        elif isinstance(overlay_volume, np.ndarray):
+            affine = overlay_affine if overlay_affine is not None else img.affine
+            header = overlay_header if overlay_header is not None else img.header
+            ovl_img = nib.Nifti1Image(overlay_volume, affine, header)
+        if ovl_img is not None:
+            target2 = (data.shape[:3], img.affine)
+            if ovl_img.shape[:3] != data.shape[:3] or not np.allclose(ovl_img.affine, img.affine):
+                ovl_img = resample_from_to(ovl_img, target2, order=1)
+            overlay_data = np.asarray(ovl_img.get_fdata(), dtype=np.float32)
+            if overlay_data.ndim == 3:
+                overlay_slice_valid_initial = np.isfinite(overlay_data).any(axis=(0, 1))
+            if overlay_alpha_map is not None:
+                alpha_img = nib.Nifti1Image(
+                    np.asarray(overlay_alpha_map, dtype=np.float32),
+                    overlay_affine if overlay_affine is not None else ovl_img.affine,
+                )
+                if alpha_img.shape[:3] != data.shape[:3] or not np.allclose(alpha_img.affine, img.affine):
+                    alpha_img = resample_from_to(alpha_img, target2, order=1)
+                overlay_alpha_data = np.asarray(alpha_img.get_fdata(), dtype=np.float32)
+            if overlay_mask_volume is not None:
+                mask_img = None
+                if isinstance(overlay_mask_volume, str):
+                    mask_img = nib.load(overlay_mask_volume)
+                elif hasattr(overlay_mask_volume, "shape") and hasattr(overlay_mask_volume, "affine"):
+                    mask_img = overlay_mask_volume
+                elif isinstance(overlay_mask_volume, np.ndarray):
+                    mask_affine = overlay_affine if overlay_affine is not None else ovl_img.affine
+                    mask_img = nib.Nifti1Image(overlay_mask_volume.astype(np.float32), mask_affine)
+                if mask_img is not None:
+                    if mask_img.shape[:3] != data.shape[:3] or not np.allclose(mask_img.affine, img.affine):
+                        mask_img = resample_from_to(mask_img, target2, order=0)
+                    overlay_mask_data = np.asarray(mask_img.get_fdata(), dtype=np.float32) > 0.5
+            if overlay_mask_data is None and overlay_data is not None:
+                overlay_mask_data = np.isfinite(overlay_data)
+            if overlay_mask_data is not None:
+                overlay_mask_data = np.asarray(overlay_mask_data, dtype=bool)
+                if overlay_mask_data.ndim == 3 and overlay_mask_data.shape[2]:
+                    footprint2d = np.ones((3, 3), dtype=bool)
+                    for idx in range(overlay_mask_data.shape[2]):
+                        slice_mask = overlay_mask_data[:, :, idx]
+                        try:
+                            slice_mask = binary_fill_holes(slice_mask)
+                        except Exception:
+                            pass
+                        try:
+                            slice_mask = binary_closing(slice_mask, footprint=footprint2d)
+                        except Exception:
+                            pass
+                        overlay_mask_data[:, :, idx] = slice_mask
+                overlay_slice_valid_masked = overlay_mask_data.any(axis=(0, 1))
+            if overlay_data is not None and overlay_slice_valid_initial is not None and overlay_slice_valid_masked is not None:
+                ovl_zmin, ovl_zmax = _slice_valid_bounds(overlay_slice_valid_initial, overlay_slice_valid_masked)
+                overlay_z_indices = _map_z_from_ref(ref_info["z_fracs"], overlay_data.shape[2], zmin=ovl_zmin, zmax=ovl_zmax)
+                if overlay_z_indices.size < rows * cols:
+                    pad_value = overlay_z_indices[-1] if overlay_z_indices.size else 0
+                    overlay_z_indices = np.pad(overlay_z_indices, (0, rows * cols - overlay_z_indices.size), constant_values=pad_value)
+                else:
+                    overlay_z_indices = overlay_z_indices[: rows * cols]
+
+    def normalize_overlay(arr2d: np.ndarray, mask2d: np.ndarray) -> np.ndarray:
+        m = mask2d & np.isfinite(arr2d)
+        if not np.any(m):
+            return np.zeros(arr2d.shape, dtype=np.uint8)
+        vmin = overlay_vmin
+        vmax = overlay_vmax
+        if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or float(vmax) <= float(vmin):
+            vals = arr2d[m]
+            lo, hi = np.percentile(vals, [2.0, 98.0]).astype(np.float32)
+            if not np.isfinite(lo) or not np.isfinite(hi) or float(hi) <= float(lo):
+                lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+            vmin, vmax = float(lo), float(hi)
+        t = (arr2d - float(vmin)) / max(1e-12, float(vmax) - float(vmin))
+        t = np.clip(t, 0.0, 1.0)
+        return (t * 255.0 + 0.5).astype(np.uint8)
+
+    def map_to_rgb(arr2d: np.ndarray, valid2d: np.ndarray) -> np.ndarray:
+        out = np.zeros((arr2d.shape[0], arr2d.shape[1], 4), dtype=np.uint8)
+        out[..., 0:3] = bg_rgb
+        out[..., 3] = 255 if not transparent_background else 0
+        m = valid2d & np.isfinite(arr2d)
+        if job.mask_zero:
+            m &= np.abs(arr2d) > EPS
+        if not np.any(m):
+            return out
+        vals = arr2d[m]
+        t = (vals - float(norm.vmin)) / max(1e-12, float(norm.vmax) - float(norm.vmin))
+        t = np.clip(t, 0.0, 1.0)
+        idx = (t * 255.0 + 0.5).astype(np.int32)
+        colors = (lut[idx, :3] * 255.0 + 0.5).astype(np.uint8)
+        out[m, 0:3] = colors
+        out[m, 3] = 255
+        return out
+
+    # Render tiles
+    for tile_i, z in enumerate(z_indices):
+        rr = tile_i // cols
+        cc = tile_i % cols
+        x0 = pad + cc * (tile_w + gap)
+        y0 = pad + rr * (tile_h + gap)
+        zi = int(np.clip(int(z), 0, data.shape[2] - 1))
+
+        sl = data[:, :, zi]
+        slr = np.rot90(sl, ref_info["rotate"])
+        slc = slr[r0:r1, c0:c1]
+
+        mask_slice = valmask3d[:, :, zi]
+        mask_slice_rot = np.rot90(mask_slice, ref_info["rotate"])
+        mask_slice_crop = mask_slice_rot[r0:r1, c0:c1]
+        union_crop = union_xy_r[r0:r1, c0:c1]
+        valid = union_crop & mask_slice_crop
+
+        render_shape = slc.shape
+        tile_rgba = None
+
+        if overlay_data is not None:
+            overlay_zi = zi
+            if overlay_z_indices is not None and tile_i < overlay_z_indices.size:
+                overlay_zi = int(np.clip(int(overlay_z_indices[tile_i]), 0, overlay_data.shape[2] - 1))
+            overlay_slice = overlay_data[:, :, overlay_zi]
+            overlay_rot = np.rot90(overlay_slice, ref_info["rotate"])
+            or0, or1, oc0, oc1 = _map_bbox_from_ref(ref_info["bbox_fracs"], overlay_rot.shape)
+            overlay_crop = overlay_rot[or0:or1, oc0:oc1]
+            render_shape = overlay_crop.shape
+
+            overlay_union = union_xy_r
+            if overlay_mask_data is not None:
+                ms = overlay_mask_data[:, :, overlay_zi]
+                msr = np.rot90(ms, ref_info["rotate"])
+                overlay_union = msr.astype(bool)
+            overlay_union_crop = overlay_union[or0:or1, oc0:oc1]
+            overlay_gray = normalize_overlay(overlay_crop, overlay_union_crop)
+
+            base = np.zeros((render_shape[0], render_shape[1], 4), dtype=np.uint8)
+            base[..., 0:3] = bg_rgb
+            base[..., 3] = 255 if not transparent_background else 0
+            m = overlay_union_crop & np.isfinite(overlay_crop)
+            base[m, 0] = overlay_gray[m]
+            base[m, 1] = overlay_gray[m]
+            base[m, 2] = overlay_gray[m]
+            base[m, 3] = 255
+            tile_rgba = base
+
+            # Resize parametric layer to overlay crop shape if needed.
+            if slc.shape != render_shape:
+                slc = resize(
+                    slc.astype(np.float32),
+                    render_shape,
+                    order=0 if is_atlas else 1,
+                    preserve_range=True,
+                    anti_aliasing=False if is_atlas else True,
+                ).astype(np.float32)
+                valid = _resize_mask(valid, render_shape)
+
+        layer = map_to_rgb(slc.astype(np.float32), valid)
+        if tile_rgba is None:
+            tile_rgba = layer
+        else:
+            m = layer[..., 3] > 0
+            tile_rgba[m] = layer[m]
+
+        resample = Image.NEAREST
+        tile_img = Image.fromarray(tile_rgba, mode="RGBA")
+        if inner_margin > 0:
+            inner_w = max(1, tile_w - 2 * inner_margin)
+            inner_h = max(1, tile_h - 2 * inner_margin)
+            tile_img = tile_img.resize((inner_w, inner_h), resample=resample)
+            tile_base = Image.new("RGBA", (tile_w, tile_h), tile_bg_rgba)
+            tile_base.alpha_composite(tile_img, (inner_margin, inner_margin))
+            tile_img = tile_base
+        else:
+            tile_img = tile_img.resize((tile_w, tile_h), resample=resample)
+        canvas.alpha_composite(tile_img, (x0, y0))
+
+    # Colorbar
+    cb_h = int(tile_h * 1.05)
+    cb_x0 = pad + cols * tile_w + (cols - 1) * gap + gap
+    cb_y0 = max(pad, pad + (canvas_h - 2 * pad - cb_h) // 2)
+    _draw_colorbar_pillow(
+        canvas,
+        norm=norm,
+        cmap=cmap,
+        tick_values=tick_values,
+        transparent_background=transparent_background,
+        units=units,
+        units_position=PILLOW_COLORBAR_UNITS_POSITION,
+        units_gap_px=PILLOW_COLORBAR_UNITS_GAP_PX,
+        x0=cb_x0,
+        y0=cb_y0,
+        w=cb_w,
+        h=cb_h,
+        tick_font_size=PILLOW_COLORBAR_TICK_FONT_SIZE,
+        units_font_size=PILLOW_COLORBAR_UNITS_FONT_SIZE,
+    )
+
+    if PILLOW_TRANSPARENT_GUTTERS and not transparent_background:
+        _pillow_punch_transparent_gutters(
+            canvas,
+            grid_x0=pad,
+            grid_y0=pad,
+            rows=rows,
+            cols=cols,
+            tile_w=tile_w,
+            tile_h=tile_h,
+            gap=gap,
+            include_grid_to_colorbar_gap=True,
+        )
+
+    canvas.save(out_path, dpi=(PILLOW_OUTPUT_DPI, PILLOW_OUTPUT_DPI))
 
 
 def _build_normalizer(
@@ -2296,18 +3927,29 @@ def _build_normalizer(
 ) -> tuple[mpl.colors.Normalize, list[float]]:
     vmin = float(job.vmin) if job.vmin is not None else np.nan
     vmax = float(job.vmax) if job.vmax is not None else np.nan
+    vmin_given = np.isfinite(vmin)
+    vmax_given = np.isfinite(vmax)
     metric = (getattr(job, "metric", "") or "").lower()
 
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+    if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or vmax <= vmin:
         mask = np.isfinite(data)
         mask_zero = job.mask_zero if mask_zero_override is None else mask_zero_override
         if mask_zero:
             mask &= data > EPS
         finite_vals = data[mask]
         if finite_vals.size:
-            vmin, vmax = _robust_bounds(finite_vals)
+            lo, hi = _robust_bounds(finite_vals)
         else:
-            vmin, vmax = 0.0, 1.0
+            lo, hi = 0.0, 1.0
+        # Respect explicit endpoints when only one side was provided.
+        if vmin_given and not vmax_given:
+            vmin = float(vmin)
+            vmax = float(hi)
+        elif vmax_given and not vmin_given:
+            vmin = float(lo)
+            vmax = float(vmax)
+        else:
+            vmin, vmax = float(lo), float(hi)
 
     if vmax <= vmin:
         padding = abs(vmin) if vmin != 0 else 1.0
@@ -2462,11 +4104,46 @@ def _format_tick_labels(values: Sequence[float]) -> list[str]:
     ticks = [float(v) for v in values]
     if not ticks:
         return []
-    for precision in range(2, 7):
-        labels = [format(val, f".{precision}g") for val in ticks]
-        if len(set(labels)) == len(labels):
-            return labels
-    return [format(val, ".6g") for val in ticks]
+
+    def _format_sci(val: float, digits: int) -> str:
+        # digits = digits after decimal in scientific notation.
+        s = format(val, f".{max(0, digits)}e")
+        if "e" not in s:
+            return s
+        mant, exp = s.split("e", 1)
+        mant = mant.rstrip("0").rstrip(".")
+        try:
+            exp_i = int(exp)
+        except Exception:
+            exp_i = 0
+        return f"{mant}e{exp_i}"
+
+    def _format_fixed(val: float, decimals: int) -> str:
+        s = format(val, f".{max(0, decimals)}f")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return s
+
+    def _fmt(val: float, decimals: int) -> str:
+        if not np.isfinite(val):
+            return ""
+        aval = abs(val)
+        # No scientific notation for values below 1000 (e.g., hundreds).
+        # Use scientific notation for >= 1000 and for very small non-zero values.
+        if aval >= 1000.0 or (aval > 0.0 and aval < 1e-3):
+            return _format_sci(val, digits=min(6, max(2, decimals + 1)))
+        return _format_fixed(val, decimals)
+
+    for decimals in range(0, 8):
+        labels = [_fmt(val, decimals) for val in ticks]
+        if len(set(labels)) != len(labels):
+            continue
+        # Avoid collapsing small ranges into all-zero labels.
+        if any((abs(v) > 0 and lbl in {"0", "0.0", "0.00", "-0", "-0.0", "-0.00"}) for v, lbl in zip(ticks, labels)):
+            continue
+        return labels
+
+    return [_fmt(val, 7) for val in ticks]
 
 
 def _apply_colorbar_ticks(cb: mpl.colorbar.Colorbar, tick_values: Sequence[float]) -> None:

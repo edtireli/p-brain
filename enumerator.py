@@ -1,5 +1,6 @@
 import argparse
 import glob
+import inspect
 import os
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ def _load_montage_dependencies():
     """Import heavy montage modules lazily."""
 
     from utils.montage import (
+        compute_fixed_colorbar_width,
         generate_parametric_montages,
         generate_projection_montages,
         build_population_projection_stats,
@@ -28,6 +30,7 @@ def _load_montage_dependencies():
     from utils import parameters
 
     return (
+        compute_fixed_colorbar_width,
         generate_parametric_montages,
         generate_projection_montages,
         parameters,
@@ -48,7 +51,12 @@ def _prepare_projection_stats(data_root: str):
         raise RuntimeError(f"Unable to import montage dependencies: {exc}") from exc
 
     build_population_projection_stats = None
-    if len(deps) >= 4:
+    # New format: (compute_fixed_colorbar_width, generate_parametric_montages,
+    #              generate_projection_montages, parameters, build_population_projection_stats)
+    if len(deps) >= 5 and hasattr(deps[3], "global_filenames"):
+        build_population_projection_stats = deps[4]
+    # Old format: (generate_parametric_montages, generate_projection_montages, parameters, build_population_projection_stats)
+    elif len(deps) >= 4 and hasattr(deps[2], "global_filenames"):
         build_population_projection_stats = deps[3]
 
     if build_population_projection_stats is None:
@@ -341,24 +349,34 @@ def _run_montage_for_dataset(
         print(f"[montage] Unable to import montage dependencies: {exc}")
         return False
 
-    if len(deps) == 2:
-        generate_parametric_montages, parameters = deps
-        generate_projection_montages = None
-    elif len(deps) == 3:
-        generate_parametric_montages, generate_projection_montages, parameters = deps
+    compute_fixed_colorbar_width = None
+    generate_parametric_montages = None
+    generate_projection_montages = None
+    params_mod = parameters
+
+    # Backwards compatible unpacking for tests/older runners.
+    if len(deps) == 2 and hasattr(deps[1], "global_filenames"):
+        generate_parametric_montages, params_mod = deps
+    elif len(deps) == 3 and hasattr(deps[2], "global_filenames"):
+        generate_parametric_montages, generate_projection_montages, params_mod = deps
+    elif len(deps) >= 5 and hasattr(deps[3], "global_filenames"):
+        compute_fixed_colorbar_width = deps[0]
+        generate_parametric_montages = deps[1]
+        generate_projection_montages = deps[2]
+        params_mod = deps[3]
     else:
-        (
-            generate_parametric_montages,
-            generate_projection_montages,
-            parameters,
-            *_
-        ) = deps
+        generate_parametric_montages = deps[0] if deps else None
+        generate_projection_montages = deps[1] if len(deps) >= 2 else None
+
+    if generate_parametric_montages is None:
+        print("[montage] Montage rendering unavailable – skipping.")
+        return False
 
     try:
         if bool(is_control or settings.CONTROLS):
-            filenames = parameters.control_filenames(nifti_directory)
+            filenames = params_mod.control_filenames(nifti_directory)
         else:
-            filenames = parameters.global_filenames(nifti_directory)
+            filenames = params_mod.global_filenames(nifti_directory)
     except Exception as exc:  # noqa: BLE001 - surface helpful context to CLI users
         print(f"[montage] Failed to discover DCE filename for {dataset_id}: {exc}")
         return False
@@ -391,17 +409,48 @@ def _run_montage_for_dataset(
 
     print(f"[montage] Generating montages for {dataset_id}")
     overall_success = True
+    segmentation_path = _expected_segmentation_path(nifti_directory)
+    if not os.path.isfile(segmentation_path):
+        segmentation_path = None
+
+    fixed_cb_w = None
     try:
-        segmentation_path = _expected_segmentation_path(nifti_directory)
-        if not os.path.isfile(segmentation_path):
-            segmentation_path = None
+        if callable(compute_fixed_colorbar_width):
+            fixed_cb_w = compute_fixed_colorbar_width(
+                analysis_directory,
+                nifti_directory,
+                dce_path,
+                anatomical_overlay=anatomical_overlay,
+                segmentation_path=segmentation_path,
+                population_stats=projection_stats if use_projection else None,
+                transparent_background=transparent_background,
+                include_projections=bool(use_projection),
+            )
+    except TypeError:
+        # Backwards compatibility when signature differs.
+        fixed_cb_w = None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[montage] Failed to precompute fixed width – continuing without: {exc}")
+        fixed_cb_w = None
+
+    try:
+        montage_kwargs = {
+            "anatomical_overlay": anatomical_overlay,
+            "segmentation_path": segmentation_path,
+            "transparent_background": transparent_background,
+        }
+        if fixed_cb_w is not None:
+            try:
+                if "fixed_colorbar_width" in inspect.signature(generate_parametric_montages).parameters:
+                    montage_kwargs["fixed_colorbar_width"] = fixed_cb_w
+            except Exception:
+                pass
+
         generate_parametric_montages(
             analysis_directory,
             image_directory,
             dce_path,
-            anatomical_overlay=anatomical_overlay,
-            segmentation_path=segmentation_path,
-            transparent_background=transparent_background,
+            **montage_kwargs,
         )
     except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
         print(f"[montage] Failed to generate montages for {dataset_id}: {exc}")
@@ -412,13 +461,23 @@ def _run_montage_for_dataset(
             print("[projection] Projection rendering unavailable – skipping.")
             return overall_success
         try:
+            projection_kwargs = {
+                "population_stats": projection_stats,
+                "transparent_background": transparent_background,
+            }
+            if fixed_cb_w is not None:
+                try:
+                    if "fixed_colorbar_width" in inspect.signature(generate_projection_montages).parameters:
+                        projection_kwargs["fixed_colorbar_width"] = fixed_cb_w
+                except Exception:
+                    pass
+
             projection_ok = generate_projection_montages(
                 analysis_directory,
                 image_directory,
                 nifti_directory,
                 dce_path,
-                population_stats=projection_stats,
-                transparent_background=transparent_background,
+                **projection_kwargs,
             )
             overall_success &= projection_ok
         except Exception as exc:  # noqa: BLE001 - runtime errors should surface to the CLI
@@ -513,6 +572,9 @@ def _run_tracks_for_dataset(
     act_tracking: bool | None = None,
     pft_tracking: bool | None = None,
     force_regenerate: bool = False,
+    compute_connectome: bool = False,
+    connectome_min_streamlines: int = 1,
+    connectome_normalize_volume: bool = False,
 ):
     """Compute tractography renderings for ``dataset_id`` when possible."""
 
@@ -608,6 +670,26 @@ def _run_tracks_for_dataset(
             "[tracks] Montage saved to "
             f"{os.path.relpath(outputs.montage_path, start=data_root)}"
         )
+
+    if compute_connectome:
+        try:
+            from modules.connectome import compute_connectome as _compute_connectome
+
+            diffusion_filename_for_connectome = diffusion_filename
+            _compute_connectome(
+                nifti_directory,
+                analysis_directory,
+                diffusion_filename=diffusion_filename_for_connectome,
+                tractography_path=outputs.tract_path,
+                min_streamlines=max(1, int(connectome_min_streamlines)),
+                normalize_by_nodepair_volume=bool(connectome_normalize_volume),
+            )
+            print(
+                "[connectome] Saved connectome outputs under "
+                f"{os.path.relpath(os.path.join(analysis_directory, 'diffusion'), start=data_root)}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[connectome] Failed to compute connectome for {dataset_id}: {exc}")
 
     return True
 
@@ -727,6 +809,29 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--connectome",
+        action="store_true",
+        help=(
+            "Compute a structural connectome + graph topology metrics from tractography and "
+            "atlas segmentation (runs after --tracks)."
+        ),
+    )
+    parser.add_argument(
+        "--connectome_min_streamlines",
+        type=int,
+        default=1,
+        help=(
+            "Minimum streamline count for an edge to be considered present in binary topology metrics."
+        ),
+    )
+    parser.add_argument(
+        "--connectome_norm_volume",
+        action="store_true",
+        help=(
+            "Normalize edge weights by node-pair volume (streamlines / (vol_i + vol_j))."
+        ),
+    )
+    parser.add_argument(
         "--diffusion-file",
         dest="diffusion_filename",
         type=str,
@@ -745,6 +850,13 @@ def parse_args():
             "Examples: --orientation csd (single-shell) or --orientation mt_csd (multi-tissue)."
         ),
     )
+    parser.add_argument(
+        "--flip-angle",
+        dest="flip_angle",
+        type=str,
+        default=None,
+        help='Flip angle in degrees (number) or "auto" (default: from metadata). Passed to main pipeline.',
+    )
     return parser.parse_args()
 
 
@@ -758,6 +870,10 @@ def _list_subdirectories(path):
 
     result = []
     for name in entries:
+        # p-brain-web stores app metadata in a hidden folder inside the data root.
+        # Enumerator should treat hidden directories as non-datasets.
+        if str(name).startswith("."):
+            continue
         full_path = os.path.join(path, name)
         if os.path.isdir(full_path):
             result.append(name)
@@ -1015,6 +1131,9 @@ def main():
                     diffusion_filename_override=args.diffusion_filename,
                     act_tracking=args.tracks_act,
                     pft_tracking=args.tracks_pft,
+                    compute_connectome=args.connectome,
+                    connectome_min_streamlines=args.connectome_min_streamlines,
+                    connectome_normalize_volume=args.connectome_norm_volume,
                 )
                 if not tracks_ok:
                     exit_code = 1
@@ -1035,9 +1154,14 @@ def main():
     command_template = "python3 main.py --id {} --mode auto --data-dir {}"
     if args.diffusion:
         command_template += " --diffusion"
+    if args.flip_angle is not None:
+        command_template += " --flip-angle {}"
 
     for dataset_id, is_control in datasets:
-        command = command_template.format(dataset_id, data_directory)
+        if args.flip_angle is not None:
+            command = command_template.format(dataset_id, data_directory, str(args.flip_angle))
+        else:
+            command = command_template.format(dataset_id, data_directory)
         env = os.environ.copy()
         env["P_BRAIN_DATA_DIR"] = data_directory
         env["PBRAIN_TURBO"] = "1"

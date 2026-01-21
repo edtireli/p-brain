@@ -81,6 +81,8 @@ def parse_args():
                         help='Enable or disable writing the voxelwise CTH map (default: True in auto mode)')
     parser.add_argument('--diffusion', action='store_true',
                         help='Run diffusion tensor processing after the automatic pipeline')
+    parser.add_argument('--flip-angle', dest='flip_angle', type=str, default=None,
+                        help='Flip angle in degrees (number) or "auto" (default: from metadata)')
     return parser.parse_args()
 
 
@@ -158,6 +160,20 @@ def manual_cli_loop(option, data_directory, analysis_directory, nifti_directory,
 
 def main():
     args = parse_args()
+
+    if args.flip_angle is not None:
+        raw = str(args.flip_angle).strip()
+        if raw.lower() == "auto" or raw == "":
+            settings.FLIP_ANGLE_SETTING = "auto"
+            settings.FLIP_ANGLE_DEG = None
+        else:
+            try:
+                settings.FLIP_ANGLE_SETTING = raw
+                settings.FLIP_ANGLE_DEG = float(raw)
+            except ValueError:
+                # Fall back to metadata resolution.
+                settings.FLIP_ANGLE_SETTING = "auto"
+                settings.FLIP_ANGLE_DEG = None
 
     if args.tikhonov_lambda is not None:
         settings.TIKHONOV_LAMBDA = args.tikhonov_lambda

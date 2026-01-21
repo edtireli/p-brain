@@ -142,7 +142,7 @@ def compute_average_permeability(c_in, c_out, time_array, baseline_point,
     return Ktrans_fitted_mM_min, std_dev_Ktrans_mM_min
 
 
-def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, choice = 1, analysis_directory='dir', image_directory='dir', time_points_s = 1):
+def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, choice = 1, analysis_directory='dir', image_directory='dir', time_points_s = 1, flip_angle_deg=None):
     num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
     gs = gridspec.GridSpec(3, num_rois, height_ratios=[1, 1.5, 1])
     fig = plt.figure(figsize=(20, 12))
@@ -158,7 +158,16 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
                 voxel_time_course = data_4d[x, y, slice_index, :]
                 T1 = T1_matrix[x, y, slice_index]
                 M0 = M0_matrix[x, y, slice_index]
-                C_t_0 = compute_CTC(voxel_time_course, T1, r1=4000, TD=120, m0=M0, slice=slice_index, prints=False)
+                C_t_0 = compute_CTC(
+                    voxel_time_course,
+                    T1,
+                    r1=4000,
+                    TD=120,
+                    m0=M0,
+                    slice=slice_index,
+                    prints=False,
+                    flip_angle_deg=flip_angle_deg,
+                )
                 baseline_point = find_baseline_point_advanced(C_t_0)
                 C_t = custom_shifter(C_t_0, baseline_point)
                 all_C_t.append(C_t)
@@ -211,7 +220,7 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
     plt.tight_layout()
     plt.close()
 
-def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir'):
+def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir', flip_angle_deg=None):
     N = data.shape[0]
     
     all_C_t = []
@@ -223,7 +232,16 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         voxel_time_course = data[x, y, slice_index, :]
         T1 = T1_matrix[x, y, slice_index]
         M0 = M0_matrix[x, y, slice_index]
-        C_t_0 = compute_CTC(voxel_time_course, T1, TD, r1=r1, m0=M0, slice=slice_index, prints=False)
+        C_t_0 = compute_CTC(
+            voxel_time_course,
+            T1,
+            TD,
+            r1=r1,
+            m0=M0,
+            slice=slice_index,
+            prints=False,
+            flip_angle_deg=flip_angle_deg,
+        )
         baseline_point = find_baseline_point_advanced(C_t_0)
         C_t = custom_shifter(C_t_0, baseline_point)
         all_C_t.append(C_t)  
@@ -428,7 +446,7 @@ class ROISelector_tissue:
         return self.roi_slices
 
 
-def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=1, analysis_directory='dir', image_directory='dir'):
+def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=1, analysis_directory='dir', image_directory='dir', flip_angle_deg=None):
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-Instructions-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     print("1. Left " +colored('click', 'cyan') +" to select ROI points.")
     print("2. Press " +colored('shift', 'cyan') +" to close the ROI.")
@@ -464,7 +482,18 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
 
         num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
         if num_rois > 1:
-            plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_s = time_points, choice = 3, analysis_directory= analysis_directory, image_directory = image_directory)
+            plot_rois_and_curves(
+                selected_voxels,
+                data_4d,
+                data_3d,
+                T1_matrix,
+                M0_matrix,
+                time_points_s=time_points,
+                choice=3,
+                analysis_directory=analysis_directory,
+                image_directory=image_directory,
+                flip_angle_deg=flip_angle_deg,
+            )
             
             selected_str = input("Select the index of the ROI curve you want to proceed with (format: slice-roi): ")
             try:
@@ -483,7 +512,15 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
 
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
-            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type)
+            curve = plot_time_intensity_curves_and_CTC_t2(
+                data_4d,
+                data_3d,
+                selected_roi_voxels_downsampled,
+                selected_roi_voxels,
+                selected_slice_idx,
+                type=type,
+                flip_angle_deg=flip_angle_deg,
+            )
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
                 correction_text = f'{type} signal jump corrected. '
@@ -501,7 +538,17 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             for slice_index, roi_list in selected_voxels.items():
                 for roi_voxels in roi_list:
                     roi_voxels_downsampled = roi_voxels // 2
-                    curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, roi_voxels_downsampled, roi_voxels, slice_index, type=type, analysis_directory= analysis_directory, image_directory = image_directory)
+                    curve = plot_time_intensity_curves_and_CTC_t2(
+                        data_4d,
+                        data_3d,
+                        roi_voxels_downsampled,
+                        roi_voxels,
+                        slice_index,
+                        type=type,
+                        analysis_directory=analysis_directory,
+                        image_directory=image_directory,
+                        flip_angle_deg=flip_angle_deg,
+                    )
                     correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
                     if correction_prompt == 'y':
                         correction_text = f'{type} signal jump corrected. '
@@ -520,7 +567,18 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
         M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
 
         num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
-        plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, time_points_s = time_points, choice = 3, analysis_directory= analysis_directory, image_directory = image_directory)
+        plot_rois_and_curves(
+            selected_voxels,
+            data_4d,
+            data_3d,
+            T1_matrix,
+            M0_matrix,
+            time_points_s=time_points,
+            choice=3,
+            analysis_directory=analysis_directory,
+            image_directory=image_directory,
+            flip_angle_deg=flip_angle_deg,
+        )
         
         selected_str_grey = input("Select the Grey Matter index (format: slice-roi): ")
         selected_str_white = input("Select the White Matter index (format: slice-roi): ")
@@ -549,7 +607,18 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             
             selected_roi_voxels = selected_voxels[selected_slice_idx][selected_roi_idx - 1]
             selected_roi_voxels_downsampled = np.floor_divide(selected_roi_voxels, 2)
-            curve = plot_time_intensity_curves_and_CTC_t2(data_4d, data_3d, selected_roi_voxels_downsampled, selected_roi_voxels, selected_slice_idx, type=type, time_points_s = time_points, analysis_directory = analysis_directory, image_directory = image_directory)
+            curve = plot_time_intensity_curves_and_CTC_t2(
+                data_4d,
+                data_3d,
+                selected_roi_voxels_downsampled,
+                selected_roi_voxels,
+                selected_slice_idx,
+                type=type,
+                time_points_s=time_points,
+                analysis_directory=analysis_directory,
+                image_directory=image_directory,
+                flip_angle_deg=flip_angle_deg,
+            )
             
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
@@ -580,15 +649,33 @@ def tissue_function(analysis_directory, nifti_directory, image_directory, filena
     ) = filenames
     filename_t2 = os.path.join(nifti_directory, axial_t2_2D_filename)
     filename_dce = os.path.join(nifti_directory, dce_filename)
+    flip_angle_deg = resolve_flip_angle_deg(filename_dce, default=None)
     time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
     #np.save(os.path.join(analysis_directory, 'time_points_s.npy'), time_points_s)
-    start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=time_points_s, analysis_directory=analysis_directory, image_directory=image_directory)
+    start_roi_selection_tissue(
+        filename_t2,
+        filename_dce,
+        rotate_AC=True,
+        time_points=time_points_s,
+        analysis_directory=analysis_directory,
+        image_directory=image_directory,
+        flip_angle_deg=flip_angle_deg,
+    )
     rerun = input('[!] Repeat analysis? (y/n): ')
     if rerun == 'y':
         filename_t2 = os.path.join(nifti_directory, axial_t2_2D_filename)
         filename_dce = os.path.join(nifti_directory, dce_filename)
+        flip_angle_deg = resolve_flip_angle_deg(filename_dce, default=None)
         time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
-        start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=time_points_s, analysis_directory=analysis_directory, image_directory=image_directory)
+        start_roi_selection_tissue(
+            filename_t2,
+            filename_dce,
+            rotate_AC=True,
+            time_points=time_points_s,
+            analysis_directory=analysis_directory,
+            image_directory=image_directory,
+            flip_angle_deg=flip_angle_deg,
+        )
         leaver()
     else: 
         leaver()

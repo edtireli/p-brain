@@ -20,6 +20,7 @@ import multiprocessing
 import shutil
 import warnings
 import logging
+import functools
 import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
@@ -730,6 +731,16 @@ def compute_Ki_from_atlas(
 
     label_lookup = _load_label_lookup()
 
+    # Exclude ventricular/CSF regions from parcel-based pharmacokinetic statistics.
+    unique_labels = np.asarray(
+        [
+            lbl
+            for lbl in unique_labels
+            if not _pk_should_exclude_atlas_label(int(lbl), label_lookup)
+        ],
+        dtype=unique_labels.dtype,
+    )
+
     # Prepare empty 3D volumes for Ki, SD(Ki), vp and perfusion metrics
     Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
     SD_Ki_map = np.full(atlas_data.shape, np.nan, dtype=np.float32)
@@ -781,6 +792,8 @@ def compute_Ki_from_atlas(
     for lbl, Ki, SD_Ki, lam, cbf, mtt, cth, voxel_count, extras in results:
         if np.isnan(Ki):
             continue
+        if np.isfinite(lam):
+            lam = float(max(lam, 0.0))
         mask = (atlas_data == lbl)
         Ki_map[mask] = Ki
         SD_Ki_map[mask] = SD_Ki
@@ -841,6 +854,35 @@ def compute_Ki_from_atlas(
 
 def construct_convolution_matrix(C_a, delta_t):
     return km_construct_convolution_matrix(C_a, delta_t)
+
+
+_PK_EXCLUDED_ATLAS_LABEL_IDS = {
+    # FreeSurfer aseg common CSF/ventricle-related structures.
+    4,   # Left-Lateral-Ventricle
+    5,   # Left-Inf-Lat-Vent
+    14,  # 3rd-Ventricle
+    15,  # 4th-Ventricle
+    24,  # CSF
+    43,  # Right-Lateral-Ventricle
+    44,  # Right-Inf-Lat-Vent
+    72,  # 5th-Ventricle
+}
+
+
+def _pk_should_exclude_atlas_label(label: int, label_lookup: dict) -> bool:
+    if int(label) in _PK_EXCLUDED_ATLAS_LABEL_IDS:
+        return True
+
+    name = label_lookup.get(int(label), "") if isinstance(label_lookup, dict) else ""
+    lower = str(name).lower()
+    if not lower:
+        return False
+
+    return (
+        "ventricle" in lower
+        or lower.endswith("vent")
+        or "csf" in lower
+    )
 
 
 def tikhonov_regularization(A, C_t, lambd, *, penalty="identity"):
@@ -1995,7 +2037,8 @@ def compute_and_plot_ctcs_median(
     gm_brainstem_mask_t2=None, gm_brainstem_mask_dce=None,
     gm_cerebellum_mask_t2=None, gm_cerebellum_mask_dce=None,
     wm_cerebellum_mask_t2=None, wm_cerebellum_mask_dce=None,
-    wm_cc_mask_t2=None, wm_cc_mask_dce=None
+    wm_cc_mask_t2=None, wm_cc_mask_dce=None,
+    flip_angle_deg=None,
 ):
     """
     Computes median CTCs for different tissue types across slices, performs Patlak analysis,
@@ -2167,7 +2210,7 @@ def compute_and_plot_ctcs_median(
                     voxel_time_course = data_4d[x, y, i, :]
                     T1 = T1_matrix[x, y, i]
                     M0 = M0_matrix[x, y, i]
-                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
+                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0, flip_angle_deg=flip_angle_deg)
                     baseline_point = find_baseline_point_advanced(C_t_0)
                     C_t = custom_shifter(C_t_0, baseline_point)
 
@@ -2622,7 +2665,7 @@ def compute_and_plot_ctcs_median(
                     voxel_time_course = data_4d[x, y, i, :]
                     T1 = T1_matrix[x, y, i]
                     M0 = M0_matrix[x, y, i]
-                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0)
+                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0, flip_angle_deg=flip_angle_deg)
                     baseline_point = find_baseline_point_advanced(C_t_0)
                     C_t = custom_shifter(C_t_0, baseline_point)
 
@@ -2734,6 +2777,7 @@ def compute_and_plot_ctcs_median(
 
         # Save Patlak vp (lambda) per voxel as a .nii file
         vp_data = np.asarray(lambda_per_voxel, dtype=np.float32)
+        vp_data = np.where(np.isfinite(vp_data), np.maximum(vp_data, 0.0), vp_data).astype(np.float32)
         if ref_header is not None:
             vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine, header=ref_header.copy())
         else:
@@ -3406,6 +3450,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     seg_mgz_path = os.path.join(seg_dir, sid, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
     t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
     dce_path = os.path.join(nifti_directory, dce_filename)
+    flip_angle_deg = resolve_flip_angle_deg(dce_path, default=None)
 
     # Ensure segmentation directory exists
     os.makedirs(seg_dir, exist_ok=True)
@@ -3474,7 +3519,8 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         gm_brainstem_mask_t2=gm_brainstem_mask_t2, gm_brainstem_mask_dce=gm_brainstem_mask_dce,
         gm_cerebellum_mask_t2=gm_cerebellum_mask_t2, gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
         wm_cerebellum_mask_t2=wm_cerebellum_mask_t2, wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,
-        wm_cc_mask_t2=wm_cc_mask_t2, wm_cc_mask_dce=wm_cc_mask_dce
+        wm_cc_mask_t2=wm_cc_mask_t2, wm_cc_mask_dce=wm_cc_mask_dce,
+        flip_angle_deg=flip_angle_deg,
     )
 
     # The atlas is the segmentation in DCE space
@@ -3490,6 +3536,12 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     output_dir = analysis_directory
 
+    compute_CTC_meta = (
+        functools.partial(compute_CTC, flip_angle_deg=flip_angle_deg)
+        if flip_angle_deg is not None
+        else compute_CTC
+    )
+
     compute_Ki_from_atlas(
         atlas_path=atlas_path,
         data_4d=data_4d,
@@ -3499,7 +3551,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         C_a_full=C_a_full,  
         affine=nib.load(dce_path).affine,
         output_directory=output_dir,
-        compute_CTC=compute_CTC,
+        compute_CTC=compute_CTC_meta,
         find_baseline_point_advanced=find_baseline_point_advanced,
         custom_shifter=custom_shifter,
         patlak_analysis_plotting=patlak_analysis_plotting

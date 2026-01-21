@@ -79,6 +79,19 @@ INPUT_FUNCTION_SOURCE = os.environ.get("P_BRAIN_INPUT_FUNCTION", "SSS").strip().
 if INPUT_FUNCTION_SOURCE not in {"SSS", "RICA"}:
     INPUT_FUNCTION_SOURCE = "SSS"
 
+# Flip angle (degrees) used by signal->concentration conversion.
+# Set `P_BRAIN_FLIP_ANGLE=auto` (default) to rely on metadata.
+# Set `P_BRAIN_FLIP_ANGLE=<number>` to override (e.g. 30).
+FLIP_ANGLE_SETTING = (os.environ.get("P_BRAIN_FLIP_ANGLE", "auto") or "auto").strip()
+_flip_angle_lower = FLIP_ANGLE_SETTING.lower()
+FLIP_ANGLE_DEG = None
+if _flip_angle_lower and _flip_angle_lower != "auto":
+    try:
+        FLIP_ANGLE_DEG = float(FLIP_ANGLE_SETTING)
+    except ValueError:
+        FLIP_ANGLE_SETTING = "auto"
+        FLIP_ANGLE_DEG = None
+
 # When enabled, pick the regularisation weight automatically using an L-curve
 # search across ``AUTO_LAMBDA_CANDIDATES``.
 AUTO_LAMBDA = False
