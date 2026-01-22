@@ -203,7 +203,7 @@ def _save_radius_overlay(
     for idx, (label, (x, y, z, _score)) in enumerate(panels):
         r = radii_by_label[label]
         ax = axes[idx // cols, idx % cols]
-        ax.imshow(mean_img[:, :, z], cmap="gray")
+        ax.imshow(mean_img[:, :, z], cmap="gray", origin="lower")
         circ = plt.Circle((y, x), r, fill=False, color="red", linewidth=2)
         ax.add_patch(circ)
         ax.set_title(f"{label} z={z+1} r={r}px")
@@ -262,10 +262,23 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     height, width, n_slices = dce4d.shape[0], dce4d.shape[1], dce4d.shape[2]
     mid_y = width // 2
 
-    # Defaults tuned to match typical 10-slice WIPhperf acquisitions.
-    default_rica = (0, min(n_slices - 1, 2))
-    default_lica = (0, min(n_slices - 1, 2))
-    default_sss = (min(n_slices - 1, 3), min(n_slices - 1, 6))
+    # Dynamic defaults: scale slice-count expectations to volume depth.
+    # For classic 10-slice 2D DCE, scale==1. For thicker 3D volumes the
+    # slice counts expand proportionally.
+    scale = max(1, int(round(n_slices / 10)))
+    rica_slices_eff = max(1, int(cfg.rica_slices) * scale)
+    lica_slices_eff = max(1, int(cfg.lica_slices) * scale)
+    sss_slices_eff = max(1, int(cfg.sss_slices) * scale)
+
+    # Use the mid-slice as a reference for "above" vs "below" brain.
+    z_mid = max(0, min(n_slices - 1, n_slices // 2))
+
+    # Default z search windows (inclusive), expressed relative to z_mid.
+    # - ICA: search superior half (including mid)
+    # - SSS: search around/below mid (to include common SSS slices near mid)
+    default_rica = (0, z_mid)
+    default_lica = (0, z_mid)
+    default_sss = (max(0, z_mid - 1), n_slices - 1)
 
     rica_z = _parse_z_range(cfg.rica_z_range, n_slices, default_rica)
     lica_z = _parse_z_range(cfg.lica_z_range, n_slices, default_lica)
@@ -287,9 +300,9 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     allowed_sss[:, :y0, :] = False
     allowed_sss[:, y1:, :] = False
 
-    rica_centers = _best_centers_by_slice(peak_map, allowed_rica, rica_z, cfg.rica_slices)
-    lica_centers = _best_centers_by_slice(peak_map, allowed_lica, lica_z, cfg.lica_slices)
-    sss_centers = _best_centers_by_slice(peak_map, allowed_sss, sss_z, cfg.sss_slices)
+    rica_centers = _best_centers_by_slice(peak_map, allowed_rica, rica_z, rica_slices_eff)
+    lica_centers = _best_centers_by_slice(peak_map, allowed_lica, lica_z, lica_slices_eff)
+    sss_centers = _best_centers_by_slice(peak_map, allowed_sss, sss_z, sss_slices_eff)
 
     # Persist outputs in the same on-disk format as the existing AI pipeline.
     _save_roi_outputs(
