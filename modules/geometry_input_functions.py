@@ -59,6 +59,34 @@ def _compute_peak_map(dce4d: np.ndarray, baseline_frames: int) -> np.ndarray:
     return (peak - baseline).astype(np.float32)
 
 
+def _compute_peak_and_ttp(
+    dce4d: np.ndarray, baseline_frames: int
+) -> tuple[np.ndarray, np.ndarray]:
+    baseline_frames = max(1, int(baseline_frames))
+    baseline = dce4d[..., :baseline_frames].mean(axis=-1)
+    sig = (dce4d - baseline[..., None]).astype(np.float32)
+    peak = sig.max(axis=-1)
+    ttp = sig.argmax(axis=-1).astype(np.int16)
+    return peak, ttp
+
+
+def _robust_ttp_target(peak_map: np.ndarray, ttp_map: np.ndarray, brain_mask: np.ndarray) -> int:
+    m = brain_mask & np.isfinite(peak_map) & (peak_map > 0)
+    if not np.any(m):
+        return int(np.median(ttp_map))
+
+    vals = peak_map[m]
+    thr = np.percentile(vals, 99.5) if vals.size else 0.0
+    m2 = m & (peak_map >= thr)
+    if not np.any(m2):
+        return int(np.median(ttp_map[m]))
+
+    ttp_vals = ttp_map[m2].astype(np.int32)
+    if ttp_vals.size == 0:
+        return int(np.median(ttp_map[m]))
+    return int(np.median(ttp_vals))
+
+
 def _brain_mask_from_mean(dce4d: np.ndarray) -> np.ndarray:
     mean_img = dce4d.mean(axis=-1)
     thr = np.percentile(mean_img, 60)
@@ -270,22 +298,31 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     lica_slices_eff = max(1, int(cfg.lica_slices) * scale)
     sss_slices_eff = max(1, int(cfg.sss_slices) * scale)
 
-    # Use the mid-slice as a reference for "above" vs "below" brain.
-    z_mid = max(0, min(n_slices - 1, n_slices // 2))
+    # Default z search windows (inclusive), expressed as fractions of z depth.
+    # Empirically this is more robust than a hard "mid-slice" split:
+    # - ICA: superior ~30% of slices
+    # - SSS: mid ~30-70% of slices
+    # These match typical r/l ICA low-z and SSS mid-z selections in 10-slice DCE.
+    z_ica_end = max(0, min(n_slices - 1, int(np.floor(0.3 * n_slices)) - 1))
+    z_sss_start = max(0, min(n_slices - 1, int(np.floor(0.3 * n_slices))))
+    z_sss_end = max(z_sss_start, min(n_slices - 1, int(np.floor(0.7 * n_slices)) - 1))
 
-    # Default z search windows (inclusive), expressed relative to z_mid.
-    # - ICA: search superior half (including mid)
-    # - SSS: search around/below mid (to include common SSS slices near mid)
-    default_rica = (0, z_mid)
-    default_lica = (0, z_mid)
-    default_sss = (max(0, z_mid - 1), n_slices - 1)
+    default_rica = (0, z_ica_end)
+    default_lica = (0, z_ica_end)
+    default_sss = (z_sss_start, z_sss_end)
 
     rica_z = _parse_z_range(cfg.rica_z_range, n_slices, default_rica)
     lica_z = _parse_z_range(cfg.lica_z_range, n_slices, default_lica)
     sss_z = _parse_z_range(cfg.sss_z_range, n_slices, default_sss)
 
-    peak_map = _compute_peak_map(dce4d, cfg.baseline_frames)
     brain_mask = _brain_mask_from_mean(dce4d)
+    peak_map, ttp_map = _compute_peak_and_ttp(dce4d, cfg.baseline_frames)
+
+    # Mild time-to-peak prior for arteries: prefer voxels near the global bolus mode,
+    # which helps avoid late venous structures and very-early noise spikes.
+    ttp_target = _robust_ttp_target(peak_map, ttp_map, brain_mask)
+    beta = 0.25
+    artery_score = peak_map / (1.0 + beta * np.abs(ttp_map.astype(np.float32) - float(ttp_target)))
 
     allowed_rica = brain_mask.copy()
     allowed_rica[:, :mid_y, :] = False
@@ -300,8 +337,13 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     allowed_sss[:, :y0, :] = False
     allowed_sss[:, y1:, :] = False
 
-    rica_centers = _best_centers_by_slice(peak_map, allowed_rica, rica_z, rica_slices_eff)
-    lica_centers = _best_centers_by_slice(peak_map, allowed_lica, lica_z, lica_slices_eff)
+    # Explicitly exclude the SSS midline band from ICA candidates.
+    # This prevents the ICA selector from snapping onto SSS/transverse sinus endings.
+    allowed_rica[:, : (mid_y + band), :] = False
+    allowed_lica[:, (mid_y - band) :, :] = False
+
+    rica_centers = _best_centers_by_slice(artery_score, allowed_rica, rica_z, rica_slices_eff)
+    lica_centers = _best_centers_by_slice(artery_score, allowed_lica, lica_z, lica_slices_eff)
     sss_centers = _best_centers_by_slice(peak_map, allowed_sss, sss_z, sss_slices_eff)
 
     # Persist outputs in the same on-disk format as the existing AI pipeline.
@@ -380,4 +422,5 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             "lICA": lica_z,
             "SSS": sss_z,
         },
+        "ttp_target": int(ttp_target),
     }
