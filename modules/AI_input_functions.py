@@ -18,6 +18,10 @@ import time
 
 import utils.settings as settings
 
+
+def _roi_method() -> str:
+    return (getattr(settings, "ROI_METHOD", "ai") or "ai").strip().lower()
+
 turbo_mode = True # doesnt show plots
 
 
@@ -567,6 +571,17 @@ def refresh_nifti_directory(nifti_directory):
     return os.listdir(nifti_directory)
 
 def input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
+    if _roi_method() == "geometry":
+        from modules.geometry_input_functions import input_function_geometry
+
+        return input_function_geometry(
+            analysis_directory,
+            nifti_directory,
+            image_directory,
+            filenames,
+            parameters,
+        )
+
     (
         t1_3D_filename,
         axial_t1_3D_filename,

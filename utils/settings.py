@@ -163,6 +163,33 @@ AI_MODEL_PATHS = {
     ),
 }
 
+# ROI extraction method.
+# - ai: neural-network slice classifier + ROI models (default)
+# - geometry: deterministic DCE-based geometric detector (no ML dependencies)
+ROI_METHOD = (os.environ.get("P_BRAIN_ROI_METHOD", "ai") or "ai").strip().lower()
+if ROI_METHOD not in {"ai", "geometry"}:
+    ROI_METHOD = "ai"
+
+# Geometry ROI parameters (used when ROI_METHOD=geometry).
+ROI_RICA_RADIUS = int(os.environ.get("P_BRAIN_ROI_RICA_RADIUS", 10))
+ROI_LICA_RADIUS = int(os.environ.get("P_BRAIN_ROI_LICA_RADIUS", 10))
+ROI_SSS_RADIUS = int(os.environ.get("P_BRAIN_ROI_SSS_RADIUS", 12))
+
+ROI_RICA_SLICES = int(os.environ.get("P_BRAIN_ROI_RICA_SLICES", 3))
+ROI_LICA_SLICES = int(os.environ.get("P_BRAIN_ROI_LICA_SLICES", 3))
+ROI_SSS_SLICES = int(os.environ.get("P_BRAIN_ROI_SSS_SLICES", 4))
+
+# Optional explicit z-ranges (inclusive) as "start:end" (e.g. "0:2").
+ROI_RICA_Z_RANGE = (os.environ.get("P_BRAIN_ROI_RICA_Z_RANGE", "") or "").strip()
+ROI_LICA_Z_RANGE = (os.environ.get("P_BRAIN_ROI_LICA_Z_RANGE", "") or "").strip()
+ROI_SSS_Z_RANGE = (os.environ.get("P_BRAIN_ROI_SSS_Z_RANGE", "") or "").strip()
+
+# Midline band (pixels) used to constrain SSS search to the sagittal midline.
+ROI_SSS_MIDLINE_BAND = int(os.environ.get("P_BRAIN_ROI_SSS_MIDLINE_BAND", 24))
+
+# Baseline frames used to compute peak contrast on DCE.
+ROI_DCE_BASELINE_FRAMES = int(os.environ.get("P_BRAIN_ROI_DCE_BASELINE_FRAMES", 5))
+
 
 def _default_data_root():
     """Return the default root directory for datasets.
