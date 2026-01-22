@@ -235,6 +235,18 @@ ROI_GEOM_COMPONENT_ECC_RATIO_MAX = float(
     os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_ECC_RATIO_MAX", 3.0)
 )
 
+# Use connected-component voxels (shape) as ROI instead of a fixed-radius disk
+# around a peak point.
+ROI_GEOM_USE_COMPONENT_ROI = (os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_ROI", "1") or "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# Additional elongated-structure suppression for artery selection. Higher values
+# penalize banana/arc-like sinuses.
+ROI_GEOM_ARTERY_PERIM_AREA_MAX = float(os.environ.get("P_BRAIN_ROI_GEOM_ARTERY_PERIM_AREA_MAX", 1.2))
+
 
 def _default_data_root():
     """Return the default root directory for datasets.

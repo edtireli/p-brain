@@ -8,9 +8,13 @@ import matplotlib.pyplot as plt
 try:
     from scipy.ndimage import distance_transform_edt
     from scipy.ndimage import label as cc_label
+    from scipy.ndimage import binary_dilation
+    from scipy.ndimage import binary_erosion
 except Exception:  # pragma: no cover
     distance_transform_edt = None
     cc_label = None
+    binary_dilation = None
+    binary_erosion = None
 
 import utils.settings as settings
 from utils.mapping import choice2type
@@ -178,6 +182,67 @@ def _component_candidates(
     return cands[: max(1, int(max_candidates))]
 
 
+def _perimeter_area_ratio(bw: np.ndarray) -> float:
+    if binary_erosion is None:
+        return 0.0
+    bw = bw.astype(bool)
+    if bw.sum() == 0:
+        return 0.0
+    # Approximate perimeter via boundary pixels
+    eroded = binary_erosion(bw)
+    boundary = bw & (~eroded)
+    per = float(boundary.sum())
+    area = float(bw.sum())
+    return per / max(1.0, area)
+
+
+def _component_voxels_from_threshold(
+    prob2d: np.ndarray,
+    allowed2d: np.ndarray,
+    *,
+    q: float,
+    pick: tuple[int, int],
+    dilate_r: int = 0,
+) -> np.ndarray:
+    """Return voxel coords for the connected component containing `pick`.
+
+    Falls back to a small disk if CC labelling isn't available.
+    """
+    x, y = int(pick[0]), int(pick[1])
+    if cc_label is None:
+        return _disk_voxels(x, y, max(1, dilate_r), width=prob2d.shape[1], height=prob2d.shape[0])
+
+    m = allowed2d & np.isfinite(prob2d) & (prob2d > 0)
+    if not np.any(m):
+        return _disk_voxels(x, y, max(1, dilate_r), width=prob2d.shape[1], height=prob2d.shape[0])
+    vals = prob2d[m]
+    thr = float(np.percentile(vals, np.clip(q, 50.0, 99.99)))
+    bw = m & (prob2d >= thr)
+    if not np.any(bw):
+        return _disk_voxels(x, y, max(1, dilate_r), width=prob2d.shape[1], height=prob2d.shape[0])
+
+    lbl, n = cc_label(bw.astype(np.uint8))
+    if n <= 0:
+        return _disk_voxels(x, y, max(1, dilate_r), width=prob2d.shape[1], height=prob2d.shape[0])
+    comp_id = int(lbl[x, y])
+    if comp_id <= 0:
+        # pick the max-probability component if click missed
+        flat = int(np.argmax(np.where(bw, prob2d, -1.0)))
+        x2, y2 = np.unravel_index(flat, prob2d.shape)
+        comp_id = int(lbl[int(x2), int(y2)])
+        if comp_id <= 0:
+            return _disk_voxels(x, y, max(1, dilate_r), width=prob2d.shape[1], height=prob2d.shape[0])
+
+    comp = lbl == comp_id
+    if dilate_r > 0 and binary_dilation is not None:
+        r = int(dilate_r)
+        yy, xx = np.ogrid[-r : r + 1, -r : r + 1]
+        se = (xx**2 + yy**2) <= (r**2)
+        comp = binary_dilation(comp, structure=se)
+    coords = np.argwhere(comp)
+    return coords.astype(int)
+
+
 def _select_coherent_centers(
     candidates_by_z: dict[int, list[tuple[int, int, float, int]]],
     *,
@@ -337,6 +402,7 @@ def _save_roi_outputs(
     centers: list[tuple[int, int, int, float]],
     radius: int,
     radius_by_z: dict[int, int] | None = None,
+    voxels_by_z: dict[int, np.ndarray] | None = None,
     dce4d: np.ndarray,
     ref_img: nib.Nifti1Image,
     analysis_dir: str,
@@ -357,8 +423,11 @@ def _save_roi_outputs(
 
     # Also keep the conventional ITC/CTC outputs to stay compatible with the pipeline.
     for x, y, z, _score in centers:
-        r_eff = int(radius_by_z.get(int(z), radius)) if radius_by_z else int(radius)
-        vox = _disk_voxels(x, y, r_eff, width=width, height=height)
+        if voxels_by_z and int(z) in voxels_by_z:
+            vox = voxels_by_z[int(z)]
+        else:
+            r_eff = int(radius_by_z.get(int(z), radius)) if radius_by_z else int(radius)
+            vox = _disk_voxels(x, y, r_eff, width=width, height=height)
         mask3d[vox[:, 0], vox[:, 1], z] = 1
 
         # Store ROI voxels per slice (AI-compatible)
@@ -682,6 +751,8 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     comp_min_area = int(getattr(settings, "ROI_GEOM_COMPONENT_MIN_AREA", 6))
     comp_max_area = int(getattr(settings, "ROI_GEOM_COMPONENT_MAX_AREA", 250))
     comp_ecc_max = float(getattr(settings, "ROI_GEOM_COMPONENT_ECC_RATIO_MAX", 3.0))
+    use_component_roi = bool(getattr(settings, "ROI_GEOM_USE_COMPONENT_ROI", True))
+    artery_perim_area_max = float(getattr(settings, "ROI_GEOM_ARTERY_PERIM_AREA_MAX", 1.2))
 
     # Precompute per-slice centrality maps (distance-to-edge within brain mask).
     centrality = np.ones((height, width, n_slices), dtype=np.float32)
@@ -738,7 +809,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     rica_candidates_by_z: dict[int, list[tuple[int, int, float, int]]] = {}
     lica_candidates_by_z: dict[int, list[tuple[int, int, float, int]]] = {}
     for z in range(rica_z[0], rica_z[1] + 1):
-        rica_candidates_by_z[int(z)] = _component_candidates(
+        cands = _component_candidates(
             prob_rica[:, :, z],
             allowed_rica[:, :, z],
             q=comp_q,
@@ -746,8 +817,21 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             max_area=comp_max_area,
             ecc_ratio_max=comp_ecc_max,
         )
+        # Penalize elongated/arc-like structures by perimeter/area.
+        filtered: list[tuple[int, int, float, int]] = []
+        for cx, cy, s, area in cands:
+            vox = _component_voxels_from_threshold(
+                prob_rica[:, :, z], allowed_rica[:, :, z], q=comp_q, pick=(cx, cy), dilate_r=0
+            )
+            bw = np.zeros((height, width), dtype=bool)
+            bw[vox[:, 0], vox[:, 1]] = True
+            pa = _perimeter_area_ratio(bw)
+            if artery_perim_area_max > 0 and pa > artery_perim_area_max:
+                continue
+            filtered.append((cx, cy, s, area))
+        rica_candidates_by_z[int(z)] = filtered
     for z in range(lica_z[0], lica_z[1] + 1):
-        lica_candidates_by_z[int(z)] = _component_candidates(
+        cands = _component_candidates(
             prob_lica[:, :, z],
             allowed_lica[:, :, z],
             q=comp_q,
@@ -755,6 +839,18 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             max_area=comp_max_area,
             ecc_ratio_max=comp_ecc_max,
         )
+        filtered: list[tuple[int, int, float, int]] = []
+        for cx, cy, s, area in cands:
+            vox = _component_voxels_from_threshold(
+                prob_lica[:, :, z], allowed_lica[:, :, z], q=comp_q, pick=(cx, cy), dilate_r=0
+            )
+            bw = np.zeros((height, width), dtype=bool)
+            bw[vox[:, 0], vox[:, 1]] = True
+            pa = _perimeter_area_ratio(bw)
+            if artery_perim_area_max > 0 and pa > artery_perim_area_max:
+                continue
+            filtered.append((cx, cy, s, area))
+        lica_candidates_by_z[int(z)] = filtered
 
     rica_centers = _select_coherent_centers(
         rica_candidates_by_z,
@@ -776,6 +872,33 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     if not lica_centers:
         lica_centers = _best_centers_by_slice(prob_lica, allowed_lica, lica_z, lica_slices_eff)
 
+    # Joint refinement: enforce arteries earlier than sinus and mutually consistent.
+    # If the chosen artery looks venous (late TTP vs global ttp_target), re-pick.
+    def _median_ttp(centers: list[tuple[int, int, int, float]]) -> float:
+        if not centers:
+            return float(ttp_target)
+        return float(np.median([ttp_map[x, y, z] for x, y, z, _s in centers]))
+
+    rica_ttp = _median_ttp(rica_centers)
+    lica_ttp = _median_ttp(lica_centers)
+    art_ttp = float(np.median([rica_ttp, lica_ttp]))
+
+    # Re-pick SSS to prefer later-than-artery components.
+    min_venous_delay = 3.0
+    sss_centers_refined: list[tuple[int, int, int, float]] = []
+    for x, y, z, p in sss_centers:
+        if float(ttp_map[x, y, z]) >= art_ttp + min_venous_delay:
+            sss_centers_refined.append((x, y, z, p))
+    if sss_centers_refined:
+        sss_centers = sss_centers_refined
+
+    # If ICA is too late, relax constraints by downweighting late candidates.
+    max_artery_delay = float(ttp_target) + 2.0
+    if rica_ttp > max_artery_delay:
+        rica_centers = _best_centers_by_slice(prob_rica * (ttp_map <= max_artery_delay), allowed_rica, rica_z, rica_slices_eff)
+    if lica_ttp > max_artery_delay:
+        lica_centers = _best_centers_by_slice(prob_lica * (ttp_map <= max_artery_delay), allowed_lica, lica_z, lica_slices_eff)
+
     # Dynamic radii derived from probability mass per selected slice.
     rica_radius_by_z: dict[int, int] = {}
     lica_radius_by_z: dict[int, int] = {}
@@ -794,6 +917,27 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
                 prob_sss[:, :, z], x, y, r_min=r_min, r_max=int(cfg.sss_radius), target_mass=mass_frac
             )
 
+    # Build component-shaped voxel sets for selected slices.
+    rica_vox_by_z: dict[int, np.ndarray] = {}
+    lica_vox_by_z: dict[int, np.ndarray] = {}
+    sss_vox_by_z: dict[int, np.ndarray] = {}
+    if use_component_roi and use_prob:
+        for x, y, z, _p in rica_centers:
+            r_eff = int(rica_radius_by_z.get(int(z), cfg.rica_radius))
+            rica_vox_by_z[int(z)] = _component_voxels_from_threshold(
+                prob_rica[:, :, z], allowed_rica[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
+            )
+        for x, y, z, _p in lica_centers:
+            r_eff = int(lica_radius_by_z.get(int(z), cfg.lica_radius))
+            lica_vox_by_z[int(z)] = _component_voxels_from_threshold(
+                prob_lica[:, :, z], allowed_lica[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
+            )
+        for x, y, z, _p in sss_centers:
+            r_eff = int(sss_radius_by_z.get(int(z), cfg.sss_radius))
+            sss_vox_by_z[int(z)] = _component_voxels_from_threshold(
+                prob_sss[:, :, z], allowed_sss[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
+            )
+
     # Persist outputs in the same on-disk format as the existing AI pipeline.
     _save_roi_outputs(
         roi_type="Artery",
@@ -801,6 +945,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         centers=rica_centers,
         radius=cfg.rica_radius,
         radius_by_z=rica_radius_by_z if rica_radius_by_z else None,
+        voxels_by_z=rica_vox_by_z if rica_vox_by_z else None,
         dce4d=dce4d,
         ref_img=ref_img,
         analysis_dir=analysis_directory,
@@ -817,6 +962,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         centers=lica_centers,
         radius=cfg.lica_radius,
         radius_by_z=lica_radius_by_z if lica_radius_by_z else None,
+        voxels_by_z=lica_vox_by_z if lica_vox_by_z else None,
         dce4d=dce4d,
         ref_img=ref_img,
         analysis_dir=analysis_directory,
@@ -833,6 +979,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         centers=sss_centers,
         radius=cfg.sss_radius,
         radius_by_z=sss_radius_by_z if sss_radius_by_z else None,
+        voxels_by_z=sss_vox_by_z if sss_vox_by_z else None,
         dce4d=dce4d,
         ref_img=ref_img,
         analysis_dir=analysis_directory,
