@@ -4,6 +4,8 @@ import sys
 import re
 import time 
 
+import utils.settings as settings
+
 def _get_first_existing_file(filenames, nifti_directory):
     """Return the first filename from ``filenames`` that exists."""
 
@@ -129,8 +131,15 @@ def ordered_diffusion_filenames() -> tuple[str, ...]:
 # Global parameters: 
 
 def global_parameters():
-    IsVFA = False #Variable flip angle for the T1/M0 fit
-    IsIR = True #Inversion recovery method
+    t1_mode = getattr(settings, "T1_FIT_MODE", "auto")
+    if t1_mode not in {"auto", "ir", "vfa", "none"}:
+        t1_mode = "auto"
+
+    IsVFA = t1_mode == "vfa"  # Variable flip angle for the T1/M0 fit
+    IsIR = t1_mode in {"auto", "ir"}  # Inversion recovery method
+    if t1_mode == "none":
+        IsVFA = False
+        IsIR = False
     apple_metal = True # Enable if running on apple M1/M2/M3...
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
     RERUN_SEGMENTATION = False  # Force rerun of FastSurfer segmentation

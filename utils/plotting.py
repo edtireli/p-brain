@@ -22,16 +22,117 @@ def load_from_pickle(file_path):
     return matrix
 
 
-def compute_CTC(S, T1, TD=120, r1=4000, m0=1, slice=-1, prints=True, flip_angle_deg=None):
-    theta = 90.0 if flip_angle_deg is None else float(flip_angle_deg)
+def _turboflash_signal_from_r1(R1_s, M0, TR_s, TI_s, alpha_rad, nph):
+    """TurboFLASH signal model matching MATLAB `sigdif_turbof_r1_90_2`.
+
+    Parameters use SI units: R1 in 1/s, TR/TI in s, alpha in rad.
+    nph is 1-based index of ky=0 line (k-space center) within the readout train.
+    """
+    R1_s = float(R1_s)
+    a = np.cos(alpha_rad) * np.exp(-TR_s * R1_s)
+    b = 1.0 - np.exp(-TR_s * R1_s)
+    # Guard against a==1 causing division by zero.
+    denom = (1.0 - a)
+    if abs(denom) < 1e-12:
+        denom = 1e-12 if denom >= 0 else -1e-12
+    a_pow = a ** (int(nph) - 1)
+    return float(M0) * np.sin(alpha_rad) * (
+        (1.0 - np.exp(-R1_s * TI_s)) * a_pow + b * (1.0 - a_pow) / denom
+    )
+
+
+def _invert_turboflash_r1_from_signal(S, M0, TR_s, TI_s, alpha_rad, nph):
+    """Numerically invert TurboFLASH model for R1(t) given signal S(t)."""
+    from scipy.optimize import brentq
+
+    S = float(S)
+    if not np.isfinite(S) or S <= 0:
+        return np.nan
+
+    # For physical signals, R1 is typically within ~[0, 10] 1/s.
+    # Use a wide bracket and expand if needed.
+    lo = 1e-6
+    hi = 10.0
+
+    def f(r1):
+        return _turboflash_signal_from_r1(r1, M0, TR_s, TI_s, alpha_rad, nph) - S
+
+    flo = f(lo)
+    fhi = f(hi)
+    if np.isnan(flo) or np.isnan(fhi):
+        return np.nan
+
+    # Expand upper bound until sign change or until it is clearly unreasonable.
+    tries = 0
+    while flo * fhi > 0 and tries < 12:
+        hi *= 2.0
+        fhi = f(hi)
+        tries += 1
+
+    if flo * fhi > 0:
+        # No bracket; return NaN to be handled upstream.
+        return np.nan
+
+    return float(brentq(f, lo, hi, maxiter=200))
+
+
+def compute_CTC(
+    S,
+    T1,
+    TD=120,
+    r1=4000,
+    m0=1,
+    slice=-1,
+    prints=True,
+    flip_angle_deg=None,
+    *,
+    tr_s=None,
+    nph=None,
+    ctc_model=None,
+):
+    if flip_angle_deg is None:
+        # Preserve legacy behaviour (30°) when metadata is missing, but allow an
+        # explicit override via settings/environment.
+        theta = 30.0 if settings.FLIP_ANGLE_DEG is None else float(settings.FLIP_ANGLE_DEG)
+        if not getattr(compute_CTC, "_warned_missing_flip_angle", False):
+            warnings.warn(
+                "Flip angle missing; using default %.1f°. Set P_BRAIN_FLIP_ANGLE or add FlipAngle to the JSON sidecar." % theta,
+                RuntimeWarning,
+            )
+            compute_CTC._warned_missing_flip_angle = True
+    else:
+        theta = float(flip_angle_deg)
     theta_rad = np.radians(theta)
 
-    #times in ms and not sec. 
-    TD = TD*1e-3
-    r1 = r1*1e-3
-    T1 = T1*1e-3
+    model = (ctc_model or getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
 
-    C_t = -(1 / r1) * ((1 / TD) * np.log(1 - (S / (m0 * np.sin(theta_rad)))) + (1 / T1))
+    # times in ms and not sec.
+    TD_s = TD * 1e-3
+    r1_s = r1 * 1e-3
+    T1_s = T1 * 1e-3
+
+    if model == "turboflash":
+        if tr_s is None:
+            raise ValueError("TurboFLASH CTC requires tr_s (seconds).")
+        if nph is None:
+            nph = getattr(settings, "TURBOFLASH_NPH", 1)
+        tr_s = float(tr_s)
+        ti_s = TD_s
+
+        s_arr = np.asarray(S, dtype=float)
+        r1_t = np.empty_like(s_arr, dtype=float)
+        it = np.nditer(s_arr, flags=["multi_index"])
+        while not it.finished:
+            r1_t[it.multi_index] = _invert_turboflash_r1_from_signal(
+                float(it[0]), m0, tr_s, ti_s, theta_rad, int(nph)
+            )
+            it.iternext()
+
+        r1_0 = 1.0 / float(T1_s)
+        C_t = (r1_t - r1_0) / float(r1_s)
+    else:
+        # Saturation-recovery closed-form inversion used by legacy p-Brain.
+        C_t = -(1 / r1_s) * ((1 / TD_s) * np.log(1 - (S / (m0 * np.sin(theta_rad)))) + (1 / T1_s))
 
     #if prints:
         #print(f"T1: {round(T1, 3)}, M0: {round(m0, 1)}, Max Concentration: {round(np.max(C_t), 2)} mM")
@@ -225,7 +326,7 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     axs[0].scatter(time_points_s, voxel_time_course_max, label='Standard Max ITC', s=5, color='red')
     axs[0].scatter(time_points_s, adaptive_voxel_time_courses, label='Adaptive-max ITC', s=5, color='blue')
     axs[0].plot(time_points_s, smoothed_values, label='Smoothed Standard ITC', linestyle='-', alpha=0.75, color='black')
-    axs[0].set_xlabel('Time (sec)')
+    axs[0].set_xlabel('Time (s)')
     axs[0].set_ylabel('Signal Intensity (a.u.)')
     axs[0].set_title(f'Intensity-Time Curve Comparison (Slice {slice_index + 1})')
     axs[0].legend()
@@ -238,7 +339,8 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
         axs[1].add_patch(rect)
     axs[1].set_title(f'Slice with brightest voxel (slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
 
-    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+M0_slice_{slice_index+1}.png'), dpi=200)
+    fig.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+M0_slice_{slice_index+1}.png'), dpi=300)
     if not turbo_mode:
         close_plot_after_delay_plt(3)
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)    
@@ -248,13 +350,14 @@ def plot_time_intensity_curves(data, roi_voxels, slice_index, frame_index, time_
     plt.figure(figsize=(20, 6))
     plt.scatter(time_points_s, voxel_time_course_max, label='Raw ITC', s=5, color='red')
     plt.plot(time_points_s, smoothed_values, label='Smoothened ITC', linestyle='-', alpha=0.75, color='black')
-    plt.xlabel('Time (sec)', fontproperties=prop, fontsize=15)
+    plt.xlabel('Time (s)', fontproperties=prop, fontsize=15)
     plt.ylabel('Signal intensity (a. u.)', fontproperties=prop, fontsize=15)
     plt.title(f'Intensity-Time Curve for brightest voxel ({subtype},  Slice {slice_index + 1})', fontproperties=prop, fontsize=18)
     plt.grid(which='minor', alpha=0.25)
     plt.minorticks_on()
-    
-    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=300)
     if not turbo_mode:
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)   
         close_plot_after_delay_plt(3) 
@@ -306,7 +409,7 @@ def plot_time_intensity_curves_AI(data, roi_voxels, slice_index, frame_index, ti
     axs[0].scatter(time_points_s, voxel_time_course_max, label='Standard Max ITC', s=5, color='red')
     axs[0].scatter(time_points_s, adaptive_voxel_time_courses, label='Adaptive-max ITC', s=5, color='blue')
     axs[0].plot(time_points_s, smoothed_values, label='Smoothed Standard ITC', linestyle='-', alpha=0.75, color='black')
-    axs[0].set_xlabel('Time (sec)')
+    axs[0].set_xlabel('Time (s)')
     axs[0].set_ylabel('Signal Intensity (a.u.)')
     axs[0].set_title(f'Intensity-Time Curve Comparison (Slice {slice_index + 1})')
     axs[0].legend()
@@ -319,20 +422,22 @@ def plot_time_intensity_curves_AI(data, roi_voxels, slice_index, frame_index, ti
         axs[1].add_patch(rect)
     axs[1].set_title(f'DCE (Slice {slice_index + 1}, frame {frame_index + 1})', fontproperties=prop, fontsize=14)
 
-    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+DCE_slice_{slice_index+1}.png'), dpi=200)
+    fig.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC+DCE_slice_{slice_index+1}.png'), dpi=300)
     if not turbo_mode:
         plt.close()
 
     plt.figure(figsize=(20, 6))
     plt.scatter(time_points_s, voxel_time_course_max, label='Raw ITC', s=5, color='red')
     plt.plot(time_points_s, smoothed_values, label='Smoothened ITC', linestyle='-', alpha=0.75, color='black')
-    plt.xlabel('Time (sec)', fontproperties=prop, fontsize=15)
+    plt.xlabel('Time (s)', fontproperties=prop, fontsize=15)
     plt.ylabel('Signal intensity (a. u.)', fontproperties=prop, fontsize=15)
     plt.title(f'Intensity-Time Curve for brightest voxel ({subtype},  Slice {slice_index + 1})', fontproperties=prop, fontsize=18)
     plt.grid(which='minor', alpha=0.25)
     plt.minorticks_on()
-    
-    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=200)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Intensity Time Curves', type, subtype, f'ITC_slice_{slice_index+1}.png'), dpi=300)
     if not turbo_mode:
         plt.close()
     np.save(os.path.join(analysis_directory, 'ITC Data', type, subtype, f'ITC_slice_{slice_index+1}.npy'), voxel_time_course_max)
@@ -445,6 +550,17 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
             os.path.join(nifti_directory, dce_filename),
             default=None,
         )
+        ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+        tr_s = None
+        nph = None
+        if ctc_model == "turboflash":
+            tr_s = read_repetition_time_s_from_sidecar(os.path.join(nifti_directory, dce_filename))
+            if tr_s is None:
+                raise ValueError(
+                    "CTC_MODEL=turboflash requires RepetitionTime in the DCE JSON sidecar; "
+                    "re-run conversion with dcm2niix JSON output or set P_BRAIN_CTC_MODEL=saturation."
+                )
+            nph = getattr(settings, "TURBOFLASH_NPH", 1)
         C_t_standard = np.array(
             compute_CTC(
                 voxel_time_course_max,
@@ -454,6 +570,9 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
                 m0=M0,
                 slice=slice_index,
                 flip_angle_deg=flip_angle_deg,
+                tr_s=tr_s,
+                nph=nph,
+                ctc_model=ctc_model,
             )
         )
         C_t_adaptive = np.array(
@@ -465,6 +584,9 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
                 m0=M0,
                 slice=slice_index,
                 flip_angle_deg=flip_angle_deg,
+                tr_s=tr_s,
+                nph=nph,
+                ctc_model=ctc_model,
             )
         )
     
@@ -485,7 +607,7 @@ def plot_time_intensity_curves_and_CTC(data, roi_voxels, slice_index, frame_inde
     axs[0].plot(time_points_s, smoothed_adaptive, color='blue', alpha=0.5, label='Adaptive CTC')
     axs[0].scatter(time_points_s, C_t_adaptive, color='blue',alpha=0.5, s=5, label='Adaptive Raw')
     axs[0].legend()
-    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Concentration-Time Curve (Slice {slice_index + 1})',fontproperties=prop, fontsize=14)
     axs[0].grid(which='minor', alpha=0.25)
@@ -582,6 +704,17 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
             os.path.join(nifti_directory, dce_filename),
             default=None,
         )
+        ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+        tr_s = None
+        nph = None
+        if ctc_model == "turboflash":
+            tr_s = read_repetition_time_s_from_sidecar(os.path.join(nifti_directory, dce_filename))
+            if tr_s is None:
+                raise ValueError(
+                    "CTC_MODEL=turboflash requires RepetitionTime in the DCE JSON sidecar; "
+                    "re-run conversion with dcm2niix JSON output or set P_BRAIN_CTC_MODEL=saturation."
+                )
+            nph = getattr(settings, "TURBOFLASH_NPH", 1)
         C_t_standard = np.array(
             compute_CTC(
                 voxel_time_course_max,
@@ -591,6 +724,9 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
                 m0=M0,
                 slice=slice_index,
                 flip_angle_deg=flip_angle_deg,
+                tr_s=tr_s,
+                nph=nph,
+                ctc_model=ctc_model,
             )
         )
         C_t_adaptive = np.array(
@@ -602,6 +738,9 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
                 m0=M0,
                 slice=slice_index,
                 flip_angle_deg=flip_angle_deg,
+                tr_s=tr_s,
+                nph=nph,
+                ctc_model=ctc_model,
             )
         )
     
@@ -622,7 +761,7 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
     axs[0].plot(time_points_s, smoothed_adaptive, color='blue', alpha=0.5, label='Adaptive CTC')
     axs[0].scatter(time_points_s, C_t_adaptive, color='blue',alpha=0.5, s=5, label='Adaptive Raw')
     axs[0].legend()
-    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Concentration-Time Curve (Slice {slice_index + 1})',fontproperties=prop, fontsize=14)
     axs[0].grid(which='minor', alpha=0.25)
@@ -637,7 +776,8 @@ def plot_time_intensity_curves_and_CTC_AI(data, max_intensity_frame, roi_voxels,
         axs[1].add_patch(rect)
     axs[1].set_title(f'DCE (Slice {slice_index + 1}, Frame {max_intensity_frame + 1})', fontproperties=prop, fontsize=14)
 
-    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', type, subtype, f'CTC+DCE_slice_{slice_index+1}.png'), dpi=200)
+    fig.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', type, subtype, f'CTC+DCE_slice_{slice_index+1}.png'), dpi=300)
     if not turbo_mode:
         plt.show(block=False)  # Display the plot without blocking
         plt.pause(2)           # Pause the script to keep the plot open for 2 seconds
@@ -782,7 +922,7 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
     # Concentration-Time Curve
     axs[0].plot(time_points_s, smoothed_values, color='black')
     axs[0].scatter(time_points_s, avg_C_t, color='r', s=5)
-    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Average Concentration-Time Curve (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
     axs[0].grid(which='minor', alpha=0.25)
@@ -794,7 +934,8 @@ def plot_corrected_tissue_curve(curve_path, data2, roi_voxels_upscaled, slice_in
             rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
             axs[1].add_patch(rect)
         axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_corrected.png'), dpi=200)
+        fig.tight_layout()
+        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_corrected.png'), dpi=300)
     elif rot90:
         rect_array = np.zeros((data2.shape[0], data2.shape[1]))
         for x, y in roi_voxels_upscaled:

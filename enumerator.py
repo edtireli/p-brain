@@ -3,6 +3,7 @@ import glob
 import inspect
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 
@@ -857,6 +858,42 @@ def parse_args():
         default=None,
         help='Flip angle in degrees (number) or "auto" (default: from metadata). Passed to main pipeline.',
     )
+    parser.add_argument(
+        "--t1-fit",
+        dest="t1_fit",
+        type=str,
+        choices=("auto", "ir", "vfa", "none"),
+        default=None,
+        help='T1/M0 fitting source: auto|ir|vfa|none (default: auto). Passed to main pipeline.',
+    )
+    parser.add_argument(
+        "--vfa-glob",
+        dest="vfa_glob",
+        type=str,
+        default=None,
+        help='Comma-separated glob(s) for VFA NIfTI discovery (default: *VFA*.nii*). Passed to main pipeline.',
+    )
+    parser.add_argument(
+        "--ctc-model",
+        dest="ctc_model",
+        type=str,
+        choices=("saturation", "turboflash"),
+        default=None,
+        help=(
+            "Signal-to-concentration conversion model: saturation (legacy) or turboflash (MATLAB-like). "
+            "When set, exported as P_BRAIN_CTC_MODEL for the main pipeline."
+        ),
+    )
+    parser.add_argument(
+        "--turbo-nph",
+        dest="turbo_nph",
+        type=int,
+        default=None,
+        help=(
+            "TurboFLASH nph (1-based ky=0 line index within readout train). "
+            "Used when --ctc-model=turboflash; exported as P_BRAIN_TURBO_NPH."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -964,8 +1001,13 @@ def main():
             ids,
             use_controls=settings.CONTROLS,
         )
-    except FileNotFoundError:
-        print(f"Data dir missing: {data_directory}")
+    except FileNotFoundError as exc:
+        # collect_datasets may raise FileNotFoundError both when the data root is
+        # missing and when one of the requested dataset IDs does not exist.
+        if not os.path.isdir(data_directory):
+            print(f"Data dir missing: {data_directory}")
+        else:
+            print(str(exc) or f"Dataset not found in {data_directory}.")
         sys.exit(1)
     except ValueError as exc:
         print(f"{exc}. Provide log numbers or use --all.")
@@ -1156,15 +1198,27 @@ def main():
         command_template += " --diffusion"
     if args.flip_angle is not None:
         command_template += " --flip-angle {}"
+    if getattr(args, "t1_fit", None) is not None:
+        command_template += " --t1-fit {}"
+    if getattr(args, "vfa_glob", None) is not None:
+        command_template += " --vfa-glob {}"
 
     for dataset_id, is_control in datasets:
+        fmt_args = [dataset_id, data_directory]
         if args.flip_angle is not None:
-            command = command_template.format(dataset_id, data_directory, str(args.flip_angle))
-        else:
-            command = command_template.format(dataset_id, data_directory)
+            fmt_args.append(str(args.flip_angle))
+        if getattr(args, "t1_fit", None) is not None:
+            fmt_args.append(str(args.t1_fit))
+        if getattr(args, "vfa_glob", None) is not None:
+            fmt_args.append(shlex.quote(str(args.vfa_glob)))
+        command = command_template.format(*fmt_args)
         env = os.environ.copy()
         env["P_BRAIN_DATA_DIR"] = data_directory
         env["PBRAIN_TURBO"] = "1"
+        if getattr(args, "ctc_model", None):
+            env["P_BRAIN_CTC_MODEL"] = str(args.ctc_model)
+        if getattr(args, "turbo_nph", None) is not None:
+            env["P_BRAIN_TURBO_NPH"] = str(int(args.turbo_nph))
         if is_control:
             env["PBRAIN_CONTROLS"] = "1"
         else:

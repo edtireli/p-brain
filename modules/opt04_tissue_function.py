@@ -167,6 +167,7 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
                     slice=slice_index,
                     prints=False,
                     flip_angle_deg=flip_angle_deg,
+                    ctc_model="saturation",
                 )
                 baseline_point = find_baseline_point_advanced(C_t_0)
                 C_t = custom_shifter(C_t_0, baseline_point)
@@ -207,17 +208,17 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
             idx += 1
 
     plt.subplots_adjust(wspace=0.3, hspace=0.5)
+    plt.tight_layout()
     if choice == 2:
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Grey_Matter.png'), dpi=200) 
+        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Grey_Matter.png'), dpi=300) 
     elif choice == 1:
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'White_Matter.png'), dpi=200)   
+        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'White_Matter.png'), dpi=300)   
     elif choice == 3: 
-        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Mixed_Matter.png'), dpi=200)    
+        plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', f'Mixed_Matter.png'), dpi=300)    
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     if not turbo_mode:
         close_plot_after_delay_plt(3)
         plt.show()
-    plt.tight_layout()
     plt.close()
 
 def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir', flip_angle_deg=None):
@@ -241,6 +242,7 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
             slice=slice_index,
             prints=False,
             flip_angle_deg=flip_angle_deg,
+            ctc_model="saturation",
         )
         baseline_point = find_baseline_point_advanced(C_t_0)
         C_t = custom_shifter(C_t_0, baseline_point)
@@ -261,7 +263,7 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
 
     fig, axs = plt.subplots(1, 2, figsize=(20, 6), gridspec_kw={'width_ratios': [1, 1]})
     axs[0].plot(time_points_s, avg_C_t, color='k', label='Normalised')
-    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Normalised {type} Concentration (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
     axs[0].grid(which='minor', alpha=0.25)
@@ -272,13 +274,14 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     axs[1].plot(time_points_s, avg_unnormalized_C_t_0, color='k', label='Un-Normalised')
     #axs[1].scatter(time_points_s, avg_unnormalized_C_t_0, color='r', label='Normalised')
     axs[1].axvline(time_points_s[baseline_point], color='red', linestyle = '--')
-    axs[1].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[1].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[1].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[1].set_title(f'Un-Normalised {type} Concentration (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
 
     axs[1].grid(which='minor', alpha=0.25)
     axs[1].minorticks_on()
-    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_normalisation.png'), dpi=200)
+    fig.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}_normalisation.png'), dpi=300)
     
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     if not turbo_mode:
@@ -293,7 +296,7 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         ax.plot(indices,avg_unnormalized_C_t_0, color='k', label='Un-Normalised')
         ax.scatter(indices,avg_unnormalized_C_t_0, color='r', label='Un-Normalised', s=5)
         ax.axvline(baseline_point, color='red', linestyle = '--')
-        ax.set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+        ax.set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
         ax.set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
         ax.set_title(f'Un-Normalised {type} Concentration (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
 
@@ -319,7 +322,7 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     # Concentration-Time Curve
     axs[0].plot(time_points_s, smoothed_values, color='black')
     axs[0].scatter(time_points_s, avg_C_t, color='r', s=5)
-    axs[0].set_xlabel('Time (sec)', fontproperties=prop, fontsize=12)
+    axs[0].set_xlabel('Time (s)', fontproperties=prop, fontsize=12)
     axs[0].set_ylabel('Concentration (mM)', fontproperties=prop, fontsize=12)
     axs[0].set_title(f'Average Concentration-Time Curve (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
     axs[0].grid(which='minor', alpha=0.25)
@@ -332,7 +335,8 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
         rect = Rectangle((y, x), 1, 1, linewidth=1, edgecolor='g', facecolor='none', alpha=0.5)
         axs[1].add_patch(rect)
     axs[1].set_title(f'T2-weighted Image (Slice {slice_index + 1})', fontproperties=prop, fontsize=14)
-    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}.png'), dpi=200)
+    fig.tight_layout()
+    plt.savefig(os.path.join(image_directory, 'Concentration Time Curves', 'Tissue', type, f'CTC+ROI_slice_{slice_index+1}.png'), dpi=300)
     
     plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
     if not turbo_mode:

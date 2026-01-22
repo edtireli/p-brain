@@ -31,6 +31,7 @@ from .kinetic_models import (
     extended_tofts_tikhonov,
     construct_convolution_matrix as km_construct_convolution_matrix,
     tikhonov_regularization as km_tikhonov_regularization,
+    build_tikhonov_solver,
     extended_tofts_model,
     pick_lambda_via_l_curve,
     residue_metrics,
@@ -587,6 +588,8 @@ _compute_CTC = None
 _find_baseline_point_advanced = None
 _custom_shifter = None
 _patlak_analysis_plotting = None
+_kinetic_model = None
+_two_compartment_tikhonov = None
 
 
 def _load_label_lookup(lut_path=None):
@@ -613,12 +616,14 @@ def _load_label_lookup(lut_path=None):
 
 def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
                      C_a_full, compute_CTC, find_baseline_point_advanced,
-                     custom_shifter, patlak_analysis_plotting):
+                     custom_shifter, patlak_analysis_plotting,
+                     kinetic_model=None, two_compartment_tikhonov=None):
     """Initialise global read-only data for compute_Ki_from_atlas workers."""
 
     global _atlas_data, _data_4d, _T1_matrix, _M0_matrix, _time_points_s
     global _C_a_full, _compute_CTC, _find_baseline_point_advanced
     global _custom_shifter, _patlak_analysis_plotting
+    global _kinetic_model, _two_compartment_tikhonov
 
     _atlas_data = atlas_data
     _data_4d = data_4d
@@ -630,6 +635,8 @@ def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
     _find_baseline_point_advanced = find_baseline_point_advanced
     _custom_shifter = custom_shifter
     _patlak_analysis_plotting = patlak_analysis_plotting
+    _kinetic_model = (kinetic_model or settings.KINETIC_MODEL or "patlak").strip().lower()
+    _two_compartment_tikhonov = two_compartment_tikhonov
 
 
 def _process_label(lbl):
@@ -678,8 +685,17 @@ def _process_label(lbl):
     C_a_label = _C_a_full[:min_len]
     t_label = _time_points_s[:min_len]
 
-    Ki, lam, SD_Ki, _, _, _ = _patlak_analysis_plotting(
-        C_t_label, C_a_label, t_label)
+    if _kinetic_model == "two_compartment" and _two_compartment_tikhonov is not None:
+        try:
+            Ki_raw, lam_raw, SD_Ki, _fit_curve = _two_compartment_tikhonov(
+                C_a_label, C_t_label, time_array=t_label
+            )
+            Ki = Ki_raw * 6000.0
+            lam = lam_raw * 100.0
+        except Exception:
+            Ki, lam, SD_Ki = np.nan, np.nan, np.nan
+    else:
+        Ki, lam, SD_Ki, _, _, _ = _patlak_analysis_plotting(C_t_label, C_a_label, t_label)
 
     cbf = float('nan')
     mtt = float('nan')
@@ -766,6 +782,8 @@ def compute_Ki_from_atlas(
         find_baseline_point_advanced,
         custom_shifter,
         patlak_analysis_plotting,
+        kinetic_model=settings.KINETIC_MODEL,
+        two_compartment_tikhonov=two_compartment_tikhonov,
     )
 
     if settings.MULTIPROCESSING:
@@ -783,6 +801,8 @@ def compute_Ki_from_atlas(
                 find_baseline_point_advanced,
                 custom_shifter,
                 patlak_analysis_plotting,
+                settings.KINETIC_MODEL,
+                two_compartment_tikhonov,
             ),
         ) as pool:
             results = pool.map(_process_label, unique_labels)
@@ -2052,6 +2072,27 @@ def compute_and_plot_ctcs_median(
     from tqdm import tqdm
     from scipy.ndimage import binary_dilation
 
+    # Configure CTC conversion model (legacy saturation vs TurboFLASH inversion).
+    ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+    tr_s = None
+    nph = None
+    if ctc_model == "turboflash":
+        tr_s = read_repetition_time_s_from_sidecar(dce_path)
+        if tr_s is None:
+            raise ValueError(
+                "CTC_MODEL=turboflash requires RepetitionTime in the DCE JSON sidecar; "
+                "re-run conversion with dcm2niix JSON output or set P_BRAIN_CTC_MODEL=saturation."
+            )
+        nph = getattr(settings, "TURBOFLASH_NPH", 1)
+
+    compute_CTC_meta = functools.partial(
+        compute_CTC,
+        flip_angle_deg=flip_angle_deg,
+        ctc_model=ctc_model,
+        tr_s=tr_s,
+        nph=nph,
+    )
+
     n_slices = t2_img.shape[2]
     skip_bottom = settings.GLOBAL_KI_SKIP_BOTTOM
     skip_top = settings.GLOBAL_KI_SKIP_TOP
@@ -2210,7 +2251,7 @@ def compute_and_plot_ctcs_median(
                     voxel_time_course = data_4d[x, y, i, :]
                     T1 = T1_matrix[x, y, i]
                     M0 = M0_matrix[x, y, i]
-                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0, flip_angle_deg=flip_angle_deg)
+                    C_t_0 = compute_CTC_meta(voxel_time_course, T1, m0=M0)
                     baseline_point = find_baseline_point_advanced(C_t_0)
                     C_t = custom_shifter(C_t_0, baseline_point)
 
@@ -2650,6 +2691,38 @@ def compute_and_plot_ctcs_median(
                 brain_mask_slice = np.logical_or(wm_slice_with_cerebellum, gm_slice_dce)
                 brain_indices = np.argwhere(brain_mask_slice)
 
+                # Precompute common time-axis and (optional) cached deconvolution solver.
+                common_len = min(int(data_4d.shape[3]), len(C_a_full), len(time_points_s))
+                C_a_voxel_common = C_a_full[:common_len]
+                time_points_voxel_common = time_points_s[:common_len]
+
+                fast_tikh_solver = None
+                fast_delta_t = None
+                use_fast_tikh = (
+                    compute_per_voxel_CBF
+                    and (not settings.ALIGN_AIF_BY_XCORR)
+                    and not (
+                        settings.CTH_MTT_METHOD.lower() in {"gamma", "hybrid"}
+                        and settings.CTH_MTT_GAMMA_VOXELWISE
+                    )
+                )
+                if use_fast_tikh and common_len >= 2:
+                    deltas = np.diff(time_points_voxel_common)
+                    deltas = deltas[np.isfinite(deltas) & (deltas > 0)]
+                    if deltas.size:
+                        fast_delta_t = float(deltas[0])
+                        lambd = (
+                            settings.AUTO_LAMBDA_VALUE
+                            if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None
+                            else settings.TIKHONOV_LAMBDA
+                        )
+                        try:
+                            A = km_construct_convolution_matrix(C_a_voxel_common, fast_delta_t)
+                            fast_tikh_solver = build_tikhonov_solver(A, lambd, penalty="identity")
+                        except Exception:
+                            fast_tikh_solver = None
+                            fast_delta_t = None
+
                 # Initialize per-voxel slice arrays
                 if compute_per_voxel_Ki:
                     Ki_slice = np.full(brain_mask_slice.shape, np.nan)
@@ -2661,23 +2734,33 @@ def compute_and_plot_ctcs_median(
                     CTH_slice = np.full(brain_mask_slice.shape, np.nan) if settings.WRITE_CTH else None
 
                 # For each voxel in the brain mask, compute K_i and/or CBF
+                # Bind hot functions locally (Python loop micro-optimisation).
+                _ctc = compute_CTC_meta
+                _baseline = find_baseline_point_advanced
+                _shift = custom_shifter
+                _patlak = patlak_analysis_plotting
+
+                # When we can use the cached Tikhonov solver, batch solves across voxels.
+                fast_coords = []
+                fast_curves = []
+
                 for (x, y) in brain_indices:
                     voxel_time_course = data_4d[x, y, i, :]
                     T1 = T1_matrix[x, y, i]
                     M0 = M0_matrix[x, y, i]
-                    C_t_0 = compute_CTC(voxel_time_course, T1, m0=M0, flip_angle_deg=flip_angle_deg)
-                    baseline_point = find_baseline_point_advanced(C_t_0)
-                    C_t = custom_shifter(C_t_0, baseline_point)
+                    C_t_0 = _ctc(voxel_time_course, T1, m0=M0)
+                    baseline_point = _baseline(C_t_0)
+                    C_t = _shift(C_t_0, baseline_point)
 
                     # Exclude CTCs with NaNs or zeros
                     if np.isnan(C_t).any() or np.all(C_t == 0):
                         continue
 
                     # Ensure C_t and C_a_full have the same length
-                    min_length_voxel = min(len(C_t), len(C_a_full))
+                    min_length_voxel = common_len
                     C_t_voxel = C_t[:min_length_voxel]
-                    C_a_voxel = C_a_full[:min_length_voxel]
-                    time_points_voxel = time_points_s[:min_length_voxel]
+                    C_a_voxel = C_a_voxel_common
+                    time_points_voxel = time_points_voxel_common
 
                     if min_length_voxel < 2:
                         continue
@@ -2685,7 +2768,7 @@ def compute_and_plot_ctcs_median(
                     Ki_value = None
                     if compute_per_voxel_Ki:
                         # Perform Patlak analysis
-                        Ki_voxel, lam_voxel, SD_voxel, _, _, _ = patlak_analysis_plotting(
+                        Ki_voxel, lam_voxel, SD_voxel, _, _, _ = _patlak(
                             C_t_voxel, C_a_voxel, time_points_voxel
                         )
                         Ki_slice[x, y] = Ki_voxel
@@ -2694,21 +2777,66 @@ def compute_and_plot_ctcs_median(
                         Ki_value = Ki_voxel
 
                     if compute_per_voxel_CBF:
-                        cbf_voxel, mtt_voxel, cth_voxel, _ = compute_mtt_cth(
-                            settings.CTH_MTT_METHOD,
-                            C_t_voxel,
-                            C_a_voxel,
-                            time_points_voxel,
-                            Ki=Ki_value,
-                            allow_gamma=settings.CTH_MTT_GAMMA_VOXELWISE,
-                            logger=logger,
-                        )
+                        if fast_tikh_solver is not None and fast_delta_t is not None:
+                            fast_coords.append((int(x), int(y)))
+                            fast_curves.append(np.asarray(C_t_voxel, dtype=float))
+                            continue
+                        else:
+                            cbf_voxel, mtt_voxel, cth_voxel, _ = compute_mtt_cth(
+                                settings.CTH_MTT_METHOD,
+                                C_t_voxel,
+                                C_a_voxel,
+                                time_points_voxel,
+                                Ki=Ki_value,
+                                allow_gamma=settings.CTH_MTT_GAMMA_VOXELWISE,
+                                logger=logger,
+                            )
                         if np.isfinite(cbf_voxel):
                             CBF_slice[x, y] = cbf_voxel
                         if settings.WRITE_MTT and MTT_slice is not None and np.isfinite(mtt_voxel):
                             MTT_slice[x, y] = mtt_voxel
                         if settings.WRITE_CTH and CTH_slice is not None and np.isfinite(cth_voxel):
                             CTH_slice[x, y] = cth_voxel
+
+                # Batched fast Tikhonov path (multiple RHS) for voxelwise maps.
+                if compute_per_voxel_CBF and fast_tikh_solver is not None and fast_delta_t is not None and fast_curves:
+                    n_vox = len(fast_curves)
+                    n_time = int(common_len)
+                    # Chunk to avoid huge temporary allocations.
+                    chunk = int(getattr(settings, "TIKHONOV_BATCH_SIZE", 4096))
+                    rho = float(settings.TISSUE_DENSITY)
+                    hct = float(settings.HEMATOCRIT)
+                    scale = (1.0 - hct)
+
+                    for start in range(0, n_vox, chunk):
+                        end = min(start + chunk, n_vox)
+                        Ct_mat = np.stack(fast_curves[start:end], axis=1)
+                        if Ct_mat.shape[0] != n_time:
+                            Ct_mat = Ct_mat[:n_time, :]
+
+                        impulse_mat = fast_tikh_solver(Ct_mat)
+                        if impulse_mat.ndim == 1:
+                            impulse_mat = impulse_mat.reshape(-1, 1)
+
+                        g0 = impulse_mat[0, :]
+                        cbf_vals = 6000.0 * g0 * scale / rho
+                        cbf_vals = np.maximum(cbf_vals, 0.0)
+
+                        for k in range(end - start):
+                            x, y = fast_coords[start + k]
+                            g0_k = float(g0[k])
+                            cbf_k = float(cbf_vals[k])
+                            if not (np.isfinite(g0_k) and g0_k > 0.0 and np.isfinite(cbf_k)):
+                                continue
+
+                            residue = impulse_mat[:, k] / g0_k
+                            mtt_k, cth_k, _, _ = residue_metrics(residue, fast_delta_t)
+
+                            CBF_slice[x, y] = cbf_k
+                            if settings.WRITE_MTT and MTT_slice is not None and np.isfinite(mtt_k):
+                                MTT_slice[x, y] = float(mtt_k)
+                            if settings.WRITE_CTH and CTH_slice is not None and np.isfinite(cth_k):
+                                CTH_slice[x, y] = float(cth_k)
 
                 # Store the K_i and/or CBF slice in the 3D arrays
                 if compute_per_voxel_Ki:
@@ -3536,10 +3664,24 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     output_dir = analysis_directory
 
-    compute_CTC_meta = (
-        functools.partial(compute_CTC, flip_angle_deg=flip_angle_deg)
-        if flip_angle_deg is not None
-        else compute_CTC
+    ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+    tr_s = None
+    nph = None
+    if ctc_model == "turboflash":
+        tr_s = read_repetition_time_s_from_sidecar(dce_path)
+        if tr_s is None:
+            raise ValueError(
+                "CTC_MODEL=turboflash requires RepetitionTime in the DCE JSON sidecar; "
+                "re-run conversion with dcm2niix JSON output or set P_BRAIN_CTC_MODEL=saturation."
+            )
+        nph = getattr(settings, "TURBOFLASH_NPH", 1)
+
+    compute_CTC_meta = functools.partial(
+        compute_CTC,
+        flip_angle_deg=flip_angle_deg,
+        ctc_model=ctc_model,
+        tr_s=tr_s,
+        nph=nph,
     )
 
     compute_Ki_from_atlas(

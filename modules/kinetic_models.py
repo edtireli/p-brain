@@ -12,14 +12,99 @@ else:  # pragma: no cover - legacy NumPy fallback
 
 
 def extended_tofts_model(t, Ktrans, ve, vp, Cp):
-    """Basic extended Tofts implementation used for the two-compartment model."""
-    integrand = np.zeros_like(t)
-    for i in range(len(t)):
-        min_len = min(len(Cp[:i+1]), len(t[:i+1]))
-        integral = _trapezoid(Cp[:min_len] * np.exp(-(t[i] - t[:min_len]) * Ktrans / ve), x=t[:min_len])
-        integrand[i] = integral
-    min_len = min(len(integrand), len(Cp))
-    return Ktrans * integrand[:min_len] + vp * Cp[:min_len]
+    """Basic extended Tofts implementation used for the two-compartment model.
+
+    This is performance-critical inside optimisation loops. The original
+    implementation evaluated the convolution integral with an O(n^2) loop.
+    Here we use an equivalent O(n) recurrence matching trapezoidal quadrature
+    when the time grid is strictly increasing.
+    """
+
+    t = np.asarray(t, dtype=float).reshape(-1)
+    Cp = np.asarray(Cp, dtype=float).reshape(-1)
+    n = min(t.size, Cp.size)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+
+    t = t[:n]
+    Cp = Cp[:n]
+
+    Ktrans = float(Ktrans)
+    ve = float(ve)
+    vp = float(vp)
+    if not (np.isfinite(Ktrans) and np.isfinite(ve) and np.isfinite(vp)):
+        return np.full(n, np.nan, dtype=float)
+    ve = max(ve, 1e-12)
+
+    # Require a valid, strictly-increasing time axis for the fast recurrence.
+    dt = np.diff(t)
+    if dt.size == 0 or not np.all(np.isfinite(dt)) or np.any(dt <= 0):
+        # Fallback to the legacy behaviour for irregular time arrays.
+        integrand = np.zeros(n, dtype=float)
+        kep = Ktrans / ve
+        for i in range(n):
+            integral = _trapezoid(Cp[: i + 1] * np.exp(-(t[i] - t[: i + 1]) * kep), x=t[: i + 1])
+            integrand[i] = integral
+        return Ktrans * integrand + vp * Cp
+
+    kep = Ktrans / ve
+
+    # Trapezoidal recurrence:
+    # I[i] = exp(-kep*dt)*I[i-1] + 0.5*dt*(Cp[i] + Cp[i-1]*exp(-kep*dt))
+    I = np.zeros(n, dtype=float)
+    for i in range(1, n):
+        dti = float(dt[i - 1])
+        e = float(np.exp(-kep * dti))
+        I[i] = I[i - 1] * e + 0.5 * dti * (Cp[i] + Cp[i - 1] * e)
+
+    return Ktrans * I + vp * Cp
+
+
+def build_tikhonov_solver(A, lambd, *, penalty="identity"):
+    """Pre-factor a Tikhonov system and return a fast solver.
+
+    This is useful when the AIF (and therefore ``A``) and lambda are fixed
+    across many tissue curves (e.g., voxelwise CBF/MTT/CTH maps). The returned
+    callable supports one or many right-hand sides.
+    """
+
+    from scipy.linalg import cho_factor, cho_solve
+
+    A = np.asarray(A, dtype=float)
+    if A.ndim != 2:
+        raise ValueError("A must be 2D")
+    n_rows, n_cols = A.shape
+    if n_rows == 0 or n_cols == 0:
+        raise ValueError("A must be non-empty")
+
+    L = _prepare_penalty_matrix(n_cols, penalty)
+    ata = A.T @ A
+    ltl = L.T @ L if L.size else np.zeros((n_cols, n_cols), dtype=float)
+    lam = float(max(lambd, 0.0))
+    regularised = ata + lam**2 * ltl
+
+    # SPD in typical use; Cholesky gives O(n^2) solves for multiple RHS.
+    cho = cho_factor(regularised, overwrite_a=False, check_finite=False)
+    At = A.T
+
+    def solve(C_t):
+        C_t_arr = np.asarray(C_t, dtype=float)
+        if C_t_arr.ndim == 1:
+            if C_t_arr.shape[0] != n_rows:
+                raise ValueError("C_t length must match A.shape[0]")
+            rhs = At @ C_t_arr
+            return cho_solve(cho, rhs, check_finite=False)
+
+        if C_t_arr.ndim == 2:
+            # Expect shape (n_rows, n_rhs)
+            if C_t_arr.shape[0] != n_rows:
+                raise ValueError("C_t first dimension must match A.shape[0]")
+            rhs = At @ C_t_arr
+            return cho_solve(cho, rhs, check_finite=False)
+
+        raise ValueError("C_t must be 1D or 2D")
+
+    return solve
 
 
 

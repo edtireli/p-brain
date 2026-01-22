@@ -26,6 +26,7 @@ import modules.opt02_input_functions as opt02_input_functions
 import modules.opt04_tissue_function as opt04_tissue_function
 import modules.opt05_BBB_parameters as opt05_BBB_parameters
 import modules.opt00_images as opt00_images
+from utils.loading import discover_ir_series, discover_vfa_series
 
 
 def mode_screen():
@@ -83,6 +84,26 @@ def parse_args():
                         help='Run diffusion tensor processing after the automatic pipeline')
     parser.add_argument('--flip-angle', dest='flip_angle', type=str, default=None,
                         help='Flip angle in degrees (number) or "auto" (default: from metadata)')
+    parser.add_argument('--t1-fit', dest='t1_fit', type=str,
+                        choices=['auto', 'ir', 'vfa', 'none'], default=None,
+                        help='T1/M0 fitting source: auto|ir|vfa|none (default: auto)')
+    parser.add_argument('--vfa-glob', dest='vfa_glob', type=str, default=None,
+                        help='Comma-separated glob(s) for VFA NIfTI discovery in NIfTI dir (default: *VFA*.nii*)')
+    parser.add_argument(
+        '--ctc-model',
+        dest='ctc_model',
+        type=str,
+        choices=['saturation', 'turboflash'],
+        default=None,
+        help='Signal-to-concentration model: saturation (legacy) or turboflash (MATLAB-like).'
+    )
+    parser.add_argument(
+        '--turbo-nph',
+        dest='turbo_nph',
+        type=int,
+        default=None,
+        help='TurboFLASH nph (1-based ky=0 line index within readout train). Used when --ctc-model=turboflash.'
+    )
     return parser.parse_args()
 
 
@@ -175,6 +196,16 @@ def main():
                 settings.FLIP_ANGLE_SETTING = "auto"
                 settings.FLIP_ANGLE_DEG = None
 
+    if args.t1_fit is not None:
+        settings.T1_FIT_MODE = str(args.t1_fit).strip().lower() or "auto"
+    if args.vfa_glob is not None:
+        settings.VFA_FILE_GLOB = str(args.vfa_glob).strip() or settings.VFA_FILE_GLOB
+
+    if getattr(args, 'ctc_model', None) is not None:
+        settings.CTC_MODEL = str(args.ctc_model).strip().lower() or settings.CTC_MODEL
+    if getattr(args, 'turbo_nph', None) is not None:
+        settings.TURBOFLASH_NPH = int(args.turbo_nph)
+
     if args.tikhonov_lambda is not None:
         settings.TIKHONOV_LAMBDA = args.tikhonov_lambda
     if args.enable_lcurve:
@@ -218,6 +249,18 @@ def main():
     parameters = global_parameters()
     refresh_nifti_directory(nifti_directory)
     check_axial(nifti_directory, filenames)
+
+    # Auto-select the T1 fitting mode based on which inputs exist.
+    if getattr(settings, "T1_FIT_MODE", "auto") == "auto":
+        has_ir = bool(discover_ir_series(nifti_directory))
+        has_vfa = bool(discover_vfa_series(nifti_directory, patterns=getattr(settings, "VFA_FILE_GLOB", None)))
+        if has_ir:
+            settings.T1_FIT_MODE = "ir"
+        elif has_vfa:
+            settings.T1_FIT_MODE = "vfa"
+        else:
+            settings.T1_FIT_MODE = "none"
+        parameters = global_parameters()
 
     mode = args.mode
     if mode is None and args.option is None:

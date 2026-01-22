@@ -92,6 +92,30 @@ if _flip_angle_lower and _flip_angle_lower != "auto":
         FLIP_ANGLE_SETTING = "auto"
         FLIP_ANGLE_DEG = None
 
+# Signal-to-concentration conversion model.
+# - saturation: closed-form saturation-recovery inversion (legacy p-Brain)
+# - turboflash: TurboFLASH readout-train forward model (MATLAB-style), numerically inverted
+CTC_MODEL = (os.environ.get("P_BRAIN_CTC_MODEL", "saturation") or "saturation").strip().lower()
+if CTC_MODEL not in {"saturation", "turboflash"}:
+    CTC_MODEL = "saturation"
+
+# TurboFLASH model parameters (only used when CTC_MODEL=turboflash).
+# nph is the phase-encode line index (1-based) at ky=0 (k-space center).
+TURBOFLASH_NPH = int(os.environ.get("P_BRAIN_TURBO_NPH", 1))
+
+# T1/M0 fitting input source.
+# - auto: prefer inversion-recovery if present, otherwise try VFA.
+# - ir: require inversion-recovery series.
+# - vfa: require VFA spoiled GRE series.
+# - none: skip T1/M0 fitting (outputs NaNs).
+T1_FIT_MODE = (os.environ.get("P_BRAIN_T1_FIT", "auto") or "auto").strip().lower()
+if T1_FIT_MODE not in {"auto", "ir", "vfa", "none"}:
+    T1_FIT_MODE = "auto"
+
+# VFA discovery glob(s) used when T1_FIT_MODE is vfa/auto.
+# Comma-separated patterns relative to the NIfTI directory.
+VFA_FILE_GLOB = (os.environ.get("P_BRAIN_VFA_GLOB", "*VFA*.nii*") or "*VFA*.nii*").strip()
+
 # When enabled, pick the regularisation weight automatically using an L-curve
 # search across ``AUTO_LAMBDA_CANDIDATES``.
 AUTO_LAMBDA = False

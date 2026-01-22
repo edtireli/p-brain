@@ -1,11 +1,13 @@
 import pickle
 import os
 import re
+import glob
 import matplotlib.pyplot as plt
 import numpy as np
 import json
 import importlib
 import time
+from typing import Optional
 
 import utils.settings as settings
 
@@ -76,6 +78,97 @@ def resolve_flip_angle_deg(nifti_path: str, default=None):
         except (TypeError, ValueError):
             pass
     return read_flip_angle_deg_from_sidecar(nifti_path, default=default)
+
+
+def read_repetition_time_s_from_sidecar(nifti_path: str, default=None):
+    """Return repetition time (seconds) from the NIfTI JSON sidecar."""
+
+    data = read_nifti_sidecar_json(nifti_path)
+    if not isinstance(data, dict):
+        return default
+    for key in (
+        "RepetitionTimeExcitation",
+        "RepetitionTime",
+        "RepetitionTime_s",
+        "RepetitionTimeSeconds",
+    ):
+        if key not in data:
+            continue
+        try:
+            value = float(data[key])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return default
+
+
+def discover_vfa_series(
+    nifti_directory: str,
+    patterns: Optional[str] = None,
+    *,
+    min_series: int = 2,
+):
+    """Discover VFA spoiled GRE series within ``nifti_directory``.
+
+    Returns a list of dicts: {"nifti": path, "flip_angle_deg": float, "tr_s": float}
+    sorted by flip angle.
+
+    Patterns are glob expressions (comma-separated). When omitted, uses
+    ``settings.VFA_FILE_GLOB``.
+    """
+
+    if not nifti_directory or not os.path.isdir(nifti_directory):
+        return []
+
+    raw_patterns = patterns if patterns is not None else getattr(settings, "VFA_FILE_GLOB", "*VFA*.nii*")
+    pat_list = [p.strip() for p in str(raw_patterns).split(",") if p.strip()]
+    if not pat_list:
+        pat_list = ["*VFA*.nii*"]
+
+    candidates: set[str] = set()
+    for pat in pat_list:
+        for match in glob.glob(os.path.join(nifti_directory, pat)):
+            if os.path.isfile(match):
+                candidates.add(match)
+
+    series = []
+    for nifti_path in sorted(candidates):
+        fa = read_flip_angle_deg_from_sidecar(nifti_path, default=None)
+        tr = read_repetition_time_s_from_sidecar(nifti_path, default=None)
+        if fa is None or tr is None:
+            continue
+        series.append({"nifti": nifti_path, "flip_angle_deg": float(fa), "tr_s": float(tr)})
+
+    series.sort(key=lambda item: item.get("flip_angle_deg", 0.0))
+    if len(series) < int(min_series):
+        return []
+    return series
+
+
+def discover_ir_series(nifti_directory: str):
+    """Discover inversion-recovery NIfTIs expected by the released pipeline.
+
+    Returns a list of 7 NIfTI paths (one per TI) when complete; otherwise []
+    so callers can fall back to VFA or "none".
+    """
+
+    if not nifti_directory or not os.path.isdir(nifti_directory):
+        return []
+
+    TI = ["00120", "00300", "00600", "01000", "02000", "04000", "10000"]
+    patterns = ["WIPTI_", "WIPDelRec-TI_"]
+    paths = []
+    for ti in TI:
+        hit = None
+        for suf in (".nii", ".nii.gz"):
+            hit = first_existing_file(nifti_directory, patterns, ti, suf)
+            if hit:
+                break
+        if not hit:
+            return []
+        paths.append(hit)
+    return paths
 
 
 def _sanitize_dcm2niix_basename(name: str) -> str:

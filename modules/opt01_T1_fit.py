@@ -12,6 +12,7 @@ from skimage.filters import threshold_otsu
 from skimage.morphology import binary_closing, binary_opening, binary_dilation, ball
 from skimage.morphology import remove_small_objects
 from utils.settings import MULTIPROCESSING, NUMBER_OF_CORES, T1_RECOVERY_MODEL
+import utils.settings as settings
 from utils.fonts import *
 from utils.loading import *
 from utils.plotting import *
@@ -559,56 +560,81 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
         M0_matrix = load_from_pickle(M0_matrix_path)
         T1_matrix = load_from_pickle(T1_matrix_path)
     else:
-        # Handling for VFA
-        IsVFA = False
-        if IsVFA:
-            vfa_flip_angles = range(1, 6)  # Assuming 5 flip angles
-            # Extract base name without '_FLAIR_DCE' or similar
-            dce_filename_base = os.path.splitext(dce_filename)[0]
-            dce_filename_base = dce_filename_base.replace('_FLAIR_DCE', '').replace('_DCE', '')
+        # Decide which source to use for T1/M0 fitting.
+        t1_mode = getattr(settings, "T1_FIT_MODE", "auto")
+        if t1_mode not in {"auto", "ir", "vfa", "none"}:
+            t1_mode = "auto"
 
-            # Generate VFA filenames
-            vfa_filenames = [f"{dce_filename_base}_flip-{str(flip).zfill(2)}_VFA.json" for flip in vfa_flip_angles]
-            vfa_data = [os.path.join(nifti_directory, f"{dce_filename_base}_flip-{str(flip).zfill(2)}_VFA.nii") for flip in vfa_flip_angles]
+        use_vfa = False
+        use_ir = False
 
-            # Extract TRs and flip angles
-            TRs, alfas = extract_vfa_params(vfa_filenames, nifti_directory)
+        if t1_mode == "vfa":
+            use_vfa = True
+        elif t1_mode == "ir":
+            use_ir = True
+        elif t1_mode == "none":
+            use_vfa = False
+            use_ir = False
+        else:
+            # auto: prefer complete IR series, otherwise fall back to VFA.
+            ir_paths = discover_ir_series(nifti_directory)
+            if ir_paths:
+                use_ir = True
+            else:
+                vfa_series = discover_vfa_series(nifti_directory)
+                if vfa_series:
+                    use_vfa = True
 
-            # Check for missing files
-            for file_path in vfa_data:
-                if not os.path.exists(file_path):
-                    print(f"Warning: File not found: {file_path}")
-            
-            # Build voxel matrix and fit VFA model
+        # Allow explicit legacy parameters to override auto when they are set.
+        if t1_mode == "auto":
+            if IsVFA:
+                use_vfa = True
+                use_ir = False
+            elif IsIR:
+                # Only keep IR if it is complete; otherwise let VFA/none handle it.
+                if discover_ir_series(nifti_directory):
+                    use_ir = True
+                    use_vfa = False
+
+        if use_vfa:
+            vfa_series = discover_vfa_series(nifti_directory)
+            if not vfa_series:
+                raise FileNotFoundError(
+                    "T1_FIT_MODE=vfa requested but no VFA series was discovered in "
+                    f"{nifti_directory}. Provide VFA NIfTIs+JSON sidecars (with FlipAngle and RepetitionTime) "
+                    "or set P_BRAIN_VFA_GLOB to match your filenames."
+                )
+            vfa_data = [entry["nifti"] for entry in vfa_series]
+            alfas = [entry["flip_angle_deg"] for entry in vfa_series]
+            TRs = [entry["tr_s"] for entry in vfa_series]
             if voxel_matrix is None:
                 voxel_matrix = build_voxel_matrix(vfa_data)
             M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, None, True, alfas=alfas, TRs=TRs)
-
-        # Handling for IR
-        if not IsVFA:
-            if IsIR:
-                TI = ['00120', '00300', '00600', '01000', '02000', '04000', '10000']
-                TI_values = [int(times) for times in TI]
+        elif use_ir:
+            TI = ['00120', '00300', '00600', '01000', '02000', '04000', '10000']
+            TI_values = [int(times) for times in TI]
+            ir_paths = discover_ir_series(nifti_directory)
+            if not ir_paths:
                 patterns = ['WIPTI_', 'WIPDelRec-TI_']
-                dce_data = [first_existing_file(nifti_directory, patterns, time, '.nii') for time in TI]
-                missing_ti = [ti for ti, path in zip(TI, dce_data) if not path]
-                if missing_ti:
-                    raise FileNotFoundError(
-                        "Missing inversion-recovery NIfTI files for TI "
-                        f"{missing_ti} in {nifti_directory}. Expected filenames like "
-                        f"{patterns[0]}<TI>.nii or {patterns[1]}<TI>.nii."
-                    )
-                if voxel_matrix is None:
-                    voxel_matrix = build_voxel_matrix(dce_data)
-                M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
+                raise FileNotFoundError(
+                    "Missing inversion-recovery NIfTI files for TI "
+                    f"{TI} in {nifti_directory}. Expected filenames like "
+                    f"{patterns[0]}<TI>.nii(.gz) or {patterns[1]}<TI>.nii(.gz)."
+                )
+            if voxel_matrix is None:
+                voxel_matrix = build_voxel_matrix(ir_paths)
+            M0_matrix, T1_matrix = fit_all_voxels(voxel_matrix, TI_values, False)
+        else:
+            # No fitting performed without IR or VFA data
+            if voxel_matrix is not None:
+                shape = voxel_matrix.shape[1:]
             else:
-                # No fitting performed without IR or VFA data
-                if voxel_matrix is not None:
-                    shape = voxel_matrix.shape[1:]
-                else:
+                ref_img = _reference_img_for_t1fit(nifti_directory, dce_filename, prefer_ir=True)
+                if ref_img is None:
                     raise RuntimeError("Unable to determine volume shape for T1/M0 outputs.")
-                M0_matrix = np.full(shape, np.nan)
-                T1_matrix = np.full(shape, np.nan)
+                shape = ref_img.shape[:3]
+            M0_matrix = np.full(shape, np.nan)
+            T1_matrix = np.full(shape, np.nan)
 
         save_as_pickle(M0_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl'))
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
@@ -618,7 +644,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
     # Export fitted volumes as NIfTI so the montage pipeline can render them.
     # These live alongside the cached pickles under Analysis/Fitting.
     try:
-        ref_img = _reference_img_for_t1fit(nifti_directory, dce_filename, prefer_ir=bool(IsIR))
+        ref_img = _reference_img_for_t1fit(nifti_directory, dce_filename, prefer_ir=bool(use_ir))
         fitting_dir = os.path.join(analysis_directory, 'Fitting')
         os.makedirs(fitting_dir, exist_ok=True)
         _export_map_nifti(T1_matrix, ref_img, os.path.join(fitting_dir, 't1_map.nii.gz'))
