@@ -16,6 +16,8 @@ import glob
 import json
 import time
 
+import utils.settings as settings
+
 turbo_mode = True # doesnt show plots
 
 
@@ -53,7 +55,7 @@ def get_available_slices(analysis_directory, structure_type, structure_subtype):
 
 from scipy.signal import correlate, find_peaks
 
-def align_first_peaks(vein_curve, artery_curve, radius=10, double_peak_radius=3):
+def align_first_peaks(vein_curve, artery_curve, radius=10, double_peak_radius=3, num_peaks=None):
     cross_corr = correlate(vein_curve, artery_curve)
     shift = np.argmax(cross_corr) - len(vein_curve) + 1
 
@@ -65,20 +67,23 @@ def align_first_peaks(vein_curve, artery_curve, radius=10, double_peak_radius=3)
     vein_peaks, _ = find_peaks(aligned_vein_curve)
     artery_peaks, _ = find_peaks(artery_curve)
 
-    def filter_double_peaks(peaks, curve, radius):
+    if num_peaks is None:
+        num_peaks = int(getattr(settings, "NUMBER_OF_PEAKS", 2))
+
+    def filter_double_peaks(peaks, curve, radius, n_peaks):
         sorted_peaks = sorted(peaks, key=lambda x: curve[x], reverse=True)
-        top2_peaks = []
+        top_peaks = []
         
         for p in sorted_peaks:
-            if all(abs(p - tp) > radius for tp in top2_peaks):
-                top2_peaks.append(p)
-                if len(top2_peaks) == 2:
+            if all(abs(p - tp) > radius for tp in top_peaks):
+                top_peaks.append(p)
+                if len(top_peaks) >= n_peaks:
                     break
 
-        return top2_peaks
+        return top_peaks
 
-    vein_top2_peaks = filter_double_peaks(vein_peaks, aligned_vein_curve, radius)
-    artery_top2_peaks = filter_double_peaks(artery_peaks, artery_curve, radius)
+    vein_top2_peaks = filter_double_peaks(vein_peaks, aligned_vein_curve, radius, num_peaks)
+    artery_top2_peaks = filter_double_peaks(artery_peaks, artery_curve, radius, num_peaks)
 
     rescaled = 1
 
@@ -128,30 +133,112 @@ def select_venous_slice(available_slices):
 
 
 
-def find_max_npy_file(analysis_directory):
+def find_max_npy_file(analysis_directory, num_peaks=None, peak_tolerance=0.20, peak_separation=10):
     subtypes = ["Left Interior Carotid", "Right Interior Carotid", "Basilar", "Left Middle Cerebral", "Right Middle Cerebral"]
-    max_value = float('-inf')
-    max_file_path = ""
-    max_subtype = ""
-    max_slice_index = -1
-    max_arterial_slice_index = -1  
+
+    if num_peaks is None:
+        num_peaks = int(getattr(settings, "NUMBER_OF_PEAKS", 2))
+
+    def _top_peaks(curve, n_peaks, separation):
+        peaks, _ = find_peaks(curve)
+        if len(peaks) == 0:
+            return []
+        sorted_peaks = sorted(peaks, key=lambda x: curve[x], reverse=True)
+        chosen = []
+        for p in sorted_peaks:
+            if not np.isfinite(curve[p]):
+                continue
+            if curve[p] <= 0:
+                continue
+            if all(abs(p - cp) > separation for cp in chosen):
+                chosen.append(p)
+                if len(chosen) >= n_peaks:
+                    break
+        return chosen
+
+    def _load_artery_curve(artery_subtype, arterial_slice_index):
+        artery_dir = os.path.join(analysis_directory, 'CTC Data', 'Artery', artery_subtype)
+        for filename in (f'CTC_shifted_slice_{arterial_slice_index}.npy', f'CTC_slice_{arterial_slice_index}.npy'):
+            path = os.path.join(artery_dir, filename)
+            if os.path.exists(path):
+                return np.load(path)
+        return None
+
+    def _peaks_consistent(vein_curve, artery_curve, n_peaks, tolerance, separation):
+        if artery_curve is None or len(vein_curve) == 0 or len(artery_curve) == 0:
+            return False
+
+        vein_peaks = _top_peaks(vein_curve, n_peaks, separation)
+        artery_peaks = _top_peaks(artery_curve, n_peaks, separation)
+        if len(vein_peaks) < n_peaks or len(artery_peaks) < n_peaks:
+            return False
+
+        ratios = []
+        for v_peak, a_peak in zip(vein_peaks, artery_peaks):
+            v = float(vein_curve[v_peak])
+            a = float(artery_curve[a_peak])
+            if not np.isfinite(v) or not np.isfinite(a) or a == 0:
+                return False
+            ratios.append(v / a)
+
+        ratios = np.asarray(ratios, dtype=float)
+        median_ratio = float(np.median(ratios))
+        if not np.isfinite(median_ratio) or median_ratio == 0:
+            return False
+
+        rel_dev = np.abs(ratios - median_ratio) / abs(median_ratio)
+        return bool(np.all(rel_dev <= tolerance))
+
+    best_any = {
+        'value': float('-inf'),
+        'file_path': "",
+        'subtype': "",
+        'slice_index': -1,
+        'arterial_slice_index': -1,
+    }
+    best_consistent = {
+        'value': float('-inf'),
+        'file_path': "",
+        'subtype': "",
+        'slice_index': -1,
+        'arterial_slice_index': -1,
+    }
 
     for subtype in subtypes:
         file_paths = glob.glob(os.path.join(analysis_directory, 'TSCC Data', subtype, '*.npy'))
-        
         for file_path in file_paths:
             arr = np.load(file_path)
-            curr_max = np.max(arr)
+            curr_max = float(np.max(arr))
 
-            if curr_max > max_value:
-                max_value = curr_max
-                max_file_path = file_path
-                max_subtype = subtype
-                split_filename = file_path.split('_')
-                max_slice_index = int(split_filename[-2])  
-                max_arterial_slice_index = int(split_filename[-1].split('.npy')[0])  
+            base = os.path.basename(file_path)
+            split_filename = base.split('_')
+            if len(split_filename) < 4:
+                continue
+            slice_index = int(split_filename[-2])
+            arterial_slice_index = int(split_filename[-1].split('.npy')[0])
 
-    return max_file_path, max_value, max_subtype, max_slice_index, max_arterial_slice_index  
+            if curr_max > best_any['value']:
+                best_any.update({
+                    'value': curr_max,
+                    'file_path': file_path,
+                    'subtype': subtype,
+                    'slice_index': slice_index,
+                    'arterial_slice_index': arterial_slice_index,
+                })
+
+            artery_curve = _load_artery_curve(subtype, arterial_slice_index)
+            if _peaks_consistent(arr, artery_curve, num_peaks, peak_tolerance, peak_separation):
+                if curr_max > best_consistent['value']:
+                    best_consistent.update({
+                        'value': curr_max,
+                        'file_path': file_path,
+                        'subtype': subtype,
+                        'slice_index': slice_index,
+                        'arterial_slice_index': arterial_slice_index,
+                    })
+
+    best = best_consistent if best_consistent['file_path'] else best_any
+    return best['file_path'], best['value'], best['subtype'], best['slice_index'], best['arterial_slice_index']
 
 
 def plot_transformed_curves_max(shifted_vein_curve, slice_index, artery_index, vein_top2_peaks, subtype='test', time_points_s=1, analysis_directory='dir', image_directory = 'dir'):
