@@ -10,11 +10,21 @@ try:
     from scipy.ndimage import label as cc_label
     from scipy.ndimage import binary_dilation
     from scipy.ndimage import binary_erosion
+    from scipy.ndimage import gaussian_filter
+    from scipy.ndimage import label as cc_label_nd
 except Exception:  # pragma: no cover
     distance_transform_edt = None
     cc_label = None
     binary_dilation = None
     binary_erosion = None
+    gaussian_filter = None
+    cc_label_nd = None
+
+try:
+    from skimage.feature import hessian_matrix, hessian_matrix_eigvals
+except Exception:  # pragma: no cover
+    hessian_matrix = None
+    hessian_matrix_eigvals = None
 
 import utils.settings as settings
 from utils.mapping import choice2type
@@ -96,6 +106,293 @@ def _compute_upslope_and_late(
     # Late tail magnitude
     late = sig[..., -late_frames:].mean(axis=-1).astype(np.float32)
     return upslope, late
+
+
+def _compute_bat_and_auc(
+    dce4d: np.ndarray,
+    baseline_frames: int,
+    *,
+    bat_mad_k: float = 3.0,
+    bat_persist: int = 2,
+    early_window: int = 6,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute bolus arrival time (BAT) and early-fraction map.
+
+    BAT is the first frame where enhancement exceeds baseline + k*MAD for
+    `bat_persist` consecutive frames. AUC_early is integrated from BAT to
+    BAT+early_window. early_fraction = AUC_early / AUC_total.
+    """
+
+    baseline_frames = max(3, int(baseline_frames))
+    bat_persist = max(1, int(bat_persist))
+    early_window = max(2, int(early_window))
+
+    base = dce4d[..., :baseline_frames].astype(np.float32)
+    baseline = np.median(base, axis=-1)
+    mad = np.median(np.abs(base - baseline[..., None]), axis=-1) + 1e-6
+    enh = (dce4d.astype(np.float32) - baseline[..., None])
+
+    thr = baseline + (float(bat_mad_k) * mad)
+    above = enh > (thr[..., None] - baseline[..., None])  # compare in enhancement domain
+
+    # Persistence: require N consecutive True values.
+    # Compute running sum over time of above-mask.
+    run = np.zeros_like(enh, dtype=np.int16)
+    run[..., 0] = above[..., 0].astype(np.int16)
+    for t in range(1, above.shape[-1]):
+        run[..., t] = (run[..., t - 1] + 1) * above[..., t].astype(np.int16)
+    arrived = run >= bat_persist
+
+    # BAT index: first time arrived becomes True, else sentinel = last frame.
+    bat = np.full(enh.shape[:-1], enh.shape[-1] - 1, dtype=np.int16)
+    any_arr = arrived.any(axis=-1)
+    if np.any(any_arr):
+        bat_idx = np.argmax(arrived, axis=-1).astype(np.int16)
+        bat[any_arr] = bat_idx[any_arr]
+
+    # AUC total and early AUC (BAT-relative)
+    enh_pos = np.maximum(0.0, enh).astype(np.float32)
+    csum = np.cumsum(enh_pos, axis=-1, dtype=np.float32)
+    auc_total = csum[..., -1].astype(np.float32)
+
+    T = int(enh_pos.shape[-1])
+    bat_i = bat.astype(np.int32)
+    t0 = np.clip(bat_i, 0, T - 1)
+    t1 = np.clip(bat_i + early_window, 1, T)
+
+    idx1 = (t1 - 1)[..., None]
+    s1 = np.take_along_axis(csum, idx1, axis=-1)[..., 0]
+
+    idx0 = np.clip(t0 - 1, 0, T - 1)[..., None]
+    s0 = np.take_along_axis(csum, idx0, axis=-1)[..., 0]
+    s0 = np.where(t0 > 0, s0, 0.0).astype(np.float32)
+
+    auc_early = (s1 - s0).astype(np.float32)
+    early_frac = (auc_early / (auc_total + 1e-6)).astype(np.float32)
+    return bat.astype(np.int16), auc_total, early_frac
+
+
+def _blobness2d(img2d: np.ndarray, sigma: float = 1.2) -> np.ndarray:
+    """Blobness for bright blob-like cross-sections.
+
+    Uses Hessian eigenvalues; returns 0..1-ish.
+    """
+
+    x = img2d.astype(np.float32)
+    if hessian_matrix is not None and hessian_matrix_eigvals is not None:
+        H = hessian_matrix(x, sigma=sigma, order="rc", use_gaussian_derivatives=False)
+        l1, l2 = hessian_matrix_eigvals(H)
+        l1 = l1.astype(np.float32)
+        l2 = l2.astype(np.float32)
+    elif gaussian_filter is not None:
+        # Fallback: compute Hessian via gaussian_filter derivatives
+        Ixx = gaussian_filter(x, sigma=sigma, order=(2, 0))
+        Iyy = gaussian_filter(x, sigma=sigma, order=(0, 2))
+        Ixy = gaussian_filter(x, sigma=sigma, order=(1, 1))
+        tr = Ixx + Iyy
+        det = Ixx * Iyy - Ixy * Ixy
+        disc = np.maximum(0.0, tr * tr - 4.0 * det)
+        sdisc = np.sqrt(disc)
+        l1 = 0.5 * (tr + sdisc)
+        l2 = 0.5 * (tr - sdisc)
+    else:
+        return np.zeros_like(x, dtype=np.float32)
+
+    # For bright blobs in a dark background, both eigenvalues tend negative.
+    l1n = -l1
+    l2n = -l2
+    lpos = (l1n > 0) & (l2n > 0)
+    # Similar magnitude => blob, not line
+    ratio = np.minimum(l1n, l2n) / (np.maximum(l1n, l2n) + 1e-6)
+    strength = np.sqrt(l1n * l2n)
+    out = np.zeros_like(x, dtype=np.float32)
+    out[lpos] = (ratio[lpos] * strength[lpos]).astype(np.float32)
+    # Normalize within slice
+    m = np.isfinite(out)
+    if np.any(m):
+        hi = float(np.percentile(out[m], 99.5))
+        if hi > 0:
+            out = np.clip(out / hi, 0.0, 1.0)
+    return out.astype(np.float32)
+
+
+@dataclass(frozen=True)
+class _Component3D:
+    id: int
+    mass: float
+    nvox: int
+    centroid_ijk: tuple[float, float, float]
+    centroid_ras_mm: tuple[float, float, float]
+    mean_bat: float
+    mean_early_frac: float
+    mean_blob: float
+    elongation: float
+    z_min: int
+    z_max: int
+    voxels: np.ndarray  # (N,3) int ijk
+
+
+def _axis_world_coords(affine: np.ndarray, shape3: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return 1D world-coordinate axes sampled along each index axis.
+
+    Uses the volume center for the other two axes so the result is stable
+    for near-axial acquisitions.
+    """
+
+    nx, ny, nz = (int(shape3[0]), int(shape3[1]), int(shape3[2]))
+    cx = (nx - 1) / 2.0
+    cy = (ny - 1) / 2.0
+    cz = (nz - 1) / 2.0
+
+    xs = np.zeros(nx, dtype=np.float32)
+    ys = np.zeros(ny, dtype=np.float32)
+    zs = np.zeros(nz, dtype=np.float32)
+
+    for i in range(nx):
+        p = affine @ np.array([float(i), cy, cz, 1.0], dtype=np.float32)
+        xs[i] = float(p[0])
+    for j in range(ny):
+        p = affine @ np.array([cx, float(j), cz, 1.0], dtype=np.float32)
+        ys[j] = float(p[1])
+    for k in range(nz):
+        p = affine @ np.array([cx, cy, float(k), 1.0], dtype=np.float32)
+        zs[k] = float(p[2])
+
+    return xs, ys, zs
+
+
+def _cluster_top_components(
+    score3d: np.ndarray,
+    allowed3d: np.ndarray,
+    affine: np.ndarray,
+    bat_map: np.ndarray,
+    early_frac: np.ndarray,
+    blob3d: np.ndarray,
+    *,
+    q: float = 99.7,
+    max_components: int = 30,
+    min_vox: int = 20,
+) -> list[_Component3D]:
+    if cc_label_nd is None:
+        return []
+    m = allowed3d & np.isfinite(score3d) & (score3d > 0)
+    if not np.any(m):
+        return []
+    vals = score3d[m]
+    thr = float(np.percentile(vals, np.clip(q, 50.0, 99.99)))
+    bw = m & (score3d >= thr)
+    if not np.any(bw):
+        return []
+
+    structure = np.ones((3, 3, 3), dtype=np.uint8)
+    lbl, n = cc_label_nd(bw.astype(np.uint8), structure=structure)
+    if n <= 0:
+        return []
+
+    comps: list[_Component3D] = []
+    for cid in range(1, n + 1):
+        vox = np.argwhere(lbl == cid)
+        if vox.size == 0:
+            continue
+        nvox = int(vox.shape[0])
+        if nvox < int(min_vox):
+            continue
+
+        w = score3d[vox[:, 0], vox[:, 1], vox[:, 2]].astype(np.float32)
+        wsum = float(w.sum())
+        if not np.isfinite(wsum) or wsum <= 0:
+            continue
+
+        ijk = vox.astype(np.float32)
+        cijk = (ijk * w[:, None]).sum(axis=0) / max(1e-6, wsum)
+        cras = (affine @ np.array([float(cijk[0]), float(cijk[1]), float(cijk[2]), 1.0], dtype=np.float32))[:3]
+
+        mbat = float((bat_map[vox[:, 0], vox[:, 1], vox[:, 2]].astype(np.float32) * w).sum() / max(1e-6, wsum))
+        mef = float((early_frac[vox[:, 0], vox[:, 1], vox[:, 2]].astype(np.float32) * w).sum() / max(1e-6, wsum))
+        mbl = float((blob3d[vox[:, 0], vox[:, 1], vox[:, 2]].astype(np.float32) * w).sum() / max(1e-6, wsum))
+
+        cen = ijk - cijk[None, :]
+        cov = (cen * w[:, None]).T @ cen / max(1e-6, wsum)
+        try:
+            evals = np.linalg.eigvalsh(cov.astype(np.float64))
+            evals = np.sort(np.maximum(evals, 1e-9))
+            elong = float(np.sqrt(evals[-1] / evals[0]))
+        except Exception:
+            elong = 1.0
+
+        zmin = int(vox[:, 2].min())
+        zmax = int(vox[:, 2].max())
+
+        comps.append(
+            _Component3D(
+                id=int(cid),
+                mass=float(wsum),
+                nvox=nvox,
+                centroid_ijk=(float(cijk[0]), float(cijk[1]), float(cijk[2])),
+                centroid_ras_mm=(float(cras[0]), float(cras[1]), float(cras[2])),
+                mean_bat=mbat,
+                mean_early_frac=mef,
+                mean_blob=mbl,
+                elongation=elong,
+                z_min=zmin,
+                z_max=zmax,
+                voxels=vox.astype(np.int32),
+            )
+        )
+
+    comps.sort(key=lambda c: c.mass, reverse=True)
+    return comps[: max(1, int(max_components))]
+
+
+def _centers_from_component(
+    comp: _Component3D,
+    score3d: np.ndarray,
+    *,
+    k_slices: int,
+) -> list[tuple[int, int, int, float]]:
+    if k_slices <= 0:
+        return []
+    vox = comp.voxels
+    zs = vox[:, 2]
+    out: list[tuple[int, int, int, float]] = []
+    uniq = np.unique(zs)
+    slice_items: list[tuple[int, float]] = []
+    for z in uniq:
+        m = zs == z
+        vv = vox[m]
+        s = score3d[vv[:, 0], vv[:, 1], vv[:, 2]].astype(np.float32)
+        slice_items.append((int(z), float(s.sum())))
+    slice_items.sort(key=lambda t: t[1], reverse=True)
+    h, w, _nz = score3d.shape
+    for z, smass in slice_items[: min(len(slice_items), int(k_slices))]:
+        m = zs == z
+        vv = vox[m]
+        s = score3d[vv[:, 0], vv[:, 1], vv[:, 2]].astype(np.float32)
+        wsum = float(s.sum())
+        if wsum <= 0:
+            continue
+        cx = float((vv[:, 0].astype(np.float32) * s).sum() / wsum)
+        cy = float((vv[:, 1].astype(np.float32) * s).sum() / wsum)
+        xi = int(np.clip(int(round(cx)), 0, h - 1))
+        yi = int(np.clip(int(round(cy)), 0, w - 1))
+        out.append((xi, yi, int(z), float(smass)))
+    out.sort(key=lambda t: t[3], reverse=True)
+    return out
+
+
+def _voxels_by_z_from_component(
+    comp: _Component3D,
+    *,
+    z_keep: set[int],
+) -> dict[int, np.ndarray]:
+    vox = comp.voxels
+    out: dict[int, np.ndarray] = {}
+    for z in z_keep:
+        m = vox[:, 2] == int(z)
+        if not np.any(m):
+            continue
+        out[int(z)] = vox[m][:, :2].astype(int)
+    return out
 
 
 def _robust_minmax01(x: np.ndarray, mask: np.ndarray, p_low: float = 5.0, p_high: float = 99.0) -> np.ndarray:
@@ -643,7 +940,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
 
     dce_path = os.path.join(nifti_directory, dce_filename)
     ref_img = nib.load(dce_path)
-    dce4d = np.rot90(ref_img.get_fdata(), k=-1, axes=(0, 1))
+    dce4d = ref_img.get_fdata().astype(np.float32)
 
     tr_s = float(ref_img.header.get_zooms()[-1])
     n_volumes = int(dce4d.shape[-1])
@@ -667,7 +964,10 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     )
 
     height, width, n_slices = dce4d.shape[0], dce4d.shape[1], dce4d.shape[2]
-    mid_y = width // 2
+
+    xs_mm, ys_mm, zs_mm = _axis_world_coords(ref_img.affine, (height, width, n_slices))
+    x_mid = float(xs_mm[int(round((height - 1) / 2.0))])
+    y_min, y_max = float(np.min(ys_mm)), float(np.max(ys_mm))
 
     # Dynamic defaults: scale slice-count expectations to volume depth.
     # For classic 10-slice 2D DCE, scale==1. For thicker 3D volumes the
@@ -698,47 +998,36 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     peak_map, ttp_map = _compute_peak_and_ttp(dce4d, cfg.baseline_frames)
     upslope_map, late_map = _compute_upslope_and_late(dce4d, cfg.baseline_frames, late_frames=10)
 
-    # Build a probability map from higher-dimensional (feature) space.
-    peak01 = _robust_minmax01(peak_map, brain_mask)
-    upslope01 = _robust_minmax01(upslope_map, brain_mask)
-    late01 = _robust_minmax01(late_map, brain_mask)
-    ttp01 = _robust_minmax01(ttp_map.astype(np.float32), brain_mask, p_low=5.0, p_high=95.0)
-
-    # Artery prefers: high peak, high upslope, early time-to-peak, low late tail.
-    artery_logit = (
-        2.2 * peak01
-        + 2.0 * upslope01
-        + 1.3 * (1.0 - ttp01)
-        - 1.2 * late01
-    )
-    # Vein prefers: high peak, high late tail, later time-to-peak, less steep upslope.
-    vein_logit = (
-        1.5 * peak01
-        + 1.7 * late01
-        + 1.0 * ttp01
-        - 0.6 * upslope01
+    bat_map, auc_total, early_frac = _compute_bat_and_auc(
+        dce4d,
+        cfg.baseline_frames,
+        bat_mad_k=float(getattr(settings, "ROI_GEOM_BAT_MAD_K", 3.0)),
+        bat_persist=int(getattr(settings, "ROI_GEOM_BAT_PERSIST", 2)),
+        early_window=int(getattr(settings, "ROI_GEOM_EARLY_WINDOW", 6)),
     )
 
     # Keep a debug scalar: approximate arterial bolus timing.
     ttp_target = _robust_ttp_target(peak_map, ttp_map, brain_mask)
 
     allowed_rica = brain_mask.copy()
-    allowed_rica[:, :mid_y, :] = False
-
     allowed_lica = brain_mask.copy()
-    allowed_lica[:, mid_y:, :] = False
-
     allowed_sss = brain_mask.copy()
-    band = max(1, int(cfg.sss_midline_band))
-    y0 = max(0, mid_y - band)
-    y1 = min(width, mid_y + band)
-    allowed_sss[:, :y0, :] = False
-    allowed_sss[:, y1:, :] = False
 
-    # Explicitly exclude the SSS midline band from ICA candidates.
-    # This prevents the ICA selector from snapping onto SSS/transverse sinus endings.
-    allowed_rica[:, : (mid_y + band), :] = False
-    allowed_lica[:, (mid_y - band) :, :] = False
+    right_i = xs_mm > x_mid
+    left_i = xs_mm < x_mid
+    allowed_rica &= right_i[:, None, None]
+    allowed_lica &= left_i[:, None, None]
+
+    band = max(1, int(cfg.sss_midline_band))
+    i_mid = int(round((height - 1) / 2.0))
+    i0 = max(0, i_mid - band)
+    i1 = min(height, i_mid + band + 1)
+    allowed_sss[:i0, :, :] = False
+    allowed_sss[i1:, :, :] = False
+
+    # Exclude midline band from ICA.
+    allowed_rica[:i1, :, :] = False
+    allowed_lica[i0:, :, :] = False
 
     use_prob = bool(getattr(settings, "ROI_GEOM_USE_PROBABILITY", True))
     dyn_radius = bool(getattr(settings, "ROI_GEOM_DYNAMIC_RADIUS", True))
@@ -771,139 +1060,143 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
     prob_lica = np.zeros((height, width, n_slices), dtype=np.float32)
     prob_sss = np.zeros((height, width, n_slices), dtype=np.float32)
 
-    # Use artery-vs-vein temporal discriminant.
-    artery_disc = _sigmoid(artery_logit - vein_logit)
-    vein_disc = _sigmoid(vein_logit - artery_logit)
+    # Global (whole-volume) scoring (no per-slice normalization).
+    auc01 = _robust_minmax01(auc_total, brain_mask)
+    ef01 = _robust_minmax01(early_frac, brain_mask, p_low=5.0, p_high=99.0)
+    bat01 = _robust_minmax01(bat_map.astype(np.float32), brain_mask, p_low=5.0, p_high=95.0)
+    peak01 = _robust_minmax01(peak_map, brain_mask)
+    upslope01 = _robust_minmax01(upslope_map, brain_mask)
+    late01 = _robust_minmax01(late_map, brain_mask)
 
-    artery_logit_eff = artery_logit + np.log(artery_disc + 1e-6)
-    vein_logit_eff = vein_logit + np.log(vein_disc + 1e-6)
-
-    # Convert logits into per-slice probability distributions within the allowed masks.
+    blob3d = np.zeros((height, width, n_slices), dtype=np.float32)
+    blob_sigma = float(getattr(settings, "ROI_GEOM_BLOB_SIGMA", 1.2))
     for z in range(n_slices):
-        if use_prob:
-            prob_rica[:, :, z] = _slice_probability(
-                artery_logit_eff[:, :, z],
-                allowed_rica[:, :, z],
-                centrality2d=centrality[:, :, z],
-                gamma=gamma,
-            )
-            prob_lica[:, :, z] = _slice_probability(
-                artery_logit_eff[:, :, z],
-                allowed_lica[:, :, z],
-                centrality2d=centrality[:, :, z],
-                gamma=gamma,
-            )
-            prob_sss[:, :, z] = _slice_probability(
-                vein_logit_eff[:, :, z],
-                allowed_sss[:, :, z],
-                centrality2d=centrality[:, :, z],
-                gamma=gamma,
-            )
-        else:
-            # Fallback: old behaviour (peak contrast), normalized to a pseudo-probability.
-            prob_rica[:, :, z] = _slice_probability(peak_map[:, :, z], allowed_rica[:, :, z])
-            prob_lica[:, :, z] = _slice_probability(peak_map[:, :, z], allowed_lica[:, :, z])
-            prob_sss[:, :, z] = _slice_probability(peak_map[:, :, z], allowed_sss[:, :, z])
+        blob3d[:, :, z] = _blobness2d(auc01[:, :, z], sigma=blob_sigma)
 
-    # ICA: prefer small blob cross-sections and enforce cross-slice coherence.
-    rica_candidates_by_z: dict[int, list[tuple[int, int, float, int]]] = {}
-    lica_candidates_by_z: dict[int, list[tuple[int, int, float, int]]] = {}
-    for z in range(rica_z[0], rica_z[1] + 1):
-        cands = _component_candidates(
-            prob_rica[:, :, z],
-            allowed_rica[:, :, z],
-            q=comp_q,
-            min_area=comp_min_area,
-            max_area=comp_max_area,
-            ecc_ratio_max=comp_ecc_max,
-        )
-        # Penalize elongated/arc-like structures by perimeter/area.
-        filtered: list[tuple[int, int, float, int]] = []
-        for cx, cy, s, area in cands:
-            vox = _component_voxels_from_threshold(
-                prob_rica[:, :, z], allowed_rica[:, :, z], q=comp_q, pick=(cx, cy), dilate_r=0
-            )
-            bw = np.zeros((height, width), dtype=bool)
-            bw[vox[:, 0], vox[:, 1]] = True
-            pa = _perimeter_area_ratio(bw)
-            if artery_perim_area_max > 0 and pa > artery_perim_area_max:
-                continue
-            filtered.append((cx, cy, s, area))
-        rica_candidates_by_z[int(z)] = filtered
-    for z in range(lica_z[0], lica_z[1] + 1):
-        cands = _component_candidates(
-            prob_lica[:, :, z],
-            allowed_lica[:, :, z],
-            q=comp_q,
-            min_area=comp_min_area,
-            max_area=comp_max_area,
-            ecc_ratio_max=comp_ecc_max,
-        )
-        filtered: list[tuple[int, int, float, int]] = []
-        for cx, cy, s, area in cands:
-            vox = _component_voxels_from_threshold(
-                prob_lica[:, :, z], allowed_lica[:, :, z], q=comp_q, pick=(cx, cy), dilate_r=0
-            )
-            bw = np.zeros((height, width), dtype=bool)
-            bw[vox[:, 0], vox[:, 1]] = True
-            pa = _perimeter_area_ratio(bw)
-            if artery_perim_area_max > 0 and pa > artery_perim_area_max:
-                continue
-            filtered.append((cx, cy, s, area))
-        lica_candidates_by_z[int(z)] = filtered
+    artery_score = (
+        1.7 * auc01
+        + 1.8 * ef01
+        + 1.3 * (1.0 - bat01)
+        + 0.9 * upslope01
+        + 0.6 * peak01
+        - 0.8 * late01
+    ).astype(np.float32)
+    vein_score = (
+        1.5 * auc01
+        + 1.2 * (1.0 - ef01)
+        + 1.0 * bat01
+        + 0.9 * late01
+        + 0.3 * peak01
+        - 0.4 * upslope01
+    ).astype(np.float32)
 
-    rica_centers = _select_coherent_centers(
-        rica_candidates_by_z,
-        k_slices=rica_slices_eff,
-        coherence_px=coherence_px,
-    )
-    lica_centers = _select_coherent_centers(
-        lica_candidates_by_z,
-        k_slices=lica_slices_eff,
-        coherence_px=coherence_px,
-    )
+    # Blobness suppresses in-plane tubular/arc structures (e.g. transverse sinus).
+    artery_score *= (0.35 + 0.65 * blob3d)
+    vein_score *= (0.35 + 0.65 * blob3d)
 
-    # SSS: allow elongated midline structure; coherence isn't as critical.
-    sss_centers = _best_centers_by_slice(prob_sss, allowed_sss, sss_z, sss_slices_eff)
+    # Centrality weighting.
+    if gamma > 0:
+        artery_score *= np.power(np.clip(centrality, 0.0, 1.0) + 1e-6, float(gamma))
+        vein_score *= np.power(np.clip(centrality, 0.0, 1.0) + 1e-6, float(gamma))
 
-    # Fallback if component detection finds nothing.
-    if not rica_centers:
-        rica_centers = _best_centers_by_slice(prob_rica, allowed_rica, rica_z, rica_slices_eff)
-    if not lica_centers:
-        lica_centers = _best_centers_by_slice(prob_lica, allowed_lica, lica_z, lica_slices_eff)
+    # Posterior-lateral transverse sinus suppression for arteries.
+    if y_max > y_min:
+        y_frac = (ys_mm[None, :, None] - y_min) / max(1e-6, (y_max - y_min))
+        artery_score *= (0.65 + 0.35 * np.clip(y_frac, 0.0, 1.0))
 
-    # Joint refinement: enforce arteries earlier than sinus and mutually consistent.
-    # If the chosen artery looks venous (late TTP vs global ttp_target), re-pick.
-    def _median_ttp(centers: list[tuple[int, int, int, float]]) -> float:
-        if not centers:
-            return float(ttp_target)
-        return float(np.median([ttp_map[x, y, z] for x, y, z, _s in centers]))
+    score_rica = np.where(allowed_rica, artery_score, 0.0).astype(np.float32)
+    score_lica = np.where(allowed_lica, artery_score, 0.0).astype(np.float32)
+    score_sss = np.where(allowed_sss, vein_score, 0.0).astype(np.float32)
 
-    rica_ttp = _median_ttp(rica_centers)
-    lica_ttp = _median_ttp(lica_centers)
-    art_ttp = float(np.median([rica_ttp, lica_ttp]))
+    # Restrict scoring to configured z windows.
+    zmask_rica = np.zeros(n_slices, dtype=bool)
+    zmask_rica[rica_z[0] : rica_z[1] + 1] = True
+    zmask_lica = np.zeros(n_slices, dtype=bool)
+    zmask_lica[lica_z[0] : lica_z[1] + 1] = True
+    zmask_sss = np.zeros(n_slices, dtype=bool)
+    zmask_sss[sss_z[0] : sss_z[1] + 1] = True
+    score_rica *= zmask_rica[None, None, :]
+    score_lica *= zmask_lica[None, None, :]
+    score_sss *= zmask_sss[None, None, :]
 
-    # Re-pick SSS to prefer later-than-artery components.
-    min_venous_delay = 3.0
-    sss_centers_refined: list[tuple[int, int, int, float]] = []
-    for x, y, z, p in sss_centers:
-        if float(ttp_map[x, y, z]) >= art_ttp + min_venous_delay:
-            sss_centers_refined.append((x, y, z, p))
-    if sss_centers_refined:
-        sss_centers = sss_centers_refined
+    comp_q3d = float(getattr(settings, "ROI_GEOM_GLOBAL_Q", 99.7))
+    rica_comps = _cluster_top_components(score_rica, allowed_rica, ref_img.affine, bat_map, early_frac, blob3d, q=comp_q3d)
+    lica_comps = _cluster_top_components(score_lica, allowed_lica, ref_img.affine, bat_map, early_frac, blob3d, q=comp_q3d)
+    sss_comps = _cluster_top_components(score_sss, allowed_sss, ref_img.affine, bat_map, early_frac, blob3d, q=comp_q3d)
 
-    # If ICA is too late, relax constraints by downweighting late candidates.
-    max_artery_delay = float(ttp_target) + 2.0
-    if rica_ttp > max_artery_delay:
-        rica_centers = _best_centers_by_slice(prob_rica * (ttp_map <= max_artery_delay), allowed_rica, rica_z, rica_slices_eff)
-    if lica_ttp > max_artery_delay:
-        lica_centers = _best_centers_by_slice(prob_lica * (ttp_map <= max_artery_delay), allowed_lica, lica_z, lica_slices_eff)
+    def _obj(rc: _Component3D, lc: _Component3D, sc: _Component3D) -> float:
+        rx, ry, rz = rc.centroid_ras_mm
+        lx, ly, lz = lc.centroid_ras_mm
 
-    # Dynamic radii derived from probability mass per selected slice.
+        dr = abs(rx - x_mid)
+        dl = abs(lx - x_mid)
+        sym = abs(dr - dl) + 0.25 * (abs(ry - ly) + abs(rz - lz))
+
+        art_bat = 0.5 * (rc.mean_bat + lc.mean_bat)
+        art_ef = 0.5 * (rc.mean_early_frac + lc.mean_early_frac)
+        ven_pen = 0.0
+        if sc.mean_bat < art_bat + 2.0:
+            ven_pen += (art_bat + 2.0 - sc.mean_bat) * 2.0
+        if sc.mean_early_frac > art_ef - 0.05:
+            ven_pen += (sc.mean_early_frac - (art_ef - 0.05)) * 30.0
+
+        shape_pen = max(0.0, rc.elongation - 3.0) * 2.0 + max(0.0, lc.elongation - 3.0) * 2.0
+
+        mass = np.log(rc.mass + 1.0) + np.log(lc.mass + 1.0) + 0.8 * np.log(sc.mass + 1.0)
+        return float(mass - 0.25 * sym - ven_pen - shape_pen)
+
+    best = None
+    best_val = -1e18
+    rica_list = rica_comps[:10] if rica_comps else []
+    lica_list = lica_comps[:10] if lica_comps else []
+    sss_list = sss_comps[:10] if sss_comps else []
+    for rc in rica_list:
+        for lc in lica_list:
+            for sc in sss_list:
+                v = _obj(rc, lc, sc)
+                if v > best_val:
+                    best_val = v
+                    best = (rc, lc, sc)
+
+    rica_vox_by_z: dict[int, np.ndarray] = {}
+    lica_vox_by_z: dict[int, np.ndarray] = {}
+    sss_vox_by_z: dict[int, np.ndarray] = {}
+
+    if best is None:
+        rica_centers = _best_centers_by_slice(score_rica, allowed_rica, rica_z, rica_slices_eff)
+        lica_centers = _best_centers_by_slice(score_lica, allowed_lica, lica_z, lica_slices_eff)
+        sss_centers = _best_centers_by_slice(score_sss, allowed_sss, sss_z, sss_slices_eff)
+    else:
+        rc, lc, sc = best
+        rica_centers = _centers_from_component(rc, score_rica, k_slices=rica_slices_eff)
+        lica_centers = _centers_from_component(lc, score_lica, k_slices=lica_slices_eff)
+        sss_centers = _centers_from_component(sc, score_sss, k_slices=sss_slices_eff)
+
+        rica_keep = {z for _x, _y, z, _s in rica_centers}
+        lica_keep = {z for _x, _y, z, _s in lica_centers}
+        sss_keep = {z for _x, _y, z, _s in sss_centers}
+        rica_vox_by_z = _voxels_by_z_from_component(rc, z_keep=rica_keep)
+        lica_vox_by_z = _voxels_by_z_from_component(lc, z_keep=lica_keep)
+        sss_vox_by_z = _voxels_by_z_from_component(sc, z_keep=sss_keep)
+
+    # For overlays and dynamic radii, normalize scores to 0..1-ish maps.
+    def _norm01(s: np.ndarray) -> np.ndarray:
+        m = np.isfinite(s) & (s > 0)
+        if not np.any(m):
+            return np.zeros_like(s, dtype=np.float32)
+        hi = float(np.percentile(s[m], 99.5))
+        if hi <= 0:
+            return np.zeros_like(s, dtype=np.float32)
+        return np.clip((s / hi).astype(np.float32), 0.0, 1.0)
+
+    prob_rica = _norm01(score_rica)
+    prob_lica = _norm01(score_lica)
+    prob_sss = _norm01(score_sss)
+
     rica_radius_by_z: dict[int, int] = {}
     lica_radius_by_z: dict[int, int] = {}
     sss_radius_by_z: dict[int, int] = {}
-    if dyn_radius and use_prob:
+    if dyn_radius:
         for x, y, z, _p in rica_centers:
             rica_radius_by_z[int(z)] = _radius_from_probability_mass(
                 prob_rica[:, :, z], x, y, r_min=r_min, r_max=int(cfg.rica_radius), target_mass=mass_frac
@@ -915,27 +1208,6 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         for x, y, z, _p in sss_centers:
             sss_radius_by_z[int(z)] = _radius_from_probability_mass(
                 prob_sss[:, :, z], x, y, r_min=r_min, r_max=int(cfg.sss_radius), target_mass=mass_frac
-            )
-
-    # Build component-shaped voxel sets for selected slices.
-    rica_vox_by_z: dict[int, np.ndarray] = {}
-    lica_vox_by_z: dict[int, np.ndarray] = {}
-    sss_vox_by_z: dict[int, np.ndarray] = {}
-    if use_component_roi and use_prob:
-        for x, y, z, _p in rica_centers:
-            r_eff = int(rica_radius_by_z.get(int(z), cfg.rica_radius))
-            rica_vox_by_z[int(z)] = _component_voxels_from_threshold(
-                prob_rica[:, :, z], allowed_rica[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
-            )
-        for x, y, z, _p in lica_centers:
-            r_eff = int(lica_radius_by_z.get(int(z), cfg.lica_radius))
-            lica_vox_by_z[int(z)] = _component_voxels_from_threshold(
-                prob_lica[:, :, z], allowed_lica[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
-            )
-        for x, y, z, _p in sss_centers:
-            r_eff = int(sss_radius_by_z.get(int(z), cfg.sss_radius))
-            sss_vox_by_z[int(z)] = _component_voxels_from_threshold(
-                prob_sss[:, :, z], allowed_sss[:, :, z], q=comp_q, pick=(x, y), dilate_r=r_eff
             )
 
     # Persist outputs in the same on-disk format as the existing AI pipeline.
