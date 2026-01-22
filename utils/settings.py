@@ -190,6 +190,51 @@ ROI_SSS_MIDLINE_BAND = int(os.environ.get("P_BRAIN_ROI_SSS_MIDLINE_BAND", 24))
 # Baseline frames used to compute peak contrast on DCE.
 ROI_DCE_BASELINE_FRAMES = int(os.environ.get("P_BRAIN_ROI_DCE_BASELINE_FRAMES", 5))
 
+# Geometry ROI probability-map controls.
+# When enabled, ROI centers are picked from probability maps computed from DCE
+# time-series features (peak, upslope, time-to-peak, late tail), and radii can
+# be chosen based on probability mass instead of fixed pixels.
+ROI_GEOM_USE_PROBABILITY = (os.environ.get("P_BRAIN_ROI_GEOM_USE_PROB", "1") or "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+ROI_GEOM_DYNAMIC_RADIUS = (os.environ.get("P_BRAIN_ROI_GEOM_DYNAMIC_RADIUS", "1") or "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# Minimum radius (pixels) when dynamic radius selection is enabled.
+ROI_GEOM_RADIUS_MIN = int(os.environ.get("P_BRAIN_ROI_GEOM_RADIUS_MIN", 3))
+
+# Target probability mass (fraction of slice probability) to include inside the
+# chosen ROI disk when dynamic radius selection is enabled.
+ROI_GEOM_PROB_MASS_FRACTION = float(os.environ.get("P_BRAIN_ROI_GEOM_PROB_MASS", 0.20))
+
+# Centrality prior exponent; values >0 bias selection away from edge vessels
+# like sinuses. 0 disables the prior.
+ROI_GEOM_CENTRALITY_GAMMA = float(os.environ.get("P_BRAIN_ROI_GEOM_CENTRALITY_GAMMA", 1.0))
+
+# Hard exclusion of the most peripheral brain rim using the normalized
+# distance-to-edge centrality map (0=edge, 1=center). This directly suppresses
+# transverse sinus/edge vessels.
+ROI_GEOM_MIN_CENTRALITY = float(os.environ.get("P_BRAIN_ROI_GEOM_MIN_CENTRALITY", 0.12))
+
+# Cross-slice coherence: selected ICA centers should cluster spatially across
+# slices (in pixels). Larger values allow more motion.
+ROI_GEOM_COHERENCE_PX = float(os.environ.get("P_BRAIN_ROI_GEOM_COHERENCE_PX", 35.0))
+
+# Component/blob filtering for ICA candidates (operates on per-slice probability
+# maps). We threshold at a high percentile, then keep only small, roughly round
+# blobs (vessel cross-sections).
+ROI_GEOM_COMPONENT_Q = float(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_Q", 99.6))
+ROI_GEOM_COMPONENT_MIN_AREA = int(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_MIN_AREA", 6))
+ROI_GEOM_COMPONENT_MAX_AREA = int(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_MAX_AREA", 250))
+ROI_GEOM_COMPONENT_ECC_RATIO_MAX = float(
+    os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_ECC_RATIO_MAX", 3.0)
+)
+
 
 def _default_data_root():
     """Return the default root directory for datasets.
