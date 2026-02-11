@@ -4,6 +4,7 @@ from utils.loading import *
 import nibabel as nib
 from termcolor import colored
 from utils.plotting import *
+from utils.qc import detect_truncated_bolus
 import glob
 import json
 import time
@@ -148,7 +149,16 @@ def remove_trailing_zeros(arr):
 
 
 def shift_curve_to_zero_start(curve):
+    curve = np.asarray(curve)
+    if curve.size == 0:
+        return curve
+
     start_value = curve[0]
+    if not np.isfinite(start_value):
+        # If the first element is NaN/Inf, avoid propagating it as an offset.
+        # Let downstream logic decide how to handle a non-finite curve.
+        return curve
+
     return curve - start_value
 
 
@@ -226,6 +236,19 @@ def find_max_npy_file(analysis_directory, num_peaks=None, peak_tolerance=0.20, p
         rel_dev = np.abs(ratios - median_ratio) / abs(median_ratio)
         return bool(np.all(rel_dev <= tolerance))
 
+    def _is_truncated_tscc(curve: np.ndarray) -> bool:
+        try:
+            # Truncation in any dominant bolus peak should disqualify the candidate.
+            truncated, _details = detect_truncated_bolus(
+                curve,
+                num_peaks=num_peaks,
+                peak_fraction=0.99,
+                plateau_min_points=3,
+            )
+            return bool(truncated)
+        except Exception:
+            return False
+
     best_any = {
         'value': float('-inf'),
         'file_path': "",
@@ -241,11 +264,16 @@ def find_max_npy_file(analysis_directory, num_peaks=None, peak_tolerance=0.20, p
         'arterial_slice_index': -1,
     }
 
+    best_any_truncated = best_any.copy()
+    best_consistent_truncated = best_consistent.copy()
+
     for subtype in subtypes:
         file_paths = glob.glob(os.path.join(analysis_directory, 'TSCC Data', subtype, '*.npy'))
         for file_path in file_paths:
             arr = np.load(file_path)
             curr_max = float(np.max(arr))
+
+            is_trunc = _is_truncated_tscc(arr)
 
             base = os.path.basename(file_path)
             split_filename = base.split('_')
@@ -254,19 +282,18 @@ def find_max_npy_file(analysis_directory, num_peaks=None, peak_tolerance=0.20, p
             slice_index = int(split_filename[-2])
             arterial_slice_index = int(split_filename[-1].split('.npy')[0])
 
-            if curr_max > best_any['value']:
-                best_any.update({
-                    'value': curr_max,
-                    'file_path': file_path,
-                    'subtype': subtype,
-                    'slice_index': slice_index,
-                    'arterial_slice_index': arterial_slice_index,
-                })
-
-            artery_curve = _load_artery_curve(subtype, arterial_slice_index)
-            if _peaks_consistent(arr, artery_curve, num_peaks, peak_tolerance, peak_separation):
-                if curr_max > best_consistent['value']:
-                    best_consistent.update({
+            if is_trunc:
+                if curr_max > best_any_truncated['value']:
+                    best_any_truncated.update({
+                        'value': curr_max,
+                        'file_path': file_path,
+                        'subtype': subtype,
+                        'slice_index': slice_index,
+                        'arterial_slice_index': arterial_slice_index,
+                    })
+            else:
+                if curr_max > best_any['value']:
+                    best_any.update({
                         'value': curr_max,
                         'file_path': file_path,
                         'subtype': subtype,
@@ -274,8 +301,45 @@ def find_max_npy_file(analysis_directory, num_peaks=None, peak_tolerance=0.20, p
                         'arterial_slice_index': arterial_slice_index,
                     })
 
-    best = best_consistent if best_consistent['file_path'] else best_any
-    return best['file_path'], best['value'], best['subtype'], best['slice_index'], best['arterial_slice_index']
+            artery_curve = _load_artery_curve(subtype, arterial_slice_index)
+            if _peaks_consistent(arr, artery_curve, num_peaks, peak_tolerance, peak_separation):
+                if is_trunc:
+                    if curr_max > best_consistent_truncated['value']:
+                        best_consistent_truncated.update({
+                            'value': curr_max,
+                            'file_path': file_path,
+                            'subtype': subtype,
+                            'slice_index': slice_index,
+                            'arterial_slice_index': arterial_slice_index,
+                        })
+                else:
+                    if curr_max > best_consistent['value']:
+                        best_consistent.update({
+                            'value': curr_max,
+                            'file_path': file_path,
+                            'subtype': subtype,
+                            'slice_index': slice_index,
+                            'arterial_slice_index': arterial_slice_index,
+                        })
+
+    # Prefer consistent non-truncated; then any non-truncated; finally fall back to truncated
+    # so the pipeline still runs even if every candidate looks clipped.
+    if best_consistent['file_path']:
+        best = best_consistent
+    elif best_any['file_path']:
+        best = best_any
+    elif best_consistent_truncated['file_path']:
+        best = best_consistent_truncated
+    else:
+        best = best_any_truncated
+
+    return (
+        best['file_path'],
+        best['value'],
+        best['subtype'],
+        best['slice_index'],
+        best['arterial_slice_index'],
+    )
 
 
 def plot_transformed_curves_max(shifted_vein_curve, slice_index, artery_index, vein_top2_peaks, subtype='test', time_points_s=1, analysis_directory='dir', image_directory = 'dir'):
@@ -310,44 +374,103 @@ def plot_transformed_curves_max(shifted_vein_curve, slice_index, artery_index, v
 
 
 def time_shifting(analysis_directory, nifti_directory, image_directory):
-    time_points_s = np.load(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'))
+    """Stage-runner entrypoint (non-interactive).
 
+    Historically this module prompted for artery selection and slice iteration.
+    That breaks non-interactive runs and can crash later when no Max candidate
+    is selected (slice index -1).
+
+    Delegate to the lightweight, non-interactive TSCC implementation.
+    """
+
+    try:
+        from modules.time_shifting import time_shifting as _tscc
+    except Exception:
+        # Fallback to local implementation if import fails.
+        _tscc = None
+
+    if _tscc is not None:
+        artery = getattr(settings, 'INPUT_FUNCTION_ARTERY', None)
+        return _tscc(analysis_directory, nifti_directory, image_directory, artery=artery)
+
+    # If we cannot import the new implementation, keep legacy behaviour but avoid crashing.
+    print(colored('[!] TSCC: falling back to legacy opt03_time_shifting implementation.', 'yellow'))
+
+    time_points_s = np.load(os.path.join(analysis_directory, 'Fitting', 'time_points_s.npy'))
     available_arteries, slices = get_available_arteries(analysis_directory)
-    display_available_arteries(available_arteries)
-    choice = input('[' + colored('!', 'cyan') + '] Enter the number corresponding to your choice: ')        
-    subtype = choice2subtype(choice)
-    artery_choice = available_arteries[choice]
+    if not available_arteries:
+        print(colored('[!] No available arteries found; cannot time-shift.', 'yellow'))
+        return
 
+    # Default artery from settings when available.
+    artery_choice = None
+    try:
+        pref = str(getattr(settings, 'INPUT_FUNCTION_ARTERY', '') or '').strip().upper()
+        if pref in available_arteries:
+            artery_choice = pref
+    except Exception:
+        artery_choice = None
+    if artery_choice is None:
+        artery_choice = list(available_arteries.values())[0]
+
+    subtype = str(artery_choice)
     arterial_slices = get_available_slices(analysis_directory, 'Artery', artery_choice)
     venous_slices = get_available_slices(analysis_directory, 'Vein', 'Sinus Sagittalis')
+    if not arterial_slices or not venous_slices:
+        print(colored('[!] Missing artery/vein slices; cannot time-shift.', 'yellow'))
+        return
 
-    auto_choice = input("[!] Automatically iterate through all slices? (y/n): ")
-    
-    if auto_choice.lower() == 'y':
-        for arterial_slice in arterial_slices:
-            for venous_slice in venous_slices:
-                vein_curve, artery_curve = load_curves(venous_slice, arterial_slice, artery_choice, analysis_directory)
-                aligned_vein_curve, peaks, rescaled, time_shift = align_first_peaks(vein_curve, artery_curve)
-                aligned_vein_curve_no_zeros = remove_trailing_zeros(aligned_vein_curve)
-                aligned_vein_curve_no_zeros_shifted = shift_curve_to_zero_start(aligned_vein_curve_no_zeros)
-                plot_transformed_curves(aligned_vein_curve_no_zeros_shifted, artery_curve, venous_slice, arterial_slice, time_points_s = time_points_s, analysis_directory = analysis_directory, image_directory = image_directory, subtype=subtype, vein_top2_peaks=peaks, scaling=rescaled, time_shift=time_shift)
-    elif auto_choice.lower() == 'n':
-        arterial_slice = select_arterial_slice(arterial_slices) 
-        venous_slice = select_venous_slice(venous_slices)  
-        
-        vein_curve, artery_curve = load_curves(venous_slice, arterial_slice, artery_choice)
-        aligned_vein_curve, peaks, rescaled, time_shift = align_first_peaks(vein_curve, artery_curve)
-        aligned_vein_curve_no_zeros = remove_trailing_zeros(aligned_vein_curve)
-        aligned_vein_curve_no_zeros_shifted = shift_curve_to_zero_start(aligned_vein_curve_no_zeros)
-        plot_transformed_curves(aligned_vein_curve_no_zeros_shifted, artery_curve, venous_slice, arterial_slice, time_points_s = time_points_s, analysis_directory = analysis_directory, image_directory = image_directory, subtype=subtype, vein_top2_peaks=peaks, scaling=rescaled, time_shift=time_shift)
+    for arterial_slice in arterial_slices:
+        for venous_slice in venous_slices:
+            vein_curve, artery_curve = load_curves(venous_slice, arterial_slice, artery_choice, analysis_directory)
+            aligned_vein_curve, peaks, rescaled, time_shift = align_first_peaks(vein_curve, artery_curve)
+            aligned_vein_curve_no_zeros = remove_trailing_zeros(aligned_vein_curve)
+            if aligned_vein_curve_no_zeros.size == 0 or not np.all(np.isfinite(aligned_vein_curve_no_zeros)):
+                continue
+            aligned_vein_curve_no_zeros_shifted = shift_curve_to_zero_start(aligned_vein_curve_no_zeros)
+            if aligned_vein_curve_no_zeros_shifted.size == 0:
+                continue
+            plot_transformed_curves(
+                aligned_vein_curve_no_zeros_shifted,
+                artery_curve,
+                venous_slice,
+                arterial_slice,
+                time_points_s=time_points_s,
+                analysis_directory=analysis_directory,
+                image_directory=image_directory,
+                subtype=subtype,
+                vein_top2_peaks=peaks,
+                scaling=rescaled,
+                time_shift=time_shift,
+            )
 
     print('[!] Finding maximum')
     time.sleep(1)
-    
     max_file_path, max_value, max_subtype, max_slice_index, max_arterial_slice_index = find_max_npy_file(analysis_directory)
-    corresponding_vein_curve = np.load(os.path.join(analysis_directory, 'TSCC Data', max_subtype, f'TSCC_slice_{max_slice_index}_{max_arterial_slice_index}.npy'))
+    if not max_subtype or int(max_slice_index) < 0 or int(max_arterial_slice_index) < 0:
+        print(colored('[!] No valid Max TSCC candidate found; skipping Max outputs.', 'yellow'))
+        return
+    tscc_path = os.path.join(
+        analysis_directory,
+        'TSCC Data',
+        str(max_subtype),
+        f'TSCC_slice_{int(max_slice_index)}_{int(max_arterial_slice_index)}.npy',
+    )
+    if not os.path.exists(tscc_path):
+        print(colored(f'[!] Missing TSCC file for Max selection: {tscc_path}', 'yellow'))
+        return
+    corresponding_vein_curve = np.load(tscc_path)
     [os.remove(f) for f in glob.glob(os.path.join(analysis_directory, 'TSCC Data', 'Max', '*.npy'))]
-    plot_transformed_curves_max(corresponding_vein_curve, slice_index=max_slice_index, artery_index = max_arterial_slice_index, vein_top2_peaks=[0,0], subtype=max_subtype, time_points_s = time_points_s, analysis_directory = analysis_directory, image_directory = image_directory)
+    plot_transformed_curves_max(
+        corresponding_vein_curve,
+        slice_index=int(max_slice_index),
+        artery_index=int(max_arterial_slice_index),
+        vein_top2_peaks=[0, 0],
+        subtype=str(max_subtype),
+        time_points_s=time_points_s,
+        analysis_directory=analysis_directory,
+        image_directory=image_directory,
+    )
     values = [f'Max artery type: {max_subtype}']
     with open(os.path.join(analysis_directory, 'max_info.json'), 'w') as f:
         json.dump(values, f)

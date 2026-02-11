@@ -12,7 +12,7 @@ _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic c
 - Capillary transit-time heterogeneity (CTH)
 
 > **Author:** Edis Devin Tireli, M.Sc., Ph.D. student  
-> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet, and Department of Neuroscience, University of Copenhagen.
+> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet, Department of Neuroscience and Department of Clinical Medicine, University of Copenhagen. 
 
 ---
 
@@ -323,18 +323,254 @@ Both default to 2.
 ---
 
 ## Configuration and environment variables
-Most behaviour is controlled through `utils/settings.py` and `utils/parameters.py`. Important toggles include:
+Most behaviour is controlled through `utils/settings.py` and `utils/parameters.py`. You can override almost everything per-run via environment variables.
 
-| Setting / Env var | Purpose |
-|-------------------|---------|
-| `DATA_DIR`, `P_BRAIN_DATA_DIR` | Root directory scanned by the GUI/CLI. |
-| `SEGMENTATION_METHOD` | Choose between FastSurfer and alternative segmentation backends. |
-| `CONTROLS`, `PBRAIN_CONTROLS` | Flag dataset as control during batch runs. |
-| `KINETIC_MODEL`, `P_BRAIN_MODEL` | Select Patlak, extended Tofts, or both. |
-| `T1_RECOVERY_MODEL`, `P_BRAIN_T1_RECOVERY_MODEL` | Toggle inversion vs. saturation recovery. |
-| `AI_MODEL_PATHS`, `SLICE_CLASSIFIER_*`, `*_ROI_MODEL` | Custom CNN checkpoints for input-function detection. |
-| `P_BRAIN_LAMBDA` | Tikhonov regularisation strength for deconvolution. |
-| `P_BRAIN_GLOBAL_KI_SKIP_*` | Number of slices ignored when computing whole-brain Ki medians. |
+Notes:
+- Booleans generally accept `1/0`, `true/false`, `yes/no` (case-insensitive).
+- Paths can be absolute or relative to the repo / dataset directory, depending on the setting.
+
+### Core paths and runtime
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_DATA_DIR` | `data/` | Root directory scanned by the GUI/CLI and by `enumerator.py`/`roi_only.py`. |
+| `PBRAIN_CONTROLS` | `0` | Treat datasets as controls during batch runs (also toggled by `enumerator.py --controls`). |
+| `P_BRAIN_CORES` | `4` | CPU cores used for multiprocessing where enabled. |
+| `P_BRAIN_MPL_BACKEND` | *(auto)* | Matplotlib backend override (also respects `MPLBACKEND`). |
+| `PBRAIN_DECOMPRESS_NIFTI_GZ` | *(unset)* | If set, prefer transparently decompressing `.nii.gz` inputs for tooling that can't read gzip. |
+
+### AI model checkpoint overrides (input-function detection)
+| Env var | Description |
+|---|---|
+| `SLICE_CLASSIFIER_RICA_MODEL` | Path to rICA slice classifier weights. |
+| `RICA_ROI_MODEL` | Path to rICA ROI segmentation weights. |
+| `SLICE_CLASSIFIER_SS_MODEL` | Path to SSS slice classifier weights. |
+| `SS_ROI_MODEL` | Path to SSS ROI segmentation weights. |
+
+### Model selection and modelling knobs
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_MODEL` | `both` | `patlak`, `two_compartment`, or `both`. |
+| `P_BRAIN_LAMBDA` | `0.5` | Tikhonov regularisation strength for deconvolution/two-compartment modelling. |
+| `P_BRAIN_PATLAK_WINDOW_START_FRACTION` | *(code default)* | Controls where the Patlak linear window starts (fraction of the acquisition). |
+| `P_BRAIN_PATLAK_MIN_R2` | *(code default)* | Minimum $R^2$ threshold for accepting Patlak fits. |
+| `P_BRAIN_NUMBER_OF_PEAKS` | *(code default)* | Peak-detection control used by some input-function utilities. |
+| `P_BRAIN_CTH_MTT_METHOD` | `tikhonov` | Residue-derived CTH/MTT strategy. |
+| `P_BRAIN_CTH_MTT_GAMMA_VOXELWISE` | `0` | If enabled, writes additional voxelwise gamma-derived maps. |
+| `P_BRAIN_GLOBAL_KI_SKIP_BOTTOM` | `2` | Inferior slices skipped for whole-brain Ki medians. |
+| `P_BRAIN_GLOBAL_KI_SKIP_TOP` | `2` | Superior slices skipped for whole-brain Ki medians. |
+
+### Signal-to-concentration conversion (CTC)
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_CTC_MODEL` | `saturation` | `saturation` (legacy closed-form) or `turboflash` (numerical inversion). |
+| `P_BRAIN_TURBO_NPH` | `1` | TurboFLASH ky=0 line index (1-based), used when `P_BRAIN_CTC_MODEL=turboflash`. |
+| `P_BRAIN_FLIP_ANGLE` | `auto` | Flip angle in degrees (number) or `auto` to use metadata. |
+| `P_BRAIN_T1_RECOVERY_MODEL` | `inversion` | `inversion` or `saturation` for T1/M0 fitting. |
+| `P_BRAIN_T1_FIT` | `auto` | `auto`, `ir`, `vfa`, or `none` for T1/M0 fitting inputs. |
+| `P_BRAIN_VFA_GLOB` | *(unset)* | Comma-separated VFA discovery glob(s) when `P_BRAIN_T1_FIT=vfa` or `auto` falls back. |
+| `P_BRAIN_HEMATOCRIT` | `0.42` | Haematocrit used in plasma/tissue conversions. |
+| `P_BRAIN_TISSUE_DENSITY` | `1.04` | Tissue density used for residue-derived perfusion metrics. |
+| `P_BRAIN_CTC_BATCH_VOXELS` | `20000` | Batch size for voxelwise CTC exports/debug in some routines. |
+| `P_BRAIN_WRITE_BRAIN_CTC_NIFTI` | `0` | If enabled, writes a whole-brain CTC 4D NIfTI (debug/inspection). |
+| `P_BRAIN_BRAIN_CTC_NIFTI_PATH` | *(unset)* | Optional explicit output path for the brain CTC NIfTI. |
+
+### Input-function choice and alignment
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_AIF_ARTERY` | `RICA` | Reference artery for arterial curves: `RICA` or `LICA`. |
+| `P_BRAIN_AIF_USE_SSS` | `1` | If enabled, use SSS-derived time-shifted/rescaled output curve (TSCC) for modelling. |
+| `P_BRAIN_TSCC_RESCALE` | `1` | If enabled, apply amplitude rescaling when generating TSCC (SSS aligned to artery). Set `0` for time-shift only. |
+| `P_BRAIN_TSCC_RESCALE_METHOD` | `peak` | Rescaling method: `peak` (peak-height; legacy upscaling only) or `auc` (area under curve / “total volume”; legacy upscaling only). |
+| `P_BRAIN_TSCC_WRITE_DEMO_PLOT` | `1` | If enabled, writes `Images/Time Shifted Concentration Curves/tscc_shift_rescale_demo.png`. |
+| `P_BRAIN_INPUT_FUNCTION` | *(legacy)* | Legacy alias: `SSS` forces TSCC output; `RICA`/`LICA` forces pure arterial output. |
+| `P_BRAIN_PLASMA_AIF` | `0` | If enabled, uses plasma-derived AIF conventions. |
+| `P_BRAIN_ALIGN_AIF` | `0` | If enabled, performs voxelwise delay alignment prior to deconvolution. |
+| `P_BRAIN_ALIGN_AIF_MAX_SHIFT` | `4.0` | Maximum allowed AIF shift (seconds) for delay alignment. |
+
+### Vascular ROI: curve extraction
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_VASCULAR_ROI_CURVE_METHOD` | `max` | `max` uses the single brightest voxel (max over time) within the ROI mask; `mean` averages over ROI voxels (more stable, can reduce peak amplitude). |
+| `P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX` | `1` | If enabled (and `P_BRAIN_VASCULAR_ROI_CURVE_METHOD=max`), re-selects the brightest ROI voxel independently at each time frame (“adaptive-max”). |
+
+## GUI applet: environment settings
+
+For quick, reproducible configuration without manually typing env vars, you can run a small Python UI that lists common `P_BRAIN_*` settings, lets you toggle/edit them, and applies them with one click.
+
+```zsh
+cd /Users/edt/Desktop/p-brain
+python pbrain_env_gui.py
+```
+
+**Apply** writes a `.env` file (default: `.pbrain.env` next to `main.py`) and updates the GUI process environment. To apply the same settings in your current shell session:
+
+```zsh
+source .pbrain.env
+```
+
+The applet can also launch `main.py` directly using the selected settings.
+
+### ROI extraction: method selection
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_METHOD` | `ai` | `ai` (CNN-driven) or `deterministic` (PCA/connected-components). `geometry` is accepted as a legacy alias for `deterministic`. |
+
+### ROI extraction: shared knobs (AI + deterministic)
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_DCE_BASELINE_FRAMES` | *(code default)* | Baseline frames used for curve normalization in ROI routines. |
+| `P_BRAIN_ROI_NORMALIZE_CURVES` | `1` | If enabled, normalizes curves for PCA/diagnostic plots by baseline-subtraction + baseline-to-zero + robust scaling. |
+| `P_BRAIN_ROI_DILATE_PIXELS` | `2` | Final ROI dilation in pixels (applies to saved NIfTI masks). |
+| `P_BRAIN_ROI_SKULLSTRIP_DILATE` | `2` | Dilation iterations used by skullstrip-related masks in some ROI utilities. |
+| `P_BRAIN_ROI_SCORE_SPACE` | `signal` | Score space used by deterministic candidate scoring (`signal` or `ctc`, depending on module). |
+| `P_BRAIN_ROI_MID_Z_FRAC` | `0.30` | Fractional z-slab used by some ROI sampling/debug routines (middle of the volume). |
+| `P_BRAIN_ROI_AP_FLIP` | `0` | If enabled, flips anterior/posterior heuristics (useful for flipped datasets). |
+| `P_BRAIN_ROI_AP_GAMMA` | `1.5` | Gamma used to emphasize anterior/posterior weighting in some heuristics. |
+| `P_BRAIN_ROI_WRITE_SUMMARY_PLOTS` | `1` | If enabled, writes ROI QC montages and debug figures. |
+| `P_BRAIN_ROI_SUMMARY_FONTSIZE` | `18` | Font size for ROI summary figures/montages. |
+
+### Deterministic ROI: vessel candidate selection (PCA/peak-based)
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_VESSEL_PCT` | `99.0` | Start percentile for vascular candidate selection. |
+| `P_BRAIN_ROI_VESSEL_MIN_PCT` | `95.0` | Minimum percentile allowed when relaxing thresholds. |
+| `P_BRAIN_ROI_VESSEL_MIN_VOX` | `1200` | Minimum voxel count target for vascular candidates. |
+| `P_BRAIN_ROI_AV_SEED_PCT` | `99.5` | Seed percentile for artery/vein seed selection. |
+| `P_BRAIN_ROI_AV_SEED_MIN_PCT` | `95.0` | Minimum seed percentile when relaxing. |
+| `P_BRAIN_ROI_AV_SEED_MIN_VOX` | `200` | Minimum voxel count for seed masks. |
+| `P_BRAIN_ROI_AV_MIN_SEP_FRAMES` | `2` | Minimum separation (frames) between artery/vein timing peaks. |
+| `P_BRAIN_ROI_AV_TTP_LOGISTIC_SCALE` | `2.0` | Logistic scale used for artery/vein timing split weighting. |
+
+### Deterministic ROI: PCA debug and clustering
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_USE_PCA` | `1` | If enabled, uses PCA-derived curve-family logic for artery/vein separation. |
+| `P_BRAIN_ROI_DEBUG_PCA` | `1` | If enabled, writes PCA debug figures/masks. |
+| `P_BRAIN_ROI_DEBUG_PCA_MIDZ_ONLY` | `1` | If enabled, restricts PCA sampling to a middle z-slab. |
+| `P_BRAIN_ROI_PCA_MIN_VOXELS` | `1500` | Minimum vascular voxels required to run PCA debug. |
+| `P_BRAIN_ROI_PCA_MAX_VOXELS` | `20000` | Maximum voxels sampled for PCA debug. |
+| `P_BRAIN_ROI_PCA_COMPONENTS` | `3` | Number of PCA components used. |
+| `P_BRAIN_ROI_PCA_N_CLUSTERS` | `6` | k-means cluster count in PCA score space. |
+| `P_BRAIN_ROI_PCA_SEED` | `0` | Seed for k-means initialization. |
+
+PCA debug outputs are written under `Analysis/ROI Debug/` and include:
+- `pca_curve_families.png`
+- `pca_space_clusters.png` (PC1 vs PC2, dpi=300)
+- `pca_family_mask_cluster_*.nii.gz`, `pca_family_mask_artery.nii.gz`, `pca_family_mask_vein.nii.gz`
+
+### Deterministic ROI: ICA constraints and connected-components
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_ICA_COMPONENT_PCT` | `99.5` | Start percentile for ICA component candidate thresholding. |
+| `P_BRAIN_ROI_ICA_COMPONENT_MIN_PCT` | `95.0` | Minimum percentile when relaxing ICA thresholding. |
+| `P_BRAIN_ROI_ICA_COMPONENT_PCT_STEP` | `0.5` | Percentile decrement step when relaxing ICA thresholds. |
+| `P_BRAIN_ROI_ICA_MIN_AREA` | `8` | Minimum 2D component area (pixels) to consider per slice. |
+| `P_BRAIN_ROI_ICA_MAX_AREA` | `800` | Maximum 2D component area (pixels) to consider per slice. |
+| `P_BRAIN_ROI_ICA_MAX_COMPONENTS_PER_SLICE` | `3` | Max candidate components evaluated per slice. |
+| `P_BRAIN_ROI_ICA_MAX_BOUNDARY_CONTACT` | `0.20` | Reject components that contact the brain boundary too heavily. |
+| `P_BRAIN_ROI_ICA_EDGE_MARGIN` | `4` | Ignore components too close to the image edge. |
+| `P_BRAIN_ROI_ICA_MIN_LR_FROM_MIDLINE` | `0` | Optional minimum left/right distance from midline (in pixels). |
+| `P_BRAIN_ROI_ICA_MIDLINE_EXCLUDE_BAND` | *(unset)* | Optional midline exclusion band (pixels) to prevent midline leakage. |
+| `P_BRAIN_ROI_ICA_MIN_DIST_INNER` | `3` | Minimum distance inside the brain mask for ICA candidates. |
+| `P_BRAIN_ROI_ICA_MIN_ZSPAN` | `1` | Minimum z-span (slices) for ICA 3D components when enabled. |
+| `P_BRAIN_ROI_ICA_DILATE3D` | `1` | 3D dilation iterations applied to ICA mask after selection (if enabled). |
+| `P_BRAIN_ROI_Z_ALIGN_MIN_ICA` | `0.0` | Minimum z-orientation score for keeping ICA components in 3D mode. |
+
+ICA adjacent-slice augmentation:
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_ICA_ADD_ADJACENT` | `1` | If enabled, adds ICA voxels in slices above the lowest confirmed ICA slice when arterial evidence exists. |
+| `P_BRAIN_ROI_ICA_ADJACENT_SLICES` | *(unset)* | Explicit number of slices to extend upward (overrides fraction). |
+| `P_BRAIN_ROI_ICA_ADJACENT_FRAC` | `0.2` | Fraction of volume z-slices used when `..._SLICES` is unset (uses `ceil(frac * zdim)`). |
+| `P_BRAIN_ROI_ICA_ADJ_SCORE_PCT` | `99.5` | Percentile threshold used for arterial-evidence fallback when extending. |
+| `P_BRAIN_ROI_DEBUG_ICA_ADJ` | `0` | Debug-print which adjacent slices were added. |
+
+### Deterministic ROI: SSS constraints
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_SSS_MAX_AREA` | `220` | Maximum 2D component area (pixels) allowed for SSS. |
+| `P_BRAIN_SSS_MAX_DIST_INNER` | `5.0` | Max distance-from-brain-interior used in SSS scoring. |
+| `P_BRAIN_SSS_MAX_BOUNDARY_CONTACT` | `0.55` | Maximum boundary contact fraction for SSS candidates. |
+| `P_BRAIN_SSS_MIN_BOUNDARY_CONTACT` | `0.00` | Optional minimum boundary contact fraction for SSS candidates. |
+| `P_BRAIN_SSS_MAX_LR_SPAN` | `18` | Maximum left/right span (pixels) for SSS candidates. |
+| `P_BRAIN_SSS_MAX_ELONG` | `6.0` | Maximum elongation allowed for SSS candidates. |
+| `P_BRAIN_SSS_ELONG_PEN` | `1.0` | Penalty scale applied when SSS candidates are overly elongated. |
+| `P_BRAIN_SSS_POSTERIOR_BONUS` | `0.5` | Posterior bonus weight for SSS scoring. |
+| `P_BRAIN_ROI_SSS_MIN_ZSPAN` | `2` | Minimum z-span (slices) for SSS 3D components. |
+| `P_BRAIN_ROI_SSS_MIDLINE_BAND` | *(code default)* | Midline band used to constrain SSS. |
+| `P_BRAIN_ROI_Z_ALIGN_MIN_SSS` | *(code default)* | Minimum z-orientation score for keeping SSS components in 3D mode. |
+
+### Deterministic ROI: basilar artery constraints (optional)
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_BASILAR_PCT` | `99.0` | Start percentile for basilar candidate selection. |
+| `P_BRAIN_ROI_BASILAR_MIN_PCT` | `97.0` | Minimum percentile when relaxing basilar thresholds. |
+| `P_BRAIN_ROI_BASILAR_PCT_STEP` | `0.5` | Percentile decrement step for basilar selection. |
+| `P_BRAIN_ROI_BASILAR_MIN_AREA` | `6` | Minimum basilar component area (pixels). |
+| `P_BRAIN_ROI_BASILAR_MAX_AREA` | `400` | Maximum basilar component area (pixels). |
+| `P_BRAIN_ROI_BASILAR_MIDLINE_BAND` | *(auto)* | Midline band used to constrain basilar candidates. |
+| `P_BRAIN_ROI_BASILAR_SLICES` | `1` | Number of slices considered for basilar selection. |
+| `P_BRAIN_ROI_BASILAR_MIN_ZSPAN` | `1` | Minimum z-span (slices) for basilar 3D components. |
+| `P_BRAIN_ROI_BASILAR_MIN_DIST_INNER` | `2` | Minimum distance inside brain mask for basilar candidates. |
+| `P_BRAIN_ROI_BASILAR_MAX_BOUNDARY_CONTACT` | `0.50` | Maximum boundary contact fraction for basilar candidates. |
+| `P_BRAIN_ROI_Z_ALIGN_MIN_BASILAR` | *(inherits)* | z-orientation score threshold for basilar selection. |
+
+### Deterministic ROI: 3D component selection and debugging
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_ROI_USE_3D_COMPONENTS` | `1` | If enabled, selects ROIs via 3D connected-components rather than slice-by-slice only. |
+| `P_BRAIN_ROI_KEEP_Z_ORIENTED` | `1` | If enabled, prefers components aligned along the z-axis. |
+| `P_BRAIN_ROI_Z_ALIGN_MIN` | `0.55` | Minimum z-orientation score for keeping 3D components (global default). |
+| `P_BRAIN_ROI_COMP3D_MIN_VOX` | `40` | Minimum voxels for considering a 3D component. |
+| `P_BRAIN_ROI_DEBUG` | `0` | If enabled, writes extra ROI debug NIfTIs/figures. |
+| `P_BRAIN_ROI_DEBUG_STRICT` | `0` | If enabled, raises more aggressively on ROI debug failures. |
+| `P_BRAIN_ROI_DEBUG_3D` | `0` | If enabled, writes 3D-component debug exports. |
+| `P_BRAIN_ROI_DEBUG_MONTAGE_MAX_SLICES` | `12` | Max slices shown in ROI debug montages. |
+| `P_BRAIN_DEBUG_VEIN_MIN_DIST_INNER` | `2.0` | Debug-only vein selection constraint used in some ROI debug plots. |
+
+### Legacy (deprecated) geometry ROI knobs
+These variables remain for backward compatibility with older geometry-based ROI behaviour and/or older debugging paths:
+| Env var | Description |
+|---|---|
+| `P_BRAIN_ROI_RICA_SLICES`, `P_BRAIN_ROI_RICA_Z_RANGE`, `P_BRAIN_ROI_RICA_RADIUS` | Legacy geometry ROI parameters for rICA. |
+| `P_BRAIN_ROI_LICA_SLICES`, `P_BRAIN_ROI_LICA_Z_RANGE`, `P_BRAIN_ROI_LICA_RADIUS` | Legacy geometry ROI parameters for lICA. |
+| `P_BRAIN_ROI_SSS_SLICES`, `P_BRAIN_ROI_SSS_Z_RANGE`, `P_BRAIN_ROI_SSS_RADIUS` | Legacy geometry ROI parameters for SSS. |
+
+### Diffusion / tractography
+Diffusion file priority (which NIfTI is selected when multiple are present):
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_DIFFUSION_PRIORITY` | `dti,dwi_reg,dwi_iso,dwi` | Comma-separated file-group preference order (see `utils/parameters.py`). |
+
+Per-group diffusion model overrides:
+| Env var | Default | Description |
+|---|---:|---|
+| `P_BRAIN_DIFFUSION_MODEL_DTI` | `DTI` | Model for the `dti` group (`DTI` or `CSD`). |
+| `P_BRAIN_DIFFUSION_MODEL_DWI` | `CSD` | Model for the `dwi` group (`DTI` or `CSD`). |
+| `P_BRAIN_DIFFUSION_MODEL_DWI_REG` | `CSD` | Model for the `dwi_reg` group (`DTI` or `CSD`). |
+| `P_BRAIN_DIFFUSION_MODEL_DWI_ISO` | `CSD` | Model for the `dwi_iso` group (`DTI` or `CSD`). |
+
+Tractography tuning (advanced):
+| Env var | Description |
+|---|---|
+| `P_BRAIN_ENABLE_FURY`, `P_BRAIN_DISABLE_FURY` | Force-enable/disable FURY rendering backend if available. |
+| `P_BRAIN_DEBUG_TRACKS` | Enables additional tractography debug logs/exports. |
+| `P_BRAIN_TRACK_FORCE_MT_CSD` | Forces MSMT-CSD solver even when `--orientation csd` is used. |
+| `P_BRAIN_TRACK_CSD_SH_ORDER`, `P_BRAIN_TRACK_QBALL_SH_ORDER` | Spherical-harmonic order controls (often `auto`). |
+| `P_BRAIN_TRACK_WORKERS`, `P_BRAIN_TRACK_PARALLEL_BACKEND` | Parallelism controls for tractography attempts. |
+| `P_BRAIN_TRACK_*` | Many additional tuning knobs exist (lengths, thresholds, seeding, ACT/PFT toggles, animation export). See `modules/tractography.py` for details. |
+
+### Figure export styling (PNG/tiles)
+These mostly affect the mosaic/tile helpers under `utils/plotting.py`:
+| Env var | Description |
+|---|---|
+| `PBRAIN_PNG_DPI` | Default dpi for PNG exports. |
+| `PBRAIN_TURBO` | Use a high-contrast colormap preset where supported. |
+| `PBRAIN_NO_COLOR` | Disable colored colormaps (grayscale outputs). |
+| `PBRAIN_OUTER_MARGIN_PX`, `PBRAIN_TILE_INNER_MARGIN_PX`, `PBRAIN_TILE_GAP_PX` | Layout spacing for tile/mosaic figures. |
+| `PBRAIN_TRANSPARENT_GUTTERS`, `PBRAIN_TRANSPARENT_COLORBAR_BG` | Transparency controls for gutters/colorbar backgrounds. |
+| `PBRAIN_COLORBAR_UNITS_POSITION`, `PBRAIN_COLORBAR_UNITS_GAP_PX` | Controls where unit labels are placed on colorbars. |
+| `PBRAIN_COLORBAR_TICK_FONT_SIZE`, `PBRAIN_COLORBAR_UNITS_FONT_SIZE` | Font sizes for colorbar ticks/units. |
 
 Edit the Python files directly for permanent defaults or export environment variables for per-run overrides.
 

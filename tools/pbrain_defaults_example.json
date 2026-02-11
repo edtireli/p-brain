@@ -1,0 +1,12 @@
+{
+  "ctcModel": "turboflash",
+  "t1RecoveryModel": "inversion",
+  "pkModel": "both",
+  "vascularRoiCurveMethod": "max",
+  "turboflashBaselineFrames": 10,
+  "skipForkedMaxCtcPeaks": true,
+  "writeCtcMaps": true,
+  "writeCtc4d": true,
+  "ctcMapSlice": 5,
+  "writeSliceDiagnostics": true
+}

@@ -233,10 +233,10 @@ def BBB_parameters(analysis_directory, image_directory):  # Ki from ROI
     time_points_s = time_points_s[0:len(C_a)]
     
     model = settings.KINETIC_MODEL.lower()
-    use_two_compartment = model in ('two_compartment', 'both')
+    use_tikhonov = model in ('tikhonov', 'two_compartment', 'both')
     use_patlak = model in ('patlak', 'both')
 
-    if use_two_compartment:
+    if use_tikhonov:
         if settings.AUTO_LAMBDA and settings.AUTO_LAMBDA_VALUE is not None:
             lambd = settings.AUTO_LAMBDA_VALUE
         else:

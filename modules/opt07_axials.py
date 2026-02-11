@@ -61,6 +61,12 @@ def check_axial(nifti_directory, filenames):
     axial_t2_3D_output = "axVWIPcs_3D_Brain_VIEW_T2_32chSHC.nii"
 
     axial_flair_3D_filename = processor.find_matching_file(axial_flair_3D_filename_regex)
+
+    if not t1_3D_filename or not t2_3D_filename or not flair_3D_filename:
+        print("[!] Missing structural filenames (T1/T2/FLAIR); skipping axial recon.")
+        time.sleep(1)
+        return
+
     flair_full_path = os.path.join(nifti_directory, flair_3D_filename)
     t2_full_path = os.path.join(nifti_directory, t2_3D_filename)
     t1_full_path = os.path.join(nifti_directory, t1_3D_filename)
@@ -72,7 +78,7 @@ def check_axial(nifti_directory, filenames):
         #time.sleep(3)
         return
 
-    if not flair_full_path or not axial_flair_3D_filename:
+    if (not flair_full_path) or (not axial_flair_3D_filename) or (not os.path.isfile(flair_full_path)):
         print("FLAIR or axial FLAIR reconstruction not found.")
         time.sleep(3)
         return

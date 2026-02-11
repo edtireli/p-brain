@@ -31,7 +31,16 @@ from .opt06_analysis_notes import * # option 6
 from .opt07_axials import * # option 8
 from .opt08_fa import *  # compute FA from DWI
 
-from .AI_input_functions import * # AI module 1 (input functions)
+# Avoid importing TensorFlow-backed AI input-function code unless it's needed.
+try:
+	from utils import settings as _settings
+	_roi_method = (getattr(_settings, "ROI_METHOD", "ai") or "ai").strip().lower()
+except Exception:
+	_roi_method = "ai"
+
+if _roi_method != "geometry":
+	from .AI_input_functions import * # AI module 1 (input functions)
+
 from .AI_tissue_functions import * # AI module 2 (tissue functions)
 
 

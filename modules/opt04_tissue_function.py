@@ -17,6 +17,16 @@ import utils.settings as settings
 turbo_mode = True  # When True, suppress interactive plotting
 
 
+def _aggregate_roi_curves(curves, *, axis=0):
+    method = (getattr(settings, "TISSUE_ROI_AGGREGATION", "median") or "median").strip().lower()
+    arr = np.asarray(curves, dtype=float)
+    if arr.size == 0:
+        return np.asarray([], dtype=float)
+    if method == "mean":
+        return np.nanmean(arr, axis=axis)
+    return np.nanmedian(arr, axis=axis)
+
+
 def patlak_analysis_plotting(c_tissue, c_input, time):
     frame_no = len(time)
     delta_t = np.diff(time)
@@ -142,12 +152,35 @@ def compute_average_permeability(c_in, c_out, time_array, baseline_point,
     return Ktrans_fitted_mM_min, std_dev_Ktrans_mM_min
 
 
-def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, choice = 1, analysis_directory='dir', image_directory='dir', time_points_s = 1, flip_angle_deg=None):
+def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix, choice = 1, analysis_directory='dir', image_directory='dir', time_points_s = 1, flip_angle_deg=None, dce_path=None):
     num_rois = sum(len(roi_list) for roi_list in selected_voxels.values())
     gs = gridspec.GridSpec(3, num_rois, height_ratios=[1, 1.5, 1])
     fig = plt.figure(figsize=(20, 12))
     input_curve, input_metadata = get_input_function_curve(analysis_directory)
     input_curve_path = input_metadata.get('path')
+
+    ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+    if ctc_model == "advanced":
+        ctc_model = "turboflash"
+    if ctc_model not in {"saturation", "turboflash"}:
+        ctc_model = "saturation"
+
+    if flip_angle_deg is None and dce_path:
+        flip_angle_deg = resolve_flip_angle_deg(dce_path, default=None)
+
+    tr_s = None
+    nph = None
+    if ctc_model == "turboflash":
+        if not dce_path:
+            raise ValueError("CTC_MODEL=turboflash requires dce_path to resolve excitation TR.")
+        tr_s = resolve_turboflash_tr_s(dce_path, default=None, mode="slice")
+        if tr_s is None:
+            raise ValueError(
+                "CTC_MODEL=turboflash requires the excitation TR. Add RepetitionTimeExcitation to the DCE JSON sidecar "
+                "or set P_BRAIN_TURBOFLASH_TR_S/P_BRAIN_TURBOFLASH_TR_MS."
+            )
+        nph = getattr(settings, "TURBOFLASH_NPH", 1)
+
     idx = 0
     for slice_index, roi_voxels_list in selected_voxels.items():
         for roi_num, roi_voxels in enumerate(roi_voxels_list):
@@ -158,7 +191,7 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
                 voxel_time_course = data_4d[x, y, slice_index, :]
                 T1 = T1_matrix[x, y, slice_index]
                 M0 = M0_matrix[x, y, slice_index]
-                C_t_0 = compute_CTC(
+                C_t_0 = turboflash(
                     voxel_time_course,
                     T1,
                     r1=4000,
@@ -167,13 +200,15 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
                     slice=slice_index,
                     prints=False,
                     flip_angle_deg=flip_angle_deg,
-                    ctc_model="saturation",
+                    ctc_model=ctc_model,
+                    tr_s=tr_s,
+                    nph=nph,
                 )
                 baseline_point = find_baseline_point_advanced(C_t_0)
                 C_t = custom_shifter(C_t_0, baseline_point)
                 all_C_t.append(C_t)
                 all_unnormalized_C_t.append(C_t_0)
-            avg_C_t_0 = np.mean(all_C_t, axis=0)
+            avg_C_t_0 = _aggregate_roi_curves(all_C_t, axis=0)
             baseline_point = find_baseline_point_advanced(avg_C_t_0) - 1
             avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
             
@@ -221,7 +256,7 @@ def plot_rois_and_curves(selected_voxels, data_4d, data_3d, T1_matrix, M0_matrix
         plt.show()
     plt.close()
 
-def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir', flip_angle_deg=None):
+def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_upscaled, slice_index, r1=4000, TD=120, type='test', subtype='test', time_points_s = 1, analysis_directory = 'dir', image_directory = 'dir', flip_angle_deg=None, dce_path=None):
     N = data.shape[0]
     
     all_C_t = []
@@ -229,11 +264,33 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
     T1_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl')), -1, axes=(0, 1))
     M0_matrix = np.rot90(load_from_pickle(os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl')), -1, axes=(0, 1))
 
+    ctc_model = (getattr(settings, "CTC_MODEL", "saturation") or "saturation").strip().lower()
+    if ctc_model == "advanced":
+        ctc_model = "turboflash"
+    if ctc_model not in {"saturation", "turboflash"}:
+        ctc_model = "saturation"
+
+    if flip_angle_deg is None and dce_path:
+        flip_angle_deg = resolve_flip_angle_deg(dce_path, default=None)
+
+    tr_s = None
+    nph = None
+    if ctc_model == "turboflash":
+        if not dce_path:
+            raise ValueError("CTC_MODEL=turboflash requires dce_path to resolve excitation TR.")
+        tr_s = resolve_turboflash_tr_s(dce_path, default=None, mode="slice")
+        if tr_s is None:
+            raise ValueError(
+                "CTC_MODEL=turboflash requires the excitation TR. Add RepetitionTimeExcitation to the DCE JSON sidecar "
+                "or set P_BRAIN_TURBOFLASH_TR_S/P_BRAIN_TURBOFLASH_TR_MS."
+            )
+        nph = getattr(settings, "TURBOFLASH_NPH", 1)
+
     for (x, y) in roi_voxels:
         voxel_time_course = data[x, y, slice_index, :]
         T1 = T1_matrix[x, y, slice_index]
         M0 = M0_matrix[x, y, slice_index]
-        C_t_0 = compute_CTC(
+        C_t_0 = turboflash(
             voxel_time_course,
             T1,
             TD,
@@ -242,15 +299,17 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
             slice=slice_index,
             prints=False,
             flip_angle_deg=flip_angle_deg,
-            ctc_model="saturation",
+            ctc_model=ctc_model,
+            tr_s=tr_s,
+            nph=nph,
         )
         baseline_point = find_baseline_point_advanced(C_t_0)
         C_t = custom_shifter(C_t_0, baseline_point)
         all_C_t.append(C_t)  
         all_unnormalized_C_t.append(C_t_0 )
     # Averaging all the C_t curves
-    avg_C_t_0 = np.mean(all_C_t, axis=0)
-    avg_unnormalized_C_t_0 = np.mean(all_unnormalized_C_t, axis=0)
+    avg_C_t_0 = _aggregate_roi_curves(all_C_t, axis=0)
+    avg_unnormalized_C_t_0 = _aggregate_roi_curves(all_unnormalized_C_t, axis=0)
     baseline_point = find_baseline_point_advanced(avg_C_t_0)-1
     print('[!] Baseline point chosen: ', baseline_point)
     avg_C_t = custom_shifter(avg_C_t_0, baseline_point)
@@ -497,6 +556,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 analysis_directory=analysis_directory,
                 image_directory=image_directory,
                 flip_angle_deg=flip_angle_deg,
+                dce_path=filename_dce,
             )
             
             selected_str = input("Select the index of the ROI curve you want to proceed with (format: slice-roi): ")
@@ -524,6 +584,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 selected_slice_idx,
                 type=type,
                 flip_angle_deg=flip_angle_deg,
+                dce_path=filename_dce,
             )
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
             if correction_prompt == 'y':
@@ -552,6 +613,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                         analysis_directory=analysis_directory,
                         image_directory=image_directory,
                         flip_angle_deg=flip_angle_deg,
+                        dce_path=filename_dce,
                     )
                     correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')
                     if correction_prompt == 'y':
@@ -582,6 +644,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
             analysis_directory=analysis_directory,
             image_directory=image_directory,
             flip_angle_deg=flip_angle_deg,
+            dce_path=filename_dce,
         )
         
         selected_str_grey = input("Select the Grey Matter index (format: slice-roi): ")
@@ -622,6 +685,7 @@ def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_p
                 analysis_directory=analysis_directory,
                 image_directory=image_directory,
                 flip_angle_deg=flip_angle_deg,
+                dce_path=filename_dce,
             )
             
             correction_prompt = input('[!] Correct tissue concentration curve of anomalous behavior? (y/n): ')

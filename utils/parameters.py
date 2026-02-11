@@ -3,6 +3,8 @@ import os
 import sys
 import re
 import time 
+import json
+from typing import Optional
 
 import utils.settings as settings
 
@@ -158,26 +160,322 @@ def global_parameters():
 def refresh_nifti_directory(nifti_directory):
     return os.listdir(nifti_directory)
 
+
+def _iter_nifti_filenames(nifti_directory: str) -> list[str]:
+    try:
+        entries = os.listdir(nifti_directory)
+    except Exception:
+        return []
+
+    out: list[str] = []
+    for name in entries:
+        lower = name.lower()
+        if lower.endswith(".nii") or lower.endswith(".nii.gz"):
+            full_path = os.path.join(nifti_directory, name)
+            if os.path.isfile(full_path):
+                out.append(name)
+    return out
+
+
+def _strip_nii_ext(filename: str) -> str:
+    lower = filename.lower()
+    if lower.endswith(".nii.gz"):
+        return filename[: -len(".nii.gz")]
+    if lower.endswith(".nii"):
+        return filename[: -len(".nii")]
+    return filename
+
+
+def _sidecar_path(nifti_directory: str, nifti_filename: str, ext: str) -> str:
+    base = _strip_nii_ext(nifti_filename)
+    return os.path.join(nifti_directory, f"{base}{ext}")
+
+
+def _has_diffusion_sidecars(nifti_directory: str, nifti_filename: str) -> bool:
+    return os.path.isfile(_sidecar_path(nifti_directory, nifti_filename, ".bval")) or os.path.isfile(
+        _sidecar_path(nifti_directory, nifti_filename, ".bvec")
+    )
+
+
+def _read_text_sidecar(nifti_directory: str, nifti_filename: str) -> str:
+    json_path = _sidecar_path(nifti_directory, nifti_filename, ".json")
+    if not os.path.isfile(json_path):
+        return ""
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return ""
+
+    pieces: list[str] = []
+    for key in (
+        "SeriesDescription",
+        "ProtocolName",
+        "SequenceName",
+        "ImageType",
+        "ScanningSequence",
+        "SequenceVariant",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str):
+            pieces.append(value)
+        elif isinstance(value, list):
+            pieces.extend([str(v) for v in value if v is not None])
+    return " ".join(pieces).lower()
+
+
+def _nifti_shape(nifti_path: str) -> Optional[tuple[int, ...]]:
+    try:
+        import nibabel as nib  # local import to keep module import light
+
+        img = nib.load(nifti_path)
+        shape = img.shape
+        try:
+            return tuple(int(s) for s in shape)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _infer_dce_filename(nifti_directory: str) -> Optional[str]:
+    """Best-effort: choose a DCE-like NIfTI from directory contents.
+
+    Heuristics:
+    - Prefer 4D files with t>1
+    - Exclude diffusion-like files (bval/bvec sidecars)
+    - Prefer highest t, then largest file size
+    """
+
+    candidates = []
+    for name in _iter_nifti_filenames(nifti_directory):
+        if _has_diffusion_sidecars(nifti_directory, name):
+            continue
+        full_path = os.path.join(nifti_directory, name)
+        shape = _nifti_shape(full_path)
+        if shape and len(shape) >= 4 and int(shape[3]) > 1:
+            t = int(shape[3])
+            size = int(os.path.getsize(full_path))
+            candidates.append((t, size, name))
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
+
+    # Fallback: try keyword match from JSON sidecars.
+    keyword_hits = []
+    for name in _iter_nifti_filenames(nifti_directory):
+        if _has_diffusion_sidecars(nifti_directory, name):
+            continue
+        text = _read_text_sidecar(nifti_directory, name)
+        if not text:
+            continue
+        score = 0
+        for kw in ("dce", "dynamic", "dyn", "perfusion", "hperf", "bolus"):
+            if kw in text:
+                score += 1
+        if score:
+            full_path = os.path.join(nifti_directory, name)
+            size = int(os.path.getsize(full_path))
+            keyword_hits.append((score, size, name))
+    if keyword_hits:
+        keyword_hits.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return keyword_hits[0][2]
+
+    return None
+
+
+def _infer_structural_filename(
+    nifti_directory: str,
+    *,
+    include_keywords: tuple[str, ...],
+    exclude_keywords: tuple[str, ...] = (),
+) -> Optional[str]:
+    """Best-effort modality selection from available NIfTI + JSON sidecars."""
+
+    hits = []
+    for name in _iter_nifti_filenames(nifti_directory):
+        if _has_diffusion_sidecars(nifti_directory, name):
+            continue
+        text = _read_text_sidecar(nifti_directory, name)
+        if not text:
+            continue
+        if any(ex in text for ex in exclude_keywords):
+            continue
+        score = sum(1 for kw in include_keywords if kw in text)
+        if not score:
+            continue
+        full_path = os.path.join(nifti_directory, name)
+        shape = _nifti_shape(full_path)
+        is_3d = bool(shape and len(shape) == 3)
+        size = int(os.path.getsize(full_path))
+        # Prefer 3D anatomicals when available
+        hits.append((score, 1 if is_3d else 0, size, name))
+
+    if hits:
+        hits.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return hits[0][3]
+
+    return None
+
+
+def _largest_3d_nifti(
+    nifti_directory: str,
+    *,
+    exclude: set[str] | None = None,
+    min_slices: int = 32,
+    include_keywords: tuple[str, ...] = (),
+    exclude_keywords: tuple[str, ...] = (),
+) -> Optional[str]:
+    """Return the largest plausible 3D NIfTI in the directory.
+
+    This is used only as a *fallback* when explicit modality detection fails.
+    We keep it conservative to avoid treating small axial stacks (e.g. T2 localizers)
+    as structural anatomicals.
+    """
+
+    exclude = exclude or set()
+    best: tuple[int, str] | None = None
+    for name in _iter_nifti_filenames(nifti_directory):
+        if name in exclude:
+            continue
+        if _has_diffusion_sidecars(nifti_directory, name):
+            continue
+
+        lower_name = name.lower()
+        text = lower_name
+        sidecar = _read_text_sidecar(nifti_directory, name)
+        if sidecar:
+            text = f"{text} {sidecar}"
+
+        if exclude_keywords and any(ex in text for ex in exclude_keywords):
+            continue
+        if include_keywords and not any(kw in text for kw in include_keywords):
+            continue
+
+        full_path = os.path.join(nifti_directory, name)
+        shape = _nifti_shape(full_path)
+        if not shape or len(shape) != 3:
+            continue
+        try:
+            if int(shape[2]) < int(min_slices):
+                continue
+        except Exception:
+            continue
+
+        size = int(os.path.getsize(full_path))
+        if best is None or size > best[0]:
+            best = (size, name)
+    return best[1] if best else None
+
+
+def _resolve_filename_or_infer(
+    *,
+    nifti_directory: str,
+    default_candidates: tuple[str, ...],
+    infer_fn,
+) -> Optional[str]:
+    existing = _get_first_existing_file(default_candidates, nifti_directory)
+    if existing:
+        return existing
+    return infer_fn(nifti_directory)
+
 # Global filenames:
 def global_filenames(nifti_directory):
     refresh_nifti_directory(nifti_directory)
-    t1_3D_filename = 'WIPcs_T1W_3D_TFE_32channel.nii'
+
+    t1_3D_defaults = (
+        "WIPcs_T1W_3D_TFE_32channel.nii",
+        "WIPcs_T1W_3D_TFE_32channel.nii.gz",
+    )
+    t1_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=t1_3D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t1", "t1w", "mprage", "tfe", "spgr", "bravo", "vibe"),
+            exclude_keywords=("dce", "dynamic", "dyn", "perfusion"),
+        )
+        # Conservative fallback: only accept likely T1 candidates and require
+        # a reasonable number of slices to avoid picking small axial stacks.
+        or _largest_3d_nifti(
+            d,
+            min_slices=32,
+            include_keywords=("t1", "t1w", "mprage", "tfe", "spgr", "bravo", "vibe"),
+            exclude_keywords=("t2", "tse", "flair", "dce", "dynamic", "dyn", "perfusion"),
+        ),
+    )
     axial_t1_3D_filename = r'ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'
 
-    t2_3D_filename = r'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii'
+    t2_3D_defaults = (
+        "WIPcs_3D_Brain_VIEW_T2_32chSHC.nii",
+        "WIPcs_3D_Brain_VIEW_T2_32chSHC.nii.gz",
+    )
+    t2_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=t2_3D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t2", "tse"),
+            exclude_keywords=("flair", "dce", "dynamic", "dyn"),
+        )
+        or _largest_3d_nifti(d, min_slices=32, exclude_keywords=("dce", "dynamic", "dyn", "perfusion")),
+    )
     axial_t2_3D_filename = r'ax([-_ ])?vwipcs_3D_Brain_VIEW_T2_32chSHC\.nii'
 
-    flair_3D_filename =  'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
+    flair_3D_defaults = (
+        "WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii",
+        "WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii.gz",
+    )
+    flair_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=flair_3D_defaults,
+        infer_fn=lambda d: (
+            _infer_structural_filename(
+                d,
+                include_keywords=("flair",),
+                exclude_keywords=("dce", "dynamic", "dyn"),
+            )
+            or t2_3D_filename
+            or t1_3D_filename
+            or _largest_3d_nifti(d, min_slices=32, exclude_keywords=("dce", "dynamic", "dyn", "perfusion"))
+        ),
+    )
     axial_flair_3D_filename = r'ax([-_ ])?VWIPcs_3D_Brain_VIEW_FLAIR_SHC\.nii'
 
-    axial_t2_2D_filename = 'WIPAxT2TSEmatrix.nii'
+    axial_t2_2D_defaults = (
+        "WIPAxT2TSEmatrix.nii",
+        "WIPAxT2TSEmatrix.nii.gz",
+    )
+    axial_t2_2D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=axial_t2_2D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t2", "tse"),
+            exclude_keywords=("flair", "dce", "dynamic", "dyn"),
+        )
+        or t2_3D_filename,
+    )
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
+    dce_defaults = (
+        dce_filename_fallback,
+        dce_filename_primary,
+        f"{dce_filename_fallback}.gz",
+        f"{dce_filename_primary}.gz",
+        dce_filename_fallback.replace(".nii", ".nii.gz"),
+        dce_filename_primary.replace(".nii", ".nii.gz"),
+    )
     diffusion_candidates = ordered_diffusion_filenames()
 
     diffusion_filename = get_diffusion_filename(diffusion_candidates, nifti_directory)
-    dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
+    dce_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=dce_defaults,
+        infer_fn=_infer_dce_filename,
+    )
 
     return (
         t1_3D_filename,
@@ -194,23 +492,96 @@ def global_filenames(nifti_directory):
 # Separate filenames for control datasets used by the AI pipeline
 def control_filenames(nifti_directory):
     refresh_nifti_directory(nifti_directory)
-    t1_3D_filename = 'WIPT1W_3D_TFE.nii'
+    t1_3D_defaults = (
+        "WIPT1W_3D_TFE.nii",
+        "WIPT1W_3D_TFE.nii.gz",
+    )
+    t1_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=t1_3D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t1", "t1w", "mprage", "tfe", "spgr", "bravo", "vibe"),
+            exclude_keywords=("dce", "dynamic", "dyn", "perfusion"),
+        )
+        or _largest_3d_nifti(
+            d,
+            min_slices=32,
+            include_keywords=("t1", "t1w", "mprage", "tfe", "spgr", "bravo", "vibe"),
+            exclude_keywords=("t2", "tse", "flair", "dce", "dynamic", "dyn", "perfusion"),
+        ),
+    )
     axial_t1_3D_filename = r'ax([-_ ])?vwipcs_t1w_3d_tfe_32channel\.nii'
 
-    t2_3D_filename = r'WIPcs_3D_Brain_VIEW_T2_32chSHC.nii'
+    t2_3D_defaults = (
+        "WIPcs_3D_Brain_VIEW_T2_32chSHC.nii",
+        "WIPcs_3D_Brain_VIEW_T2_32chSHC.nii.gz",
+    )
+    t2_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=t2_3D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t2", "tse"),
+            exclude_keywords=("flair", "dce", "dynamic", "dyn"),
+        )
+        or _largest_3d_nifti(d, min_slices=32, exclude_keywords=("dce", "dynamic", "dyn", "perfusion")),
+    )
     axial_t2_3D_filename = r'ax([-_ ])?vwipcs_3D_Brain_VIEW_T2_32chSHC\.nii'
 
-    flair_3D_filename = 'WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
+    flair_3D_defaults = (
+        "WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii",
+        "WIPcs_3D_Brain_VIEW_FLAIR_SHC.nii.gz",
+    )
+    flair_3D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=flair_3D_defaults,
+        infer_fn=lambda d: (
+            _infer_structural_filename(
+                d,
+                include_keywords=("flair",),
+                exclude_keywords=("dce", "dynamic", "dyn"),
+            )
+            or t2_3D_filename
+            or t1_3D_filename
+            or _largest_3d_nifti(d, min_slices=32, exclude_keywords=("dce", "dynamic", "dyn", "perfusion"))
+        ),
+    )
     axial_flair_3D_filename = 'Ax_VWIPcs_3D_Brain_VIEW_FLAIR_SHC.nii'
 
-    axial_t2_2D_filename = 'WIPAxT2TSEmatrix.nii'
+    axial_t2_2D_defaults = (
+        "WIPAxT2TSEmatrix.nii",
+        "WIPAxT2TSEmatrix.nii.gz",
+    )
+    axial_t2_2D_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=axial_t2_2D_defaults,
+        infer_fn=lambda d: _infer_structural_filename(
+            d,
+            include_keywords=("t2", "tse"),
+            exclude_keywords=("flair", "dce", "dynamic", "dyn"),
+        )
+        or t2_3D_filename,
+    )
 
     dce_filename_primary = 'WIPhperf120long.nii'
     dce_filename_fallback = 'WIPDelRec-hperf120long.nii'
+    dce_defaults = (
+        dce_filename_fallback,
+        dce_filename_primary,
+        f"{dce_filename_fallback}.gz",
+        f"{dce_filename_primary}.gz",
+        dce_filename_fallback.replace(".nii", ".nii.gz"),
+        dce_filename_primary.replace(".nii", ".nii.gz"),
+    )
     diffusion_candidates = ordered_diffusion_filenames()
 
     diffusion_filename = get_diffusion_filename(diffusion_candidates, nifti_directory)
-    dce_filename = get_dce_filename(dce_filename_primary, dce_filename_fallback, nifti_directory)
+    dce_filename = _resolve_filename_or_infer(
+        nifti_directory=nifti_directory,
+        default_candidates=dce_defaults,
+        infer_fn=_infer_dce_filename,
+    )
 
     return (
         t1_3D_filename,

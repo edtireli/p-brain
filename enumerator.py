@@ -877,10 +877,10 @@ def parse_args():
         "--ctc-model",
         dest="ctc_model",
         type=str,
-        choices=("saturation", "turboflash"),
+        choices=("saturation", "turboflash", "advanced"),
         default=None,
         help=(
-            "Signal-to-concentration conversion model: saturation (legacy) or turboflash (MATLAB-like). "
+            "Signal-to-concentration conversion model: saturation (legacy), turboflash (reference), or advanced (validated TurboFLASH case12). "
             "When set, exported as P_BRAIN_CTC_MODEL for the main pipeline."
         ),
     )
@@ -892,6 +892,61 @@ def parse_args():
         help=(
             "TurboFLASH nph (1-based ky=0 line index within readout train). "
             "Used when --ctc-model=turboflash; exported as P_BRAIN_TURBO_NPH."
+        ),
+    )
+    parser.add_argument(
+        "--roi-method",
+        dest="roi_method",
+        type=str,
+        choices=("ai", "deterministic", "geometry", "file"),
+        default=None,
+        help=(
+            "ROI extraction method for input-function ROIs. "
+            "When set, exported as P_BRAIN_ROI_METHOD."
+        ),
+    )
+    parser.add_argument(
+        "--roi-aif-mat",
+        dest="roi_aif_mat",
+        type=str,
+        default=None,
+        help="Path to .mat file containing arterial ROI mask (BW_input/BW_input_big).",
+    )
+    parser.add_argument(
+        "--roi-aif-conc-mat",
+        dest="roi_aif_conc_mat",
+        type=str,
+        default=None,
+        help="Optional path to .mat file containing arterial concentration curve (c_input).",
+    )
+    parser.add_argument(
+        "--roi-sss-mat",
+        dest="roi_sss_mat",
+        type=str,
+        default=None,
+        help="Path to .mat file containing SSS ROI mask (BW_input/BW_input_big).",
+    )
+    parser.add_argument(
+        "--roi-sss-conc-mat",
+        dest="roi_sss_conc_mat",
+        type=str,
+        default=None,
+        help="Optional path to .mat file containing SSS concentration curve (c_input).",
+    )
+    parser.add_argument(
+        '--roi-tscc-mat',
+        dest='roi_tscc_mat',
+        type=str,
+        default=None,
+        help='Optional path to .mat file containing TSCC input function (c_input) used for modelling. If provided, TSCC generation will import this curve directly.'
+    )
+    parser.add_argument(
+        "--roi-only",
+        dest="roi_only",
+        action="store_true",
+        help=(
+            "Only run ROI extraction (input-function step) and exit. "
+            "Skips the rest of the main pipeline and any montage/tracks work."
         ),
     )
     return parser.parse_args()
@@ -1193,7 +1248,10 @@ def main():
         sys.exit(exit_code)
 
     # Build command
-    command_template = "python3 main.py --id {} --mode auto --data-dir {}"
+    if getattr(args, "roi_only", False):
+        command_template = "python3 roi_only.py --id {} --data-dir {}"
+    else:
+        command_template = "python3 main.py --id {} --mode auto --data-dir {}"
     if args.diffusion:
         command_template += " --diffusion"
     if args.flip_angle is not None:
@@ -1219,6 +1277,19 @@ def main():
             env["P_BRAIN_CTC_MODEL"] = str(args.ctc_model)
         if getattr(args, "turbo_nph", None) is not None:
             env["P_BRAIN_TURBO_NPH"] = str(int(args.turbo_nph))
+        if getattr(args, "roi_method", None):
+            env["P_BRAIN_ROI_METHOD"] = str(args.roi_method)
+
+        if getattr(args, "roi_aif_mat", None):
+            env["P_BRAIN_ROI_AIF_MAT"] = str(args.roi_aif_mat)
+        if getattr(args, "roi_aif_conc_mat", None):
+            env["P_BRAIN_ROI_AIF_CONC_MAT"] = str(args.roi_aif_conc_mat)
+        if getattr(args, "roi_sss_mat", None):
+            env["P_BRAIN_ROI_SSS_MAT"] = str(args.roi_sss_mat)
+        if getattr(args, "roi_sss_conc_mat", None):
+            env["P_BRAIN_ROI_SSS_CONC_MAT"] = str(args.roi_sss_conc_mat)
+        if getattr(args, "roi_tscc_mat", None):
+            env["P_BRAIN_ROI_TSCC_MAT"] = str(args.roi_tscc_mat)
         if is_control:
             env["PBRAIN_CONTROLS"] = "1"
         else:
@@ -1230,6 +1301,10 @@ def main():
                 f"[montage] Skipping montage rendering for {dataset_id} "
                 f"due to pipeline failure (exit code {result.returncode})."
             )
+            continue
+
+        if getattr(args, "roi_only", False):
+            # User requested ROI extraction only; do not run montage/tracks.
             continue
 
         _run_montage_for_dataset(

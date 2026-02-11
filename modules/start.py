@@ -18,12 +18,18 @@ import os
 import gzip
 import glob
 import json
+import re
 
 import utils.settings as settings
 from utils.loading import (
     inject_flip_angle_into_sidecar_json,
+    inject_parrec_metadata_into_sidecar_json,
+    inject_repetition_time_excitation_into_sidecar_json,
+    inject_turbo_factor_into_sidecar_json,
     read_flip_angle_deg_from_par,
     read_protocol_name_from_par,
+    read_repetition_time_excitation_s_from_par,
+    read_turbo_factor_from_par,
     sanitize_dcm2niix_basename,
 )
 
@@ -227,6 +233,7 @@ def welcome_screen_choice():
 import subprocess
 from collections import defaultdict
 import os
+import shutil
 
 
 def decompress_gz_in_directory(directory):
@@ -255,7 +262,64 @@ def decompress_gz_in_directory(directory):
 
 
 def parrec2nifti(directory, nifti_directory):
+    directory = os.fspath(directory)
+    nifti_directory = os.fspath(nifti_directory)
     os.makedirs(nifti_directory, exist_ok=True)
+
+    def _ensure_common_tool_paths() -> None:
+        """GUI apps on macOS often start with a minimal PATH.
+
+        Homebrew installs to /opt/homebrew/bin on Apple Silicon.
+        """
+
+        try:
+            current = os.environ.get("PATH") or ""
+            parts = [p for p in current.split(":") if p]
+
+            candidates = []
+            for p in (
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/opt/local/bin",
+            ):
+                if os.path.isdir(p):
+                    candidates.append(p)
+
+            # Prepend missing candidates.
+            new_parts = [p for p in candidates if p not in parts] + parts
+            os.environ["PATH"] = ":".join(new_parts)
+        except Exception:
+            pass
+
+    def _resolve_dcm2niix() -> str | None:
+        # Explicit override
+        override = (os.environ.get("P_BRAIN_DCM2NIIX") or "").strip()
+        if override:
+            if os.path.isfile(override) and os.access(override, os.X_OK):
+                return override
+            # Allow specifying just a name; fall through to which after PATH tweaks.
+
+        _ensure_common_tool_paths()
+
+        path = shutil.which(override) if override and os.sep not in override else None
+        if path:
+            return path
+
+        path = shutil.which("dcm2niix")
+        if path:
+            return path
+
+        # Last-resort common absolute locations
+        for p in (
+            "/opt/homebrew/bin/dcm2niix",
+            "/usr/local/bin/dcm2niix",
+            "/opt/local/bin/dcm2niix",
+        ):
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
+
+    dcm2niix_path = _resolve_dcm2niix()
 
     def _nifti_path_from_json(json_path: str) -> str:
         base = json_path[:-5] if json_path.endswith('.json') else os.path.splitext(json_path)[0]
@@ -265,15 +329,50 @@ def parrec2nifti(directory, nifti_directory):
             return gz
         return nii
 
-    # Check for .PAR files in the directory
-    try:
-        par_files = [
-            f
-            for f in os.listdir(directory)
-            if f.lower().endswith('.par')
-        ]
-    except Exception:
-        par_files = []
+    def _find_parrec_pairs_one_level(root_dir: str):
+        """Return list of full paths to .par files that have a matching .rec in the same directory.
+
+        Scans root_dir and one level deep to match p-brain-web subject layouts.
+        """
+
+        candidates = [root_dir]
+        try:
+            for entry in os.scandir(root_dir):
+                if entry.is_dir() and not entry.name.startswith('.'):
+                    candidates.append(entry.path)
+        except Exception:
+            pass
+
+        par_paths = []
+        for base in candidates:
+            try:
+                files = [e.name for e in os.scandir(base) if e.is_file() and not e.name.startswith('.')]
+            except Exception:
+                continue
+
+            pars = {}
+            recs = set()
+            for name in files:
+                low = name.lower()
+                stem, ext = os.path.splitext(low)
+                if ext == '.par':
+                    pars[stem] = name
+                elif ext == '.rec':
+                    recs.add(stem)
+
+            for stem, par_name in pars.items():
+                if stem in recs:
+                    par_paths.append(os.path.join(base, par_name))
+
+        return par_paths
+
+    def _compact_name(name: str | None) -> str:
+        if not name:
+            return ""
+        return re.sub(r"[^0-9A-Za-z]+", "", str(name)).lower()
+
+    par_file_paths = _find_parrec_pairs_one_level(directory)
+    par_files = [os.path.basename(p) for p in par_file_paths]
 
     # If NIfTI already exists, we still try to enrich JSON metadata from PAR.
     nifti_present = False
@@ -289,44 +388,135 @@ def parrec2nifti(directory, nifti_directory):
             flip_angle_deg = settings.FLIP_ANGLE_DEG
             if flip_angle_deg is None:
                 flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
-            if flip_angle_deg is None:
-                continue
+            tr_exc_s = read_repetition_time_excitation_s_from_par(file_to_convert, default=None)
+            turbo_factor = read_turbo_factor_from_par(file_to_convert, default=None)
+            # Even when specific scalar fields are missing, we still enrich JSON
+            # with PAR-derived spacing/timing/TI to keep downstream metadata consistent.
 
             protocol_name = read_protocol_name_from_par(file_to_convert, default=None)
             protocol_sanitized = sanitize_dcm2niix_basename(protocol_name) if protocol_name else None
+            protocol_compact = _compact_name(protocol_name)
 
             candidate_jsons = []
             try:
                 for fname in os.listdir(nifti_directory):
                     if not fname.lower().endswith('.json'):
                         continue
+                    if fname.startswith('.'):
+                        continue
+
+                    # Most robust: match using metadata inside the JSON itself.
+                    try:
+                        json_path = os.path.join(nifti_directory, fname)
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                        if isinstance(meta, dict) and protocol_compact:
+                            proto_c = _compact_name(meta.get('ProtocolName'))
+                            series_c = _compact_name(meta.get('SeriesDescription'))
+                            if proto_c == protocol_compact or series_c == protocol_compact:
+                                candidate_jsons.append(json_path)
+                                continue
+                    except Exception:
+                        pass
+
                     if protocol_sanitized:
                         base = os.path.splitext(fname)[0]
                         base_sanitized = sanitize_dcm2niix_basename(base)
                         if base_sanitized.lower() == protocol_sanitized.lower():
+                            candidate_jsons.append(os.path.join(nifti_directory, fname))
+                            continue
+                    # More robust match: compare compacted (alphanumeric-only) forms.
+                    if protocol_compact:
+                        base = os.path.splitext(fname)[0]
+                        base_compact = _compact_name(base)
+                        if base_compact == protocol_compact:
                             candidate_jsons.append(os.path.join(nifti_directory, fname))
                 if not candidate_jsons and protocol_sanitized:
                     # Fallback: substring match.
                     for fname in os.listdir(nifti_directory):
                         if not fname.lower().endswith('.json'):
                             continue
+                        if fname.startswith('.'):
+                            continue
                         base = os.path.splitext(fname)[0]
                         if protocol_sanitized.lower() in sanitize_dcm2niix_basename(base).lower():
                             candidate_jsons.append(os.path.join(nifti_directory, fname))
+                            continue
+                        if protocol_compact:
+                            base_compact = _compact_name(base)
+                            if protocol_compact in base_compact or base_compact in protocol_compact:
+                                candidate_jsons.append(os.path.join(nifti_directory, fname))
             except Exception:
                 candidate_jsons = []
 
             for json_path in candidate_jsons:
-                inject_flip_angle_into_sidecar_json(
-                    _nifti_path_from_json(json_path),
-                    flip_angle_deg,
-                )
+                nifti_path = _nifti_path_from_json(json_path)
+                if flip_angle_deg is not None:
+                    inject_flip_angle_into_sidecar_json(nifti_path, flip_angle_deg)
+                if tr_exc_s is not None:
+                    inject_repetition_time_excitation_into_sidecar_json(nifti_path, tr_exc_s)
+                if turbo_factor is not None:
+                    inject_turbo_factor_into_sidecar_json(nifti_path, turbo_factor)
+                inject_parrec_metadata_into_sidecar_json(nifti_path, file_to_convert)
         return
 
-    if par_files:
+    def _run_dcm2niix(input_path: str) -> bool:
+        nonlocal dcm2niix_path
+        if dcm2niix_path is None:
+            # Try again in case PATH was updated after process start.
+            dcm2niix_path = _resolve_dcm2niix()
+
+        if dcm2niix_path is None:
+            # When invoked from p-brain-web we prefer to be non-fatal here; the
+            # pipeline will later error clearly if DCE/T1/etc are missing.
+            print(
+                "[parrec2nifti] dcm2niix not found (PATH may be minimal when launched from the app); "
+                "set P_BRAIN_DCM2NIIX=/full/path/to/dcm2niix or install into /opt/homebrew/bin or /usr/local/bin."
+            )
+            return False
+        # -b y: emit JSON sidecars (metadata)
+        # -r y: recurse into subfolders (common for DICOM exports)
+        try:
+            res = subprocess.run(
+                [
+                    dcm2niix_path,
+                    "-b",
+                    "y",
+                    "-r",
+                    "y",
+                    "-f",
+                    "%p",
+                    "-o",
+                    nifti_directory,
+                    "-v",
+                    "n",
+                    input_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if res.returncode != 0:
+                print(f"[parrec2nifti] dcm2niix failed for '{input_path}': {res.stderr}")
+                return False
+            return True
+        except Exception as e:
+            print(f"[parrec2nifti] Exception running dcm2niix for '{input_path}': {e}")
+            return False
+
+    def _has_nifti(out_dir: str) -> bool:
+        try:
+            return any(
+                f.lower().endswith(".nii") or f.lower().endswith(".nii.gz")
+                for f in os.listdir(out_dir)
+            )
+        except Exception:
+            return False
+
+    if par_file_paths:
         # Convert each .PAR file
-        for file in par_files:
-            file_to_convert = os.path.join(directory, file)
+        for file_to_convert in par_file_paths:
+            file = os.path.basename(file_to_convert)
             before_json = set()
             try:
                 before_json = {
@@ -334,41 +524,48 @@ def parrec2nifti(directory, nifti_directory):
                 }
             except Exception:
                 before_json = set()
-
-            command = f"dcm2niix -f %p -o {nifti_directory} -v n {file_to_convert}"
             try:
-                process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = process.communicate()
-                if process.returncode != 0:
-                    # If there was an error, output it
-                    print(f"Error converting {file}: {stderr.decode('utf-8')}")
-                else:
+                ok = _run_dcm2niix(file_to_convert)
+                if ok:
                     # If conversion was successful, print a confirmation message
                     print(f"Converted {file} successfully.")
 
                     flip_angle_deg = settings.FLIP_ANGLE_DEG
                     if flip_angle_deg is None:
                         flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
-                    if flip_angle_deg is not None:
+                    tr_exc_s = read_repetition_time_excitation_s_from_par(file_to_convert, default=None)
+                    turbo_factor = read_turbo_factor_from_par(file_to_convert, default=None)
+                    after_json = set()
+                    try:
+                        after_json = {
+                            f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
+                        }
+                    except Exception:
                         after_json = set()
-                        try:
-                            after_json = {
-                                f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
-                            }
-                        except Exception:
-                            after_json = set()
-                        new_json = sorted(after_json - before_json)
-                        for fname in new_json:
-                            json_path = os.path.join(nifti_directory, fname)
-                            inject_flip_angle_into_sidecar_json(
-                                _nifti_path_from_json(json_path),
-                                flip_angle_deg,
-                            )
+                    new_json = sorted(after_json - before_json)
+                    for fname in new_json:
+                        if fname.startswith('.'):
+                            continue
+                        json_path = os.path.join(nifti_directory, fname)
+                        nifti_path = _nifti_path_from_json(json_path)
+                        if flip_angle_deg is not None:
+                            inject_flip_angle_into_sidecar_json(nifti_path, flip_angle_deg)
+                        if tr_exc_s is not None:
+                            inject_repetition_time_excitation_into_sidecar_json(nifti_path, tr_exc_s)
+                        if turbo_factor is not None:
+                            inject_turbo_factor_into_sidecar_json(nifti_path, turbo_factor)
+                        inject_parrec_metadata_into_sidecar_json(nifti_path, file_to_convert)
             except Exception as e:
                 # If there was an exception, output the exception details
                 print(f"Exception during conversion of {file}: {e}")
     else:
-        # No .PAR files. Avoid decompressing by default (can be hours on large cohorts).
+        # No .PAR files. If no NIfTI exists yet, try DICOM conversion.
+        if not _has_nifti(nifti_directory):
+            # Heuristic: if there are DICOM-ish files in the subject root, run there;
+            # otherwise run on the subject root anyway with recursive enabled.
+            _run_dcm2niix(directory)
+
+        # Avoid decompressing by default (can be hours on large cohorts).
         # Opt-in via: PBRAIN_DECOMPRESS_NIFTI_GZ=1
         if os.environ.get("PBRAIN_DECOMPRESS_NIFTI_GZ") == "1":
             decompress_gz_in_directory(nifti_directory)

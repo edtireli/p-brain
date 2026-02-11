@@ -2574,6 +2574,11 @@ class _FFmpegPipeWriter:
         stdin = self._process.stdin
         if stdin and not stdin.closed:
             stdin.close()
+            # subprocess.communicate() flushes stdin when present; avoid flushing a closed pipe.
+            try:
+                self._process.stdin = None
+            except Exception:
+                pass
         stdout, stderr = self._process.communicate()
         if self._process.returncode != 0:
             raise RuntimeError(
@@ -3325,6 +3330,39 @@ def _header_debug(img: nib.Nifti1Image) -> dict:
     return out
 
 
+def _load_tractography_meta(meta_path: str) -> Optional[dict[str, object]]:
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else None
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _canonical_orientation_model_name(model: Optional[str]) -> str:
+    name = (model or "DTI").strip().upper()
+    if not name:
+        return "DTI"
+    if name in {"DT", "DTI", "TENSOR"}:
+        return "DTI"
+    return name
+
+
+def _tractography_meta_matches(meta: Optional[dict[str, object]], requested_model: str) -> bool:
+    """Return True when saved metadata indicates cached streamlines match request."""
+
+    requested = _canonical_orientation_model_name(requested_model)
+    if not meta:
+        # Legacy tractography.trk files had no meta; only reuse for default tensor/DTI.
+        return requested == "DTI"
+    saved = meta.get("diffusion_model")
+    if isinstance(saved, str) and saved.strip():
+        return _canonical_orientation_model_name(saved) == requested
+    return requested == "DTI"
+
+
 def generate_tractography(
     nifti_directory: str,
     analysis_directory: str,
@@ -3410,6 +3448,8 @@ def generate_tractography(
         pass
 
     tract_path = os.path.join(diffusion_dir, "tractography.trk")
+    tract_meta_path = tract_path + ".meta.json"
+    debug_blob["tract_meta_path"] = tract_meta_path
     if render_only and not os.path.exists(tract_path):
         raise FileNotFoundError(
             "Existing tractography streamlines not found – run without --tracks_only first."
@@ -3421,6 +3461,11 @@ def generate_tractography(
         forced_backup_path = f"{tract_path}.forced_backup_{timestamp}"
         try:
             shutil.move(tract_path, forced_backup_path)
+            try:
+                if os.path.exists(tract_meta_path):
+                    shutil.move(tract_meta_path, forced_backup_path + ".meta.json")
+            except Exception:
+                debug_blob["forced_backup_meta_error"] = traceback.format_exc()
             _dbg(
                 f"force_regenerate moved existing tractography to backup: {forced_backup_path}"
             )
@@ -3438,7 +3483,9 @@ def generate_tractography(
     bvec_path = diffusion_dataset.bvec_path
     diffusion_label = diffusion_dataset.label
     dataset_default_model = diffusion_dataset.default_model or "DTI"
-    diffusion_model_choice = (diffusion_model or dataset_default_model).upper()
+    diffusion_model_choice = _canonical_orientation_model_name(
+        (diffusion_model or dataset_default_model)
+    )
 
     debug_blob["diffusion_acquisition"] = {
         "label": diffusion_label,
@@ -3498,6 +3545,21 @@ def generate_tractography(
     if force_regenerate:
         reuse_existing = False
         regeneration_reason = "forced"
+
+    if reuse_existing and os.path.exists(tract_path):
+        cached_meta = _load_tractography_meta(tract_meta_path)
+        meta_ok = _tractography_meta_matches(cached_meta, diffusion_model_choice)
+        debug_blob["tract_meta"] = cached_meta
+        debug_blob["tract_meta_matches"] = meta_ok
+        if not meta_ok:
+            if render_only:
+                raise RuntimeError(
+                    "Existing tractography.trk was computed with a different orientation model; "
+                    "rerun without --tracks_only or pass --tracks_force."
+                )
+            reuse_existing = False
+            regeneration_reason = "diffusion_model_changed"
+
     debug_blob["reuse_existing"] = reuse_existing
     if reuse_existing and os.path.exists(tract_path):
         if _DBG:
@@ -4168,6 +4230,17 @@ def generate_tractography(
                 )
                 nib_streamlines.save(tractogram, tract_path)
             _dbg(f"saved tractogram: {tract_path}")
+
+            try:
+                meta_payload = {
+                    "ts": datetime.datetime.now().isoformat(),
+                    "diffusion_model": diffusion_model_choice,
+                    "dwi": os.path.basename(dwi_path) if isinstance(dwi_path, str) else None,
+                }
+                with open(tract_meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta_payload, f, indent=2, sort_keys=True)
+            except Exception:
+                debug_blob["tract_meta_write_error"] = traceback.format_exc()
         except Exception:
             if _DBG:
                 _dbg_print("[tracks][err] Saving tractogram failed")

@@ -7,4 +7,14 @@ AI/*
 !data/.gitkeep
 !AI/.gitkeep
 
+# Local configs (never commit)
+.pbrain.env
+.env
+
+# Common build artifacts
+*.dmg
+dist/
+build/
+.venv/
+
 .vscode/

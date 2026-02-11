@@ -59,6 +59,45 @@ except Exception:  # pragma: no cover
     ImageFont = None  # type: ignore[assignment]
 
 
+def _display_orient2d(a2: np.ndarray) -> np.ndarray:
+    """Orient a 2D slice consistently for PNG rendering.
+
+    By default, this matches the validator/MATLAB viewing convention for the
+    Hemisure datasets: rotate in-plane by +90° (np.rot90(k=1)).
+
+    Override via env vars:
+    - PBRAIN_DISPLAY_ROT90_K: integer k for np.rot90 (default: 1)
+    - PBRAIN_DISPLAY_FLIP_LR: 0/1 (default: 0)
+    - PBRAIN_DISPLAY_FLIP_UD: 0/1 (default: 0)
+    """
+
+    out = np.asarray(a2)
+    try:
+        k = int((os.environ.get("PBRAIN_DISPLAY_ROT90_K") or "1").strip()) % 4
+    except Exception:
+        k = 1
+    if k:
+        out = np.rot90(out, k=k)
+
+    flr = (os.environ.get("PBRAIN_DISPLAY_FLIP_LR") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    fud = (os.environ.get("PBRAIN_DISPLAY_FLIP_UD") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if flr:
+        out = np.fliplr(out)
+    if fud:
+        out = np.flipud(out)
+    return out
+
+
 def _load_pillow_font(size: int) -> Any:
     """Best-effort font loader for Pillow rendering."""
     if ImageFont is None:
@@ -1041,8 +1080,164 @@ def generate_parametric_montages(
         except Exception as exc:
             print(f"[montage] Failed to render {map_path}: {exc}")
 
+    # Optional: export per-slice diagnostics for all available maps.
+    if (os.environ.get("P_BRAIN_WRITE_SLICE_DIAGNOSTICS") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            _export_per_slice_diagnostics(
+                analysis_directory,
+                image_directory,
+                reference_img=reference_img,
+                overlay=overlay,
+                segmentation_img=segmentation_img,
+                brain_mask=brain_mask,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[montage] Slice diagnostics export failed: {exc}")
+
     if not generated_any:
         print("[montage] No parametric maps found for montage rendering.")
+
+
+def _export_per_slice_diagnostics(
+    analysis_directory: str,
+    image_directory: str,
+    *,
+    reference_img: nib.Nifti1Image,
+    overlay: Dict[str, Any] | None,
+    segmentation_img: nib.Nifti1Image | None,
+    brain_mask: np.ndarray | None,
+) -> None:
+    """Write per-slice diagnostic PNGs for each available map.
+
+    Output layout (relative to `image_directory`):
+      Images/AI/SliceDiagnostics/<map_base><suffix>/slice_XXX.png
+    """
+
+    out_root = os.path.join(image_directory, "AI", "SliceDiagnostics")
+    os.makedirs(out_root, exist_ok=True)
+
+    # Reuse the same discovery logic as montage rendering.
+    for job in MAP_JOBS:
+        if _is_diffusion_job(job) and job.base.endswith("_map_atlas"):
+            continue
+
+        found = _find_available_maps(job, analysis_directory)
+        if not found:
+            continue
+
+        for suffix, map_path in found.items():
+            series_name = f"{job.base}{suffix}" if suffix else job.base
+            out_dir = os.path.join(out_root, series_name)
+            os.makedirs(out_dir, exist_ok=True)
+            try:
+                _render_map_per_slice(
+                    map_path,
+                    out_dir,
+                    job,
+                    reference_img=reference_img,
+                    overlay=overlay,
+                    segmentation_img=segmentation_img,
+                    brain_mask=None if job.base.endswith("_map_atlas") else brain_mask,
+                )
+                print(f"[montage] Slice diagnostics: wrote {os.path.relpath(out_dir, start=image_directory)}")
+            except Exception as exc:
+                print(f"[montage] Slice diagnostics failed for {map_path}: {exc}")
+
+
+def _render_map_per_slice(
+    map_path: str,
+    out_dir: str,
+    job: MapJob,
+    *,
+    reference_img: nib.Nifti1Image,
+    overlay: Dict[str, Any] | None,
+    segmentation_img: nib.Nifti1Image | None,
+    brain_mask: np.ndarray | None,
+) -> None:
+    """Render a single parametric map as one PNG per axial slice."""
+
+    img = nib.load(map_path)
+    data = np.asarray(img.get_fdata(), dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError("Expected a 3D parametric map")
+
+    # Resample to reference grid when needed (keep order=1 for continuous maps).
+    if data.shape != reference_img.shape or not np.allclose(np.asarray(img.affine), np.asarray(reference_img.affine)):
+        try:
+            resampled = resample_from_to(img, reference_img, order=1)
+            data = np.asarray(resampled.get_fdata(), dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError("Unable to resample map to reference grid") from exc
+
+    # Build underlay for consistent slice selection/cropping.
+    underlay = None
+    if overlay is not None and isinstance(overlay.get("t1"), np.ndarray):
+        underlay = np.asarray(overlay["t1"], dtype=np.float32)
+
+    # Masking rules.
+    mask = None
+    if segmentation_img is not None and job.base.endswith("_map_atlas"):
+        seg = np.asarray(segmentation_img.get_fdata(), dtype=np.float32)
+        mask = np.isfinite(seg) & (seg > 0.5)
+    elif brain_mask is not None:
+        mask = np.asarray(brain_mask, dtype=bool)
+
+    if mask is not None and mask.shape == data.shape:
+        data = np.where(mask, data, np.nan)
+
+    if job.mask_zero:
+        data = np.where(data == 0, np.nan, data)
+
+    finite = np.isfinite(data)
+    if not np.any(finite):
+        return
+
+    vmin = float(job.vmin) if job.vmin is not None else float(np.nanpercentile(data[finite], 2))
+    vmax = float(job.vmax) if job.vmax is not None else float(np.nanpercentile(data[finite], 98))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+        vmin = float(np.nanmin(data[finite]))
+        vmax = float(np.nanmax(data[finite]))
+        if vmin == vmax:
+            vmax = vmin + 1.0
+
+    cmap = plt.get_cmap(job.cmap_name)
+    cmap = cmap.copy() if hasattr(cmap, "copy") else cmap
+    try:
+        cmap.set_bad("black")
+    except Exception:
+        pass
+
+    units = _units_for_job(job)
+
+    z = int(data.shape[2])
+    for k in range(z):
+        sl = data[:, :, k]
+        if not np.isfinite(sl).any():
+            continue
+
+        sl = _display_orient2d(sl)
+
+        fig, ax = plt.subplots(figsize=(5.2, 5.2), dpi=160)
+        ax.set_title(f"{job.base} slice {k+1}", fontsize=10)
+
+        if underlay is not None and underlay.shape == data.shape:
+            bg = _display_orient2d(underlay[:, :, k])
+            ax.imshow(bg, cmap="gray", origin="lower")
+
+        im = ax.imshow(sl, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower", alpha=0.85 if underlay is not None else 1.0)
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        if units:
+            cb.set_label(units, fontsize=9)
+
+        h, w = sl.shape
+        ax.set_xticks([0, int(w // 2), int(w - 1)])
+        ax.set_yticks([0, int(h // 2), int(h - 1)])
+        ax.tick_params(labelsize=7)
+
+        out_path = os.path.join(out_dir, f"slice_{k+1:03d}.png")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
 
 
 def compute_fixed_colorbar_width(

@@ -1,6 +1,8 @@
 from utils.loading import *
 import nibabel as nib 
 import numpy as np
+
+from utils.loading import build_time_points_s, resolve_dce_time_step_s
 from termcolor import colored
 from utils.fonts import *
 from utils.mapping import *
@@ -156,7 +158,21 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
         print(f"Processing slice {slice_index} with {len(roi_voxels)} voxels.")  # Debugging output
         print(f"roi_voxels sample: {roi_voxels[:5]}")
         plot_time_intensity_curves(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
-        plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, nifti, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
+        plot_time_intensity_curves_and_CTC(
+            data_4d,
+            roi_voxels,
+            slice_index,
+            selector.frame_index,
+            time,
+            analysis,
+            image,
+            nifti,
+            type=type,
+            subtype=subtype,
+            IsVFA=IsVFA,
+            filenames=filenames,
+            rotate_ac=rotate_AC,
+        )
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white')) 
 
     rerun = input('[!] Repeat analysis? (y/n): ')
@@ -182,7 +198,21 @@ def start_roi_selection(filename, rotate_AC=True, time=1, analysis='dir', image=
         [os.remove(f) for f in glob.glob(os.path.join(analysis, 'ITC Data', type, subtype, '*.npy'))]
         for slice_index, roi_voxels in selected_voxels.items():
             plot_time_intensity_curves(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, type=type, subtype=subtype)
-            plot_time_intensity_curves_and_CTC(data_4d, roi_voxels, slice_index, selector.frame_index, time, analysis, image, nifti, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
+            plot_time_intensity_curves_and_CTC(
+                data_4d,
+                roi_voxels,
+                slice_index,
+                selector.frame_index,
+                time,
+                analysis,
+                image,
+                nifti,
+                type=type,
+                subtype=subtype,
+                IsVFA=IsVFA,
+                filenames=filenames,
+                rotate_ac=rotate_AC,
+            )
         print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))  
 
         rerun2 = input('[!] Repeat analysis? (y/n): ')
@@ -233,9 +263,8 @@ def input_function(analysis_directory, nifti_directory, image_directory, filenam
     IsVFA, IsIR, _, _, _, _, _ = parameters
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
-    TR = nifti_img.header.get_zooms()[-1] #*1e3
     num_volumes = nifti_img.shape[-1]
-    total_scan_duration = TR * num_volumes #*1e-3
-    time_points_s = np.linspace(0, total_scan_duration, num_volumes)
+    dt_s = resolve_dce_time_step_s(filename, default=None)
+    time_points_s = build_time_points_s(num_volumes, dt_s)
     np.save(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'), time_points_s)
     start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis_directory, image=image_directory, nifti=nifti_directory, IsVFA=IsVFA, filenames=filenames)

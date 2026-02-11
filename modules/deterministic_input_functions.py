@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
 from scipy import ndimage
 
 import utils.settings as settings
+import modules.time_shifting as tscc
 from utils.mapping import choice2type
 from utils.loading import (
     build_time_points_s,
@@ -1229,7 +1230,7 @@ def _write_summary_images(
     2) Final rICA/lICA/SSS ROIs loaded from Analysis/ROI NIfTI
     """
 
-    out_dir = os.path.join(image_directory, "deterministic") if image_directory else ""
+    out_dir = os.path.join(image_directory, "deterministic")
     if not out_dir:
         return
     os.makedirs(out_dir, exist_ok=True)
@@ -1277,16 +1278,17 @@ def _write_summary_images(
     )
 
     zdim = int(peak_amp.shape[2])
-    sel_pca = [z for z in range(zdim) if np.any(vessel_mask[:, :, z])]
-    if not sel_pca:
-        sel_pca = list(range(zdim))
+    sel = [z for z in range(zdim) if np.any(vessel_mask[:, :, z])]
+    if not sel:
+        sel = list(range(zdim))
     max_slices = int(os.getenv("P_BRAIN_ROI_DEBUG_MONTAGE_MAX_SLICES", "12") or "12")
-    sel_pca = sel_pca[: max(1, min(max_slices, len(sel_pca)))]
+    sel = sel[: max(1, min(max_slices, len(sel)))]
 
     cols = 4
+    fine_cols = cols * 2
+    rows = int(np.ceil(len(sel) / cols))
 
-    def _make_centered_montage_axes(fig: plt.Figure, n_panels: int, rows: int) -> list[plt.Axes]:
-        fine_cols = cols * 2
+    def _make_centered_montage_axes(fig: plt.Figure, n_panels: int) -> list[plt.Axes]:
         gs = fig.add_gridspec(rows, fine_cols)
         axes: list[plt.Axes] = []
         last_row_count = n_panels - (rows - 1) * cols
@@ -1307,14 +1309,13 @@ def _write_summary_images(
         plt.Line2D([0], [0], color="red", lw=3, label="Artery"),
         plt.Line2D([0], [0], color="blue", lw=3, label="Vein"),
     ]
-    title_fs = int(os.getenv("P_BRAIN_ROI_SUMMARY_FONTSIZE", "18") or "18")
-    legend_fs = int(os.getenv("P_BRAIN_ROI_SUMMARY_FONTSIZE", "18") or "18")
+    title_fs = int(os.getenv("P_BRAIN_ROI_SUMMARY_FONTSIZE", "14") or "14")
+    legend_fs = int(os.getenv("P_BRAIN_ROI_SUMMARY_FONTSIZE", "14") or "14")
 
     # 1) Artery/Vein montage
-    rows_pca = int(np.ceil(len(sel_pca) / cols))
-    fig = plt.figure(figsize=(4.2 * cols, 4.2 * rows_pca))
-    axes = _make_centered_montage_axes(fig, len(sel_pca), rows_pca)
-    for ax_i, z in enumerate(sel_pca):
+    fig = plt.figure(figsize=(4.2 * cols, 4.2 * rows))
+    axes = _make_centered_montage_axes(fig, len(sel))
+    for ax_i, z in enumerate(sel):
         ax = axes[ax_i]
         base = _rot90_ccw(peak_amp_f[:, :, z])
         ax.imshow(base, cmap="gray")
@@ -1373,52 +1374,14 @@ def _write_summary_images(
                 pass
 
     if roi_masks:
-        def _nonempty_slices(mask3d: np.ndarray) -> list[int]:
-            if mask3d.ndim != 3:
-                return []
-            zmax = min(int(zdim), int(mask3d.shape[2]))
-            return [z for z in range(zmax) if np.any(mask3d[:, :, z])]
-
-        # IMPORTANT: Choose montage slices from the final ROI masks, not from the PCA vessel mask.
-        # The PCA vessel-mask slice selection can omit small ICA slices, which makes arteries look
-        # "ignored" even when the saved ICA masks are non-empty.
-        sel_final: list[int] = []
-        for k in ("rica", "lica", "sss"):
-            if k in roi_masks:
-                sel_final.extend(_nonempty_slices(roi_masks[k]))
-        sel_final = sorted(set(int(z) for z in sel_final))
-        if not sel_final:
-            sel_final = list(sel_pca)
-
-        if len(sel_final) > max_slices:
-            artery_slices: list[int] = []
-            if "rica" in roi_masks:
-                artery_slices.extend(_nonempty_slices(roi_masks["rica"]))
-            if "lica" in roi_masks:
-                artery_slices.extend(_nonempty_slices(roi_masks["lica"]))
-            artery_slices = sorted(set(int(z) for z in artery_slices))
-            keep: list[int] = []
-            for z in artery_slices:
-                if z not in keep:
-                    keep.append(z)
-                if len(keep) >= max_slices:
-                    break
-            for z in sel_final:
-                if z not in keep:
-                    keep.append(z)
-                if len(keep) >= max_slices:
-                    break
-            sel_final = sorted(keep[:max_slices])
-
         final_legend_handles = [
             plt.Line2D([0], [0], color="red", lw=3, label="Right ICA"),
             plt.Line2D([0], [0], color="orange", lw=3, label="Left ICA"),
             plt.Line2D([0], [0], color="blue", lw=3, label="SSS"),
         ]
-        rows_final = int(np.ceil(len(sel_final) / cols))
-        fig = plt.figure(figsize=(4.2 * cols, 4.2 * rows_final))
-        axes = _make_centered_montage_axes(fig, len(sel_final), rows_final)
-        for ax_i, z in enumerate(sel_final):
+        fig = plt.figure(figsize=(4.2 * cols, 4.2 * rows))
+        axes = _make_centered_montage_axes(fig, len(sel))
+        for ax_i, z in enumerate(sel):
             ax = axes[ax_i]
             base = _rot90_ccw(peak_amp_f[:, :, z])
             ax.imshow(base, cmap="gray")
@@ -1804,7 +1767,7 @@ def _save_debug_outputs(
     # Cluster the PCA scores to get curve families.
     k_clusters = int(os.getenv("P_BRAIN_ROI_PCA_N_CLUSTERS", "6") or "6")
     k_clusters = max(2, min(k_clusters, 12))
-    labels, _centers = _kmeans(scores, k_clusters, seed=int(os.getenv("P_BRAIN_ROI_PCA_SEED", "0") or "0"))
+    labels, centers = _kmeans(scores, k_clusters, seed=int(os.getenv("P_BRAIN_ROI_PCA_SEED", "0") or "0"))
 
     # Compute mean curves per cluster.
     cluster_means = []
@@ -1838,6 +1801,49 @@ def _save_debug_outputs(
     fig.savefig(os.path.join(debug_dir, "pca_curve_families.png"), dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+    # PCA score-space plot (cluster scatter).
+    if scores.shape[1] >= 2:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        cmap_name = "tab20" if k_clusters > 10 else "tab10"
+        cmap = plt.cm.get_cmap(cmap_name, k_clusters)
+        sc = ax.scatter(
+            scores[:, 0],
+            scores[:, 1],
+            c=labels,
+            cmap=cmap,
+            s=14,
+            alpha=0.85,
+            linewidths=0,
+        )
+        if isinstance(centers, np.ndarray) and centers.shape[0] == k_clusters and centers.shape[1] >= 2:
+            ax.scatter(
+                centers[:, 0],
+                centers[:, 1],
+                c=np.arange(k_clusters),
+                cmap=cmap,
+                s=140,
+                marker="X",
+                edgecolors="black",
+                linewidths=0.6,
+            )
+        ax.set_title("PCA score space (k-means clusters)")
+        ax.set_xlabel("PC1 score")
+        ax.set_ylabel("PC2 score")
+        ax.grid(True, alpha=0.25)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        cbar = fig.colorbar(sc, ax=ax, ticks=np.arange(k_clusters), pad=0.01, fraction=0.05)
+        cbar.set_label("Cluster")
+        fig.tight_layout()
+
+        fig.savefig(os.path.join(debug_dir, "pca_space_clusters.png"), dpi=300, bbox_inches="tight")
+
+        if image_directory:
+            out_dir = os.path.join(image_directory, "deterministic")
+            os.makedirs(out_dir, exist_ok=True)
+            fig.savefig(os.path.join(out_dir, "pca_space_clusters.png"), dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
     # Choose artery/vein families from cluster TTP.
     valid = [(ci, t) for ci, t in enumerate(cluster_ttps) if t < 10**9]
     if len(valid) >= 2:
@@ -1866,6 +1872,652 @@ def _save_debug_outputs(
         nib.Nifti1Image(family_masks[..., vein_ci], affine=ref_img.affine, header=ref_img.header),
         os.path.join(debug_dir, "pca_family_mask_vein.nii.gz"),
     )
+
+
+def _normalize_curve_for_pca(
+    curve: np.ndarray,
+    *,
+    baseline_frames: int,
+    normalize: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (raw_curve, normalized_curve) used by PCA-style plots.
+
+    When ``normalize`` is enabled, normalization matches the PCA debug logic:
+    subtract baseline mean, zero out baseline frames, and scale by the 95th
+    percentile of absolute deviation.
+    """
+
+    curve = np.asarray(curve, dtype=np.float32).copy()
+    baseline_frames = max(1, int(baseline_frames))
+    if curve.size == 0:
+        return curve, curve
+    if not normalize:
+        return curve, curve
+    base = float(np.mean(curve[:baseline_frames]))
+    centered = curve - base
+    centered[:baseline_frames] = 0.0
+    denom = float(np.percentile(np.abs(centered), 95)) if centered.size else 1.0
+    if not np.isfinite(denom) or denom <= 1e-6:
+        denom = 1.0
+    normalized = centered / denom
+    return curve, normalized.astype(np.float32)
+
+
+def _write_normalization_demo_plot(
+    *,
+    out_path: str,
+    curve: np.ndarray,
+    baseline_frames: int,
+    title: str,
+    normalize: bool = True,
+    time_s: np.ndarray | None = None,
+    x_label: str = "Time (s)",
+    y_label: str = "",
+) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    raw, norm = _normalize_curve_for_pca(curve, baseline_frames=baseline_frames, normalize=normalize)
+    fig, ax = plt.subplots(1, 1, figsize=(9, 4))
+    x = np.asarray(time_s, dtype=np.float32) if time_s is not None else np.arange(raw.size, dtype=np.float32)
+    ax.plot(
+        x,
+        raw,
+        color="#9e9e9e",
+        alpha=0.25,
+        linewidth=1.2,
+        linestyle="--",
+        label="Raw" if normalize else "Raw (normalization disabled)",
+    )
+    if normalize:
+        ax.plot(x, norm, color="red", alpha=0.95, linewidth=1.3, label="Normalized")
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    if y_label:
+        ax.set_ylabel(y_label)
+    ax.grid(True, alpha=0.2)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="best", frameon=False)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _write_pca_and_normalization_plots(
+    *,
+    analysis_directory: str,
+    image_directory: str,
+    ref_img: nib.Nifti1Image,
+    dce_path: str,
+    dce4d: np.ndarray,
+    brain_mask: np.ndarray,
+    cfg: GeometryRoiConfig,
+    peak_amp: np.ndarray,
+) -> None:
+    """Write PCA plots + normalization demos to Images/deterministic.
+
+    This is intentionally lightweight (no 3D NIfTIs / per-slice overlays) so it can
+    run alongside the standard summary montage.
+    """
+
+    if not image_directory:
+        return
+    out_dir = os.path.join(image_directory, "deterministic")
+    os.makedirs(out_dir, exist_ok=True)
+
+    baseline_frames = int(cfg.baseline_frames)
+    zdim = int(dce4d.shape[2])
+
+    normalize_curves = _getenv_bool("P_BRAIN_ROI_NORMALIZE_CURVES", default=True)
+
+    tr_s = 1.0
+    try:
+        zooms = ref_img.header.get_zooms()
+        if zooms and len(zooms) >= 4 and np.isfinite(float(zooms[-1])):
+            tr_s = float(zooms[-1])
+    except Exception:
+        tr_s = 1.0
+
+    # --- PCA plots (signal-space by default, optional concentration-space).
+    pca_space = (os.getenv("P_BRAIN_ROI_PCA_PLOTS_SPACE", "signal") or "signal").strip().lower()
+    if pca_space not in {"signal", "concentration", "ctc"}:
+        pca_space = "signal"
+
+    # Candidate vessel voxels for PCA.
+    bm = brain_mask.astype(bool)
+    vessel_mask, _ = _adaptive_percentile_mask(
+        np.nan_to_num(peak_amp, nan=0.0, posinf=0.0, neginf=0.0),
+        bm,
+        start_pct=float(os.getenv("P_BRAIN_ROI_VESSEL_PCT", "99.0") or "99.0"),
+        min_pct=float(os.getenv("P_BRAIN_ROI_VESSEL_MIN_PCT", "95.0") or "95.0"),
+        step=0.5,
+        min_vox=int(os.getenv("P_BRAIN_ROI_PCA_MIN_VOXELS", "1500") or "1500"),
+    )
+
+    max_vox = int(os.getenv("P_BRAIN_ROI_PCA_MAX_VOXELS", "20000") or "20000")
+    pca_mid_only = _getenv_bool("P_BRAIN_ROI_DEBUG_PCA_MIDZ_ONLY", default=True)
+    vmask_for_pca = vessel_mask & (_middle_slice_mask(vessel_mask.shape) if pca_mid_only else True)
+    pts = _sample_voxel_indices(vmask_for_pca, peak_amp, max_voxels=max_vox)
+    pts = np.asarray(pts, dtype=np.int64)
+    if pts.shape[0] >= 256:
+        curves = None
+        y_label = "MR Signal (a.u.)"
+
+        if pca_space in {"concentration", "ctc"}:
+            ctc_path = os.path.join(analysis_directory, "CTC Data", "Tissue", "brain_concentration_4d.nii.gz")
+            ctc_img = None
+            if os.path.isfile(ctc_path):
+                try:
+                    ctc_img = nib.load(ctc_path)
+                except Exception:
+                    ctc_img = None
+            if ctc_img is None:
+                # Best-effort compute using saturation model if fitting maps exist.
+                try:
+                    _write_brain_concentration_nifti(
+                        dce4d=dce4d,
+                        ref_img=ref_img,
+                        dce_path=dce_path,
+                        analysis_directory=analysis_directory,
+                        brain_mask=brain_mask,
+                        baseline_frames=baseline_frames,
+                        output_path=ctc_path,
+                        batch_voxels=int(os.getenv("P_BRAIN_CTC_BATCH_VOXELS", "20000") or "20000"),
+                    )
+                    ctc_img = nib.load(ctc_path)
+                except Exception:
+                    ctc_img = None
+
+            if ctc_img is not None:
+                ctc_dataobj = ctc_img.dataobj
+                t_len = int(ctc_img.shape[3])
+                curves = np.empty((pts.shape[0], t_len), dtype=np.float32)
+                for i, (x, y, z) in enumerate(pts):
+                    curves[i, :] = np.asarray(ctc_dataobj[int(x), int(y), int(z), :], dtype=np.float32)
+                y_label = "Concentration (mmol/100g/min)"
+
+        if curves is None:
+            # Signal curves from DCE directly (always available).
+            t_len = int(dce4d.shape[3])
+            curves = np.empty((pts.shape[0], t_len), dtype=np.float32)
+            for i, (x, y, z) in enumerate(pts):
+                curves[i, :] = np.asarray(dce4d[int(x), int(y), int(z), :], dtype=np.float32)
+
+        t_len = int(curves.shape[1])
+        time_s = (np.arange(t_len, dtype=np.float32) * float(tr_s)).astype(np.float32)
+
+        if normalize_curves:
+            base = curves[:, :baseline_frames].mean(axis=1, keepdims=True)
+            X = curves - base
+            X[:, :baseline_frames] = 0.0
+            denom = np.percentile(np.abs(X), 95, axis=1, keepdims=True)
+            denom = np.where(denom <= 1e-6, 1.0, denom)
+            Xn = X / denom
+        else:
+            Xn = curves.astype(np.float32)
+        Xn = Xn - Xn.mean(axis=0, keepdims=True)
+
+        try:
+            U, S, Vt = np.linalg.svd(Xn, full_matrices=False)
+            k_pc = int(os.getenv("P_BRAIN_ROI_PCA_COMPONENTS", "3") or "3")
+            k_pc = max(1, min(k_pc, Vt.shape[0]))
+            pc_time = Vt[:k_pc].astype(np.float32)
+            scores = (U[:, :k_pc] * S[:k_pc]).astype(np.float32)
+
+            # Dominant PC membership per sampled voxel (by absolute score magnitude).
+            pc_membership = np.argmax(np.abs(scores), axis=1).astype(np.int32) if scores.size else np.zeros((scores.shape[0],), dtype=np.int32)
+            pc_colors = ["red", "green", "blue", "purple", "orange", "cyan"]
+            pc_colors = pc_colors[: max(1, int(k_pc))]
+
+            k_clusters = int(os.getenv("P_BRAIN_ROI_PCA_N_CLUSTERS", "6") or "6")
+            k_clusters = max(2, min(k_clusters, 12))
+            labels, centers = _kmeans(scores, k_clusters, seed=int(os.getenv("P_BRAIN_ROI_PCA_SEED", "0") or "0"))
+
+            # Cluster mean curves and TTPs.
+            cluster_means = []
+            cluster_ttps = []
+            for ci in range(k_clusters):
+                m = labels == ci
+                if not np.any(m):
+                    cluster_means.append(None)
+                    cluster_ttps.append(10**9)
+                    continue
+                mean_curve = curves[m].mean(axis=0)
+                cluster_means.append(mean_curve)
+                mc = mean_curve.copy()
+                mc[:baseline_frames] = -np.inf
+                cluster_ttps.append(int(np.argmax(mc)))
+
+            # PCA components + family means.
+            fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+            for i in range(k_pc):
+                axes[0].plot(time_s, pc_time[i], label=f"PC{i+1}", linewidth=1.2)
+            axes[0].set_title("PCA components (timecourses)")
+            axes[0].set_ylabel("Component amplitude (a.u.)")
+            axes[0].legend(loc="best")
+            axes[0].grid(True, which="major", alpha=0.35, linewidth=0.8)
+            for ci, mean_curve in enumerate(cluster_means):
+                if mean_curve is None:
+                    continue
+                axes[1].plot(time_s, mean_curve, label=f"C{ci} (ttp={cluster_ttps[ci]})", linewidth=1.2)
+            axes[1].set_title("Curve families (cluster mean curves)")
+            axes[1].set_xlabel("Time (s)")
+            axes[1].set_ylabel(y_label)
+            axes[1].legend(loc="best", ncol=2)
+            axes[1].grid(True, which="major", alpha=0.35, linewidth=0.8)
+
+            try:
+                from matplotlib.ticker import MaxNLocator
+
+                for ax in axes:
+                    ax.xaxis.set_major_locator(MaxNLocator(nbins=8))
+                    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+            except Exception:
+                pass
+
+            plt.tight_layout()
+            fig.savefig(os.path.join(out_dir, "pca_curve_families.png"), dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+            # PCA score space.
+            if scores.shape[1] >= 2:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                cmap_name = "tab20" if k_clusters > 10 else "tab10"
+                cmap = plt.cm.get_cmap(cmap_name, k_clusters)
+                sc = ax.scatter(
+                    scores[:, 0],
+                    scores[:, 1],
+                    c=labels,
+                    cmap=cmap,
+                    s=14,
+                    alpha=0.85,
+                    linewidths=0,
+                )
+                if isinstance(centers, np.ndarray) and centers.shape[0] == k_clusters and centers.shape[1] >= 2:
+                    ax.scatter(
+                        centers[:, 0],
+                        centers[:, 1],
+                        c=np.arange(k_clusters),
+                        cmap=cmap,
+                        s=140,
+                        marker="X",
+                        edgecolors="black",
+                        linewidths=0.6,
+                    )
+                ax.set_title("PCA score space (k-means clusters)")
+                ax.set_xlabel("PC1 score")
+                ax.set_ylabel("PC2 score")
+                ax.grid(True, alpha=0.25)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                cbar = fig.colorbar(sc, ax=ax, ticks=np.arange(k_clusters), pad=0.01, fraction=0.05)
+                cbar.set_label("Cluster")
+                fig.tight_layout()
+                fig.savefig(os.path.join(out_dir, "pca_space_clusters.png"), dpi=300, bbox_inches="tight")
+                plt.close(fig)
+
+                # PC-membership score-space plot (same colors used by the montage below).
+                fig, ax = plt.subplots(figsize=(8, 6))
+                for i in range(int(k_pc)):
+                    m = pc_membership == i
+                    if not np.any(m):
+                        continue
+                    ax.scatter(
+                        scores[m, 0],
+                        scores[m, 1],
+                        s=12,
+                        alpha=0.85,
+                        linewidths=0,
+                        c=pc_colors[i],
+                        label=f"PC{i+1}",
+                    )
+                ax.set_title("PCA score space (dominant PC membership)")
+                ax.set_xlabel("PC1 score")
+                ax.set_ylabel("PC2 score")
+                ax.grid(True, alpha=0.25)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.legend(loc="best", frameon=False)
+                fig.tight_layout()
+                fig.savefig(os.path.join(out_dir, "pca_space_pc_membership.png"), dpi=300, bbox_inches="tight")
+                plt.close(fig)
+
+            # Slice montage showing dominant PC membership (same colors as score-space).
+            try:
+                sel = [z for z in range(zdim) if np.any(vessel_mask[:, :, z])]
+                if not sel:
+                    sel = list(range(zdim))
+                max_slices = int(os.getenv("P_BRAIN_ROI_DEBUG_MONTAGE_MAX_SLICES", "12") or "12")
+                sel = sel[: max(1, min(max_slices, len(sel)))]
+
+                cols = min(4, len(sel))
+                rows = int(np.ceil(len(sel) / cols))
+                fig = plt.figure(figsize=(4.2 * cols, 4.2 * rows))
+                gs = fig.add_gridspec(rows, cols)
+                axes = []
+                for i in range(len(sel)):
+                    r = i // cols
+                    c = i % cols
+                    axes.append(fig.add_subplot(gs[r, c]))
+
+                pts_arr = np.asarray(pts, dtype=np.int64)
+                for ax_i, z in enumerate(sel):
+                    ax = axes[ax_i]
+                    base2d = peak_amp[:, :, z]
+                    ax.imshow(base2d, cmap="gray")
+
+                    in_slice = pts_arr[:, 2] == int(z)
+                    if np.any(in_slice):
+                        xs = pts_arr[in_slice, 0]
+                        ys = pts_arr[in_slice, 1]
+                        memb = pc_membership[in_slice]
+                        for pi in range(int(k_pc)):
+                            m = memb == pi
+                            if not np.any(m):
+                                continue
+                            ax.scatter(
+                                ys[m],
+                                xs[m],
+                                s=8,
+                                c=pc_colors[pi],
+                                alpha=0.75,
+                                linewidths=0,
+                            )
+
+                    ax.set_title(f"Dominant PC (z={z+1})")
+                    ax.axis("off")
+
+                # Hide unused axes.
+                for j in range(len(sel), len(axes)):
+                    axes[j].axis("off")
+
+                handles = [plt.Line2D([0], [0], color=pc_colors[i], lw=3, label=f"PC{i+1}") for i in range(int(k_pc))]
+                fig.legend(handles=handles, loc="upper center", ncol=int(k_pc), frameon=False, bbox_to_anchor=(0.5, 1.02))
+                fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+                fig.savefig(os.path.join(out_dir, "pca_pc_membership_montage.png"), dpi=300, bbox_inches="tight")
+                plt.close(fig)
+            except Exception as exc:
+                warnings.warn(f"Failed to write PC membership montage: {exc}", RuntimeWarning)
+
+            # 3D PCA score-space plot when available.
+            if scores.shape[1] >= 3 and int(k_pc) >= 3:
+                try:
+                    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+                    fig = plt.figure(figsize=(8.5, 6.5))
+                    ax = fig.add_subplot(111, projection="3d")
+                    cmap_name = "tab20" if k_clusters > 10 else "tab10"
+                    cmap = plt.cm.get_cmap(cmap_name, k_clusters)
+                    ax.scatter(
+                        scores[:, 0],
+                        scores[:, 1],
+                        scores[:, 2],
+                        c=labels,
+                        cmap=cmap,
+                        s=10,
+                        alpha=0.85,
+                        linewidths=0,
+                    )
+                    if isinstance(centers, np.ndarray) and centers.shape[0] == k_clusters and centers.shape[1] >= 3:
+                        ax.scatter(
+                            centers[:, 0],
+                            centers[:, 1],
+                            centers[:, 2],
+                            c=np.arange(k_clusters),
+                            cmap=cmap,
+                            s=80,
+                            marker="X",
+                            edgecolors="black",
+                            linewidths=0.6,
+                        )
+                    ax.set_title("PCA score space (k-means clusters, 3D)")
+                    ax.set_xlabel("PC1 score")
+                    ax.set_ylabel("PC2 score")
+                    ax.set_zlabel("PC3 score")
+                    fig.tight_layout()
+                    fig.savefig(os.path.join(out_dir, "pca_space_clusters_3d.png"), dpi=300, bbox_inches="tight")
+                    plt.close(fig)
+                except Exception as exc:
+                    warnings.warn(f"Failed to write 3D PCA plot: {exc}", RuntimeWarning)
+        except Exception as exc:
+            warnings.warn(f"Failed to write PCA plots: {exc}", RuntimeWarning)
+
+    # --- Normalization demo plots.
+    if _getenv_bool("P_BRAIN_ROI_WRITE_NORMALIZATION_DEMO", default=True):
+        # Choose one vessel voxel and one non-vessel tissue voxel with large peak amplitude.
+        vessel_pts = np.argwhere(vessel_mask)
+        if vessel_pts.size:
+            idx = int(np.argmax(peak_amp[vessel_mask]))
+            vx = vessel_pts[idx]
+        else:
+            vx = None
+
+        tissue_mask = bm & (~vessel_mask)
+        tissue_pts = np.argwhere(tissue_mask)
+        tx = None
+        if tissue_pts.size:
+            # Pick the strongest tissue voxel (large normalization effect).
+            idx = int(np.argmax(peak_amp[tissue_mask]))
+            tx = tissue_pts[idx]
+
+        # For CTC demos, prefer existing brain concentration 4D; otherwise fall back to signal.
+        ctc_img = None
+        ctc_path = os.path.join(analysis_directory, "CTC Data", "Tissue", "brain_concentration_4d.nii.gz")
+        if os.path.isfile(ctc_path):
+            try:
+                ctc_img = nib.load(ctc_path)
+            except Exception:
+                ctc_img = None
+
+        if ctc_img is None:
+            try:
+                _write_brain_concentration_nifti(
+                    dce4d=dce4d,
+                    ref_img=ref_img,
+                    dce_path=dce_path,
+                    analysis_directory=analysis_directory,
+                    brain_mask=brain_mask,
+                    baseline_frames=baseline_frames,
+                    output_path=ctc_path,
+                    batch_voxels=int(os.getenv("P_BRAIN_CTC_BATCH_VOXELS", "20000") or "20000"),
+                )
+                ctc_img = nib.load(ctc_path)
+            except Exception:
+                ctc_img = None
+
+        use_ctc = ctc_img is not None
+        dataobj = ctc_img.dataobj if use_ctc else None
+        for label, pt in (("vessel", vx), ("tissue", tx)):
+            if pt is None:
+                continue
+            x, y, z = (int(pt[0]), int(pt[1]), int(pt[2]))
+            t_len = int(dce4d.shape[3])
+            time_s = (np.arange(t_len, dtype=np.float32) * float(tr_s)).astype(np.float32)
+            if use_ctc:
+                curve = np.asarray(dataobj[x, y, z, :], dtype=np.float32)
+                out_path = os.path.join(out_dir, f"ctc_normalization_demo_{label}.png")
+                title = "Normalization of Concentration time curves"
+                ylab = "Concentration (mmol/100g/min)"
+            else:
+                curve = np.asarray(dce4d[x, y, z, :], dtype=np.float32)
+                out_path = os.path.join(out_dir, f"signal_normalization_demo_{label}.png")
+                title = "Normalization of MR signal time curves"
+                ylab = "MR Signal (a.u.)"
+            _write_normalization_demo_plot(
+                out_path=out_path,
+                curve=curve,
+                baseline_frames=baseline_frames,
+                title=title,
+                normalize=normalize_curves,
+                time_s=time_s,
+                x_label="Time (s)",
+                y_label=ylab,
+            )
+
+
+def _write_global_pc_membership_plots(
+    *,
+    image_directory: str,
+    ref_img: nib.Nifti1Image,
+    dce4d: np.ndarray,
+    brain_mask: np.ndarray,
+    peak_amp: np.ndarray,
+    baseline_frames: int,
+    pc_time: np.ndarray,
+) -> None:
+    """Visualize dominant PC membership for the *global* PCA used for A/V scoring."""
+
+    if not image_directory:
+        return
+    out_dir = os.path.join(image_directory, "deterministic")
+    os.makedirs(out_dir, exist_ok=True)
+
+    k_pc = int(pc_time.shape[0])
+    if k_pc < 2:
+        return
+
+    baseline_frames = max(1, int(baseline_frames))
+
+    # Project *all* intracranial voxels for membership visualization.
+    mask3d = brain_mask.astype(bool)
+    idx = np.argwhere(mask3d)
+    if idx.size == 0:
+        return
+
+    # Centering term should match the PCA training: subtract mean across voxels per timepoint.
+    # We approximate using a capped random subset for stability.
+    rng = np.random.default_rng(0)
+    cap = int(os.getenv("P_BRAIN_ROI_GLOBAL_PC_MEAN_CAP", "5000") or "5000")
+    if idx.shape[0] > cap:
+        pick = rng.choice(idx.shape[0], size=cap, replace=False)
+        idx_mean = idx[pick]
+    else:
+        idx_mean = idx
+
+    Xs = dce4d[idx_mean[:, 0], idx_mean[:, 1], idx_mean[:, 2], :].astype(np.float32)
+    base = Xs[:, :baseline_frames].mean(axis=1, keepdims=True)
+    Xs = Xs - base
+    Xs[:, :baseline_frames] = 0.0
+    mean_time = Xs.mean(axis=0, keepdims=True).astype(np.float32)  # (1,t)
+
+    # Project all voxels in vessel_mask onto PCs in batches.
+    membership = np.full(brain_mask.shape, fill_value=-1, dtype=np.int8)
+
+    tr_s = 1.0
+    try:
+        zooms = ref_img.header.get_zooms()
+        if zooms and len(zooms) >= 4 and np.isfinite(float(zooms[-1])):
+            tr_s = float(zooms[-1])
+    except Exception:
+        tr_s = 1.0
+
+    # Score-space scatter: subsample to keep it readable.
+    scatter_cap = int(os.getenv("P_BRAIN_ROI_GLOBAL_PC_SCATTER_CAP", "15000") or "15000")
+    scatter_pick = None
+    if idx.shape[0] > scatter_cap:
+        scatter_pick = rng.choice(idx.shape[0], size=scatter_cap, replace=False)
+    else:
+        scatter_pick = np.arange(idx.shape[0])
+
+    scatter_scores = np.empty((scatter_pick.shape[0], min(3, k_pc)), dtype=np.float32)
+    scatter_membership = np.empty((scatter_pick.shape[0],), dtype=np.int32)
+
+    batch = int(os.getenv("P_BRAIN_ROI_GLOBAL_PC_BATCH", "25000") or "25000")
+    batch = max(512, int(batch))
+    V = pc_time[:k_pc].T.astype(np.float32)  # (t,k)
+    si = 0
+    scatter_map = {int(scatter_pick[i]): i for i in range(int(scatter_pick.shape[0]))}
+
+    for start in range(0, idx.shape[0], batch):
+        chunk = idx[start : start + batch]
+        X = dce4d[chunk[:, 0], chunk[:, 1], chunk[:, 2], :].astype(np.float32)
+        base = X[:, :baseline_frames].mean(axis=1, keepdims=True)
+        X = X - base
+        X[:, :baseline_frames] = 0.0
+        X = X - mean_time
+        scores = X @ V  # (n,k)
+        memb = np.argmax(np.abs(scores), axis=1).astype(np.int32)
+        membership[chunk[:, 0], chunk[:, 1], chunk[:, 2]] = memb.astype(np.int8)
+
+        # Fill scatter arrays for indices inside this chunk.
+        for j in range(chunk.shape[0]):
+            global_i = start + j
+            if global_i in scatter_map:
+                out_i = scatter_map[global_i]
+                scatter_membership[out_i] = memb[j]
+                take = min(3, k_pc)
+                scatter_scores[out_i, :take] = scores[j, :take]
+
+    # --- Score-space plot colored by dominant PC.
+    if k_pc >= 2:
+        pc_colors = ["red", "green", "blue", "purple", "orange", "cyan"]
+        pc_colors = pc_colors[:k_pc]
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for i in range(k_pc):
+            m = scatter_membership == i
+            if not np.any(m):
+                continue
+            ax.scatter(
+                scatter_scores[m, 0],
+                scatter_scores[m, 1],
+                s=10,
+                alpha=0.75,
+                linewidths=0,
+                c=pc_colors[i],
+                label=f"PC{i+1}",
+            )
+        ax.set_title("Global PCA score space (dominant PC membership)")
+        ax.set_xlabel("PC1 score")
+        ax.set_ylabel("PC2 score")
+        ax.grid(True, alpha=0.25)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.legend(loc="best", frameon=False)
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, "pca_global_space_pc_membership.png"), dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    # --- Slice montage with membership overlay (same colors).
+    try:
+        zdim = int(membership.shape[2])
+        sel = [z for z in range(zdim) if np.any(mask3d[:, :, z])]
+        if not sel:
+            sel = list(range(zdim))
+        max_slices = int(os.getenv("P_BRAIN_ROI_DEBUG_MONTAGE_MAX_SLICES", "12") or "12")
+        sel = sel[: max(1, min(max_slices, len(sel)))]
+
+        cols = min(4, len(sel))
+        rows = int(np.ceil(len(sel) / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(4.2 * cols, 4.2 * rows))
+        axes = np.atleast_1d(axes).ravel()
+
+        pc_colors = ["red", "green", "blue", "purple", "orange", "cyan"]
+        pc_colors = pc_colors[:k_pc]
+
+        for ax_i, z in enumerate(sel):
+            ax = axes[ax_i]
+            ax.imshow(peak_amp[:, :, z], cmap="gray")
+            m = membership[:, :, z]
+            for pi in range(k_pc):
+                mask = m == pi
+                if not np.any(mask):
+                    continue
+                rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.float32)
+                col = np.array(plt.matplotlib.colors.to_rgba(pc_colors[pi]), dtype=np.float32)
+                rgba[..., 0:3] = col[0:3]
+                rgba[..., 3] = mask.astype(np.float32) * 0.35
+                ax.imshow(rgba)
+            ax.set_title(f"Dominant global PC (z={z+1})")
+            ax.axis("off")
+        for j in range(len(sel), axes.size):
+            axes[j].axis("off")
+
+        handles = [plt.Line2D([0], [0], color=pc_colors[i], lw=3, label=f"PC{i+1}") for i in range(k_pc)]
+        fig.legend(handles=handles, loc="upper center", ncol=k_pc, frameon=False, bbox_to_anchor=(0.5, 1.02))
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+        fig.savefig(os.path.join(out_dir, "pca_global_pc_membership_montage.png"), dpi=300, bbox_inches="tight")
+        plt.close(fig)
+    except Exception as exc:
+        warnings.warn(f"Failed to write global PC membership montage: {exc}", RuntimeWarning)
 
 
 def _maybe_run_segmentation_for_geometry(
@@ -2301,8 +2953,8 @@ def _save_roi_outputs(
     for x, y, z, _score in centers:
         vox0 = np.asarray(voxels_by_slice.get(int(z), np.empty((0, 2), dtype=int)), dtype=int)
         if vox0.ndim != 2 or vox0.shape[1] != 2 or vox0.shape[0] == 0:
-            # Geometry ROIs must be derived from the connected regions found by PCA/CC analysis.
-            # Avoid falling back to circular ROIs.
+            # Deterministic geometry ROIs must come from the connected regions found by
+            # PCA/connected-component analysis (then dilated). Avoid circular fallbacks.
             continue
 
         m2 = np.zeros((height, width), dtype=bool)
@@ -2387,6 +3039,118 @@ def _save_roi_outputs(
     nib.save(out_img, out_path)
 
 
+def _write_input_function_rois_screenshot(
+    *,
+    analysis_directory: str,
+    image_directory: str,
+    peak_amp: np.ndarray,
+) -> None:
+    """Write the ROI overview PNG expected by p-brain-web.
+
+    p-brain-web looks for `Images/AI/AI_input_function_ROIs.png`.
+    Deterministic/geometry ROI selection historically did not write it, which
+    caused the UI to show a stale (AI) screenshot or nothing.
+    """
+
+    if not image_directory:
+        return
+
+    out_dir = os.path.join(image_directory, "AI")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "AI_input_function_ROIs.png")
+
+    roi_dir = os.path.join(analysis_directory, "ROI NIfTI")
+    if not os.path.isdir(roi_dir):
+        return
+
+    # Load final masks (already dilated/cleaned) if present.
+    sss_candidates = [
+        os.path.join(roi_dir, "Vein__Sinus_Sagittalis__mask.nii.gz"),
+        os.path.join(roi_dir, "Vein__Superior_Sagittal_Sinus__mask.nii.gz"),
+    ]
+    sss_path = next((p for p in sss_candidates if os.path.isfile(p)), None)
+    roi_paths = {
+        "rICA": os.path.join(roi_dir, "Artery__Right_Interior_Carotid__mask.nii.gz"),
+        "lICA": os.path.join(roi_dir, "Artery__Left_Interior_Carotid__mask.nii.gz"),
+        "SSS": sss_path,
+        "Basilar": os.path.join(roi_dir, "Artery__Basilar__mask.nii.gz"),
+    }
+
+    masks: dict[str, np.ndarray] = {}
+    for name, path in roi_paths.items():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            m = nib.load(path).get_fdata() > 0.5
+        except Exception:
+            continue
+        if m.ndim == 3:
+            masks[name] = m.astype(bool)
+
+    if not masks:
+        return
+
+    base = np.nan_to_num(peak_amp, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    base = np.maximum(base, 0.0)
+
+    # Pick slices that actually contain ROIs.
+    zdim = int(base.shape[2])
+    any_roi = np.zeros((zdim,), dtype=bool)
+    for m in masks.values():
+        if m.shape[2] == zdim:
+            any_roi |= np.any(m, axis=(0, 1))
+    sel = [z for z in range(zdim) if any_roi[z]]
+    if not sel:
+        sel = [int(zdim // 2)] if zdim > 0 else [0]
+
+    max_slices = int(os.getenv("P_BRAIN_ROI_SCREENSHOT_MAX_SLICES", "12") or "12")
+    sel = sel[: max(1, min(max_slices, len(sel)))]
+
+    cols = min(4, len(sel))
+    rows = int(np.ceil(len(sel) / cols))
+
+    def _rot90_ccw(a: np.ndarray) -> np.ndarray:
+        return np.rot90(a, 1)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(4.2 * cols, 4.2 * rows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax_i, z in enumerate(sel):
+        ax = axes[ax_i]
+        sl = _rot90_ccw(base[:, :, z])
+        ax.imshow(sl, cmap="gray")
+
+        def _overlay(mask2d: np.ndarray, rgba: tuple[float, float, float], alpha: float = 0.75) -> None:
+            if not np.any(mask2d):
+                return
+            ov = np.zeros((mask2d.shape[0], mask2d.shape[1], 4), dtype=np.float32)
+            ov[..., 0] = float(rgba[0])
+            ov[..., 1] = float(rgba[1])
+            ov[..., 2] = float(rgba[2])
+            ov[..., 3] = mask2d.astype(np.float32) * float(alpha)
+            ax.imshow(ov)
+
+        # Match the deterministic summary palette.
+        if "rICA" in masks and z < masks["rICA"].shape[2]:
+            _overlay(_rot90_ccw(masks["rICA"][:, :, z]), (1.0, 0.0, 0.0))
+        if "lICA" in masks and z < masks["lICA"].shape[2]:
+            _overlay(_rot90_ccw(masks["lICA"][:, :, z]), (1.0, 0.55, 0.0))
+        if "SSS" in masks and z < masks["SSS"].shape[2]:
+            _overlay(_rot90_ccw(masks["SSS"][:, :, z]), (0.0, 0.0, 1.0))
+        if "Basilar" in masks and z < masks["Basilar"].shape[2]:
+            _overlay(_rot90_ccw(masks["Basilar"][:, :, z]), (0.0, 1.0, 0.0))
+
+        ax.set_title(f"Input ROIs z={z+1}")
+        ax.axis("off")
+
+    for j in range(len(sel), axes.size):
+        axes[j].axis("off")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def input_function_geometry(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     (
         _t1_3D_filename,
@@ -2404,7 +3168,32 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         parameters
     )
 
+    if not dce_filename:
+        try:
+            from utils.parameters import _infer_dce_filename  # type: ignore
+
+            dce_filename = _infer_dce_filename(nifti_directory)
+        except Exception:
+            dce_filename = None
+
+    if not dce_filename:
+        raise ValueError(
+            f"Could not determine DCE NIfTI in {nifti_directory}. "
+            "Expected a 4D NIfTI (x,y,z,t)."
+        )
+
     dce_path = os.path.join(nifti_directory, dce_filename)
+
+    # This file was produced by an older radius-based visualization step.
+    # The deterministic geometry ROIs are region-based (2px dilated connected regions),
+    # so remove any stale output to avoid confusion.
+    try:
+        stale = os.path.join(image_directory or "", "AI", "DCE_geometry_roi_radii.png")
+        if stale and os.path.isfile(stale):
+            os.remove(stale)
+    except Exception:
+        pass
+
     ref_img, dce4d = load_dce_4d(dce_path, prefer_complex_mag=True, dtype=np.float32)
 
     if dce4d.ndim != 4:
@@ -2546,6 +3335,20 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         early_pc, late_pc = _pick_pc_by_peak(pc_time)
         artery_score = (pc_maps[early_pc] * peak_amp) * early_w
         vein_score = (pc_maps[late_pc] * peak_amp) * late_w
+
+        if _getenv_bool("P_BRAIN_ROI_WRITE_GLOBAL_PC_MEMBERSHIP", default=True):
+            try:
+                _write_global_pc_membership_plots(
+                    image_directory=image_directory,
+                    ref_img=ref_img,
+                    dce4d=dce4d,
+                    brain_mask=brain_mask,
+                    peak_amp=peak_amp,
+                    baseline_frames=cfg.baseline_frames,
+                    pc_time=pc_time,
+                )
+            except Exception as exc:
+                warnings.warn(f"Failed to write global PC membership plots: {exc}", RuntimeWarning)
     else:
         # Fallback: amplitude * timing weights
         artery_score = peak_amp * early_w
@@ -2712,8 +3515,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         vein_seed = vein_strength & vessel_mask & (vein_score_f > artery_score_f)
 
         # Broader arterial candidate mask used for optional adjacent-slice ICA augmentation.
-        # This is intentionally less strict than artery_seed so that small arterial voxels
-        # in nearby slices (z0+1..z0+2) can be included when present.
+        # Less strict than artery_seed to allow small arterial voxels in z0+1..z0+2.
         artery_like = vessel_mask & (artery_score_f >= vein_score_f) & brain_mask.astype(bool)
 
         if debug3d:
@@ -2842,15 +3644,17 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
         ) -> list[tuple[int, np.ndarray, float]]:
             """Add ICA voxels in slices above the lowest confirmed slice.
 
-            For z in [z0+1, z0+max_above], if there are arterial candidate voxels,
-            pick the 2D connected component whose centroid is closest to the
-            centroid of the confirmed slice at z0.
+            For z in [z0+1, z0+max_above], if arterial candidates exist, pick the
+            2D connected component whose centroid is closest to the centroid of the
+            confirmed slice at z0. Candidates are restricted to the same LR side.
+
+            If the candidate mask is empty in a slice, fall back to a high-percentile
+            mask derived from the arterial score within the brain mask.
             """
 
             if not comps:
                 return comps
 
-            # Lowest confirmed slice (0-based).
             z0 = int(min(int(z) for z, _vox, _s in comps))
             base_vox = None
             base_score = None
@@ -2866,23 +3670,22 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             base_cy = float(base_vox[:, 1].mean())
             base_score = float(base_score) if base_score is not None else 0.0
 
-            present = {int(z) for z, _vox, _s in comps}
-            out = list(comps)
-
             lr_axis_inplane = int(lr_axis_inplane)
             mid_lr = int(mid_lr)
             side = (side or "").strip().lower()
             want_right = side in {"rica", "right", "r"}
-            dbg_adj = _getenv_bool("P_BRAIN_ROI_DEBUG_ICA_ADJ", default=False)
-            # Determine which side of the index axis corresponds to anatomical right.
             right_is_high = (lr_code == "R")
+            dbg_adj = _getenv_bool("P_BRAIN_ROI_DEBUG_ICA_ADJ", default=False)
 
             def _is_on_side(lr_cent: float) -> bool:
                 if want_right:
                     return (lr_cent >= float(mid_lr)) if right_is_high else (lr_cent < float(mid_lr))
                 return (lr_cent < float(mid_lr)) if right_is_high else (lr_cent >= float(mid_lr))
 
+            present = {int(z) for z, _vox, _s in comps}
+            out = list(comps)
             zmax = int(cand3d.shape[2])
+
             for dz in range(1, int(max_above) + 1):
                 z = int(z0 + dz)
                 if z < 0 or z >= zmax:
@@ -2892,8 +3695,6 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
 
                 slab = cand3d[:, :, z].astype(bool)
                 if not np.any(slab):
-                    # Fallback: in small-signal slices, the global vessel/seed masks can be empty.
-                    # Derive a tiny candidate set from the arterial score within the brain mask.
                     bm2 = brain_mask3d[:, :, z].astype(bool)
                     if np.any(bm2):
                         vals = score3d[:, :, z][bm2]
@@ -2902,6 +3703,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
                             pct = 99.5 if (not np.isfinite(pct)) else min(99.9, max(90.0, pct))
                             thr = float(np.percentile(vals, pct))
                             slab = (score3d[:, :, z] >= thr) & bm2
+
                 if not np.any(slab):
                     if dbg_adj:
                         print(f"[ICA_ADJ] side={side} z={z} empty candidates", flush=True)
@@ -2923,8 +3725,7 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
                     cx = float(coords[:, 0].mean())
                     cy = float(coords[:, 1].mean())
 
-                    # Enforce LR side to avoid grabbing the opposite ICA.
-                    lr_cent = float((cx if lr_axis_inplane == 0 else cy))
+                    lr_cent = float(cx if lr_axis_inplane == 0 else cy)
                     if not _is_on_side(lr_cent):
                         continue
 
@@ -2974,6 +3775,19 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             z_align_min_local=float(os.getenv("P_BRAIN_ROI_Z_ALIGN_MIN_BASILAR", str(z_align_min)) or str(z_align_min)),
         )
 
+        # Rigidly prevent basilar voxels from being selected as ICA.
+        # Basilar and ICA can otherwise overlap when the basilar centroid is a bit off-midline
+        # (e.g. within basilar_band but outside ICA's smaller midline-exclusion band).
+        basilar_exclude = None
+        if basilar_comps:
+            basilar_exclude = np.zeros(brain_mask.shape, dtype=bool)
+            for z_b, vox2_b, _s_b in basilar_comps:
+                vv = np.asarray(vox2_b, dtype=int)
+                if vv.ndim == 2 and vv.shape[1] == 2 and vv.shape[0] > 0:
+                    z_i = int(z_b)
+                    if 0 <= z_i < basilar_exclude.shape[2]:
+                        basilar_exclude[vv[:, 0], vv[:, 1], z_i] = True
+
         # ICAs: must come from PCA-selected artery seed; use a lightly dilated copy only
         # to connect across slices, then intersect back to the seed for voxel selection.
         ica_dilate = int(os.getenv("P_BRAIN_ROI_ICA_DILATE3D", "1") or "1")
@@ -2981,6 +3795,9 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
 
         rica_seed = artery_seed & allowed_rica & brain_mask.astype(bool)
         lica_seed = artery_seed & allowed_lica & brain_mask.astype(bool)
+        if basilar_exclude is not None:
+            rica_seed = rica_seed & (~basilar_exclude)
+            lica_seed = lica_seed & (~basilar_exclude)
         if ica_dilate > 0:
             st = ndimage.generate_binary_structure(3, 1)
             rica3d = ndimage.binary_dilation(rica_seed, structure=st, iterations=ica_dilate)
@@ -3015,9 +3832,11 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             z_align_min_local=ica_zmin,
         )
 
-        # Optional augmentation: include artery voxels in up to 2 slices above
-        # the lowest confirmed ICA slice, if arterial candidates exist there.
+        # Optional augmentation: include arterial voxels in up to 2 slices above
+        # the lowest confirmed ICA slice, if arterial signal is present there.
         if _getenv_bool("P_BRAIN_ROI_ICA_ADD_ADJACENT", default=True):
+            # Default: add up to 20% of z-slices above the lowest confirmed ICA slice.
+            # For zdim=10 this yields 2.
             raw_slices = os.getenv("P_BRAIN_ROI_ICA_ADJACENT_SLICES")
             if raw_slices is not None and str(raw_slices).strip() != "":
                 max_above = int(raw_slices)
@@ -3219,8 +4038,29 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             is_vfa=bool(is_vfa),
         )
 
+    # Write the screenshot used by p-brain-web for the ROI stage.
+    try:
+        _write_input_function_rois_screenshot(
+            analysis_directory=analysis_directory,
+            image_directory=image_directory,
+            peak_amp=peak_amp,
+        )
+    except Exception:
+        pass
+
     if _getenv_bool("P_BRAIN_ROI_WRITE_SUMMARY_PLOTS", default=True):
         try:
+            if _getenv_bool("P_BRAIN_ROI_WRITE_PCA_PLOTS", default=True):
+                _write_pca_and_normalization_plots(
+                    analysis_directory=analysis_directory,
+                    image_directory=image_directory,
+                    ref_img=ref_img,
+                    dce_path=dce_path,
+                    dce4d=dce4d,
+                    brain_mask=brain_mask,
+                    cfg=cfg,
+                    peak_amp=peak_amp,
+                )
             _write_summary_images(
                 analysis_directory=analysis_directory,
                 image_directory=image_directory,
@@ -3232,6 +4072,19 @@ def input_function_geometry(analysis_directory, nifti_directory, image_directory
             )
         except Exception as exc:
             warnings.warn(f"Failed to write Images/ summary plots: {exc}", RuntimeWarning)
+
+    # Propagate final ROIs into the next step: TSCC generation (SSS time shift + rescale)
+    # so the modelling pipeline can use SSS-derived AIF when enabled.
+    if bool(getattr(settings, "INPUT_FUNCTION_USE_SSS", True)):
+        try:
+            tscc.time_shifting(
+                analysis_directory,
+                nifti_directory,
+                image_directory,
+                artery=getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA"),
+            )
+        except Exception as exc:
+            warnings.warn(f"Time shifting failed: {exc}", RuntimeWarning)
 
     # Return simple metadata for debugging (not used by the existing pipeline).
     return {

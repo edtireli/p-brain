@@ -16,7 +16,10 @@ import glob
 import json
 import time
 
+from utils.loading import build_time_points_s, resolve_dce_time_step_s
+
 import utils.settings as settings
+import modules.time_shifting as tscc
 
 
 def _roi_method() -> str:
@@ -316,12 +319,247 @@ def plot_transformed_curves(shifted_vein_curve, shifted_artery_curve, slice_inde
 
 
 
-def preprocess_data(filename):
+def preprocess_data(filename, *, projection: str = "mean"):
+    """Load and rotate the DCE volume.
+
+    Returns:
+    - normalized_projection: 3D (x,y,slice) float32 in [0,1] used by legacy 2D models
+      (SSS slice classifier/ROI pipeline).
+    - mri_data: 4D rotated raw data (x,y,slice,time)
+    - mri_data_norm: 4D rotated data, globally min-max normalized to [0,1]
+      (useful for ICA slice classification on raw frames).
+    """
     mri_data = nib.load(filename).get_fdata()
-    mri_data = np.rot90(mri_data, k=-1, axes=(0, 1))
-    time_averaged_data = np.mean(mri_data, axis=-1)
-    normalized_data = (time_averaged_data - time_averaged_data.min()) / (time_averaged_data.max() - time_averaged_data.min())
-    return normalized_data, mri_data
+    # Model training/labeling was performed in a fixed orientation. Historically we
+    # used a single rot90 here; keep that as the default but allow override.
+    try:
+        rot_k = int(str(os.getenv("P_BRAIN_AI_ROT90_K", "-1")).strip())
+    except Exception:
+        rot_k = -1
+    rot_k = rot_k % 4
+    mri_data = np.rot90(mri_data, k=rot_k, axes=(0, 1))
+
+    # Projection for the legacy 2D inference path (SSS).
+    proj = None
+    if str(projection).strip().lower() == "max":
+        proj = np.max(mri_data, axis=-1)
+    else:
+        proj = np.mean(mri_data, axis=-1)
+    normalized_projection = _minmax01(proj)
+
+    # Global normalization for raw-frame ICA classification.
+    mri_data_norm = _minmax01(mri_data)
+    return normalized_projection, mri_data, mri_data_norm
+
+
+def _minmax01(img: np.ndarray) -> np.ndarray:
+    img = np.asarray(img)
+    vmin = float(np.nanmin(img))
+    vmax = float(np.nanmax(img))
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return np.zeros_like(img, dtype=np.float32)
+    out = (img - vmin) / (vmax - vmin)
+    return out.astype(np.float32, copy=False)
+
+
+def _normalize_to_uint8_slice(img2d: np.ndarray) -> np.ndarray:
+    """Per-slice min-max normalization to uint8 (matches debug script semantics)."""
+    x = np.asarray(img2d, dtype=np.float32)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    mn = float(np.min(x))
+    mx = float(np.max(x))
+    if not np.isfinite(mn) or not np.isfinite(mx) or mx <= mn:
+        return np.zeros_like(x, dtype=np.uint8)
+    y = (x - mn) / (mx - mn)
+    y = np.clip(y, 0.0, 1.0)
+    return (y * 255.0 + 0.5).astype(np.uint8)
+
+
+def _prep_slice_float01(sl2d: np.ndarray, *, flip_lr: bool) -> np.ndarray:
+    """Prepare a single 2D slice for the ICA classifier/ROI models.
+
+    For ICA we found the rICA slice-classifier behaves well on individual DCE
+    frames normalized to [0,1]. We keep this lightweight to stay fast.
+    """
+    x = np.asarray(sl2d, dtype=np.float32)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if flip_lr:
+        x = np.fliplr(x)
+    if x.shape != (256, 256):
+        x = cv2.resize(x, (256, 256), interpolation=cv2.INTER_LINEAR)
+    return x
+
+
+def _select_best_ica_frame(
+    mri_data_norm_ica: np.ndarray,
+    slice_classifier,
+    *,
+    flip_lr: bool,
+    frame_candidates: list[int],
+) -> tuple[int, float]:
+    """Pick a single frame index that maximizes ICA slice-classifier confidence.
+
+    Returns (best_frame_index, best_max_probability_over_slices).
+    """
+    tmax = int(mri_data_norm_ica.shape[3])
+    cands = [int(t) for t in frame_candidates if 0 <= int(t) < tmax]
+    if not cands:
+        return 0, 0.0
+
+    zmax = int(mri_data_norm_ica.shape[2])
+
+    # Build one big batch: (n_frames * n_slices, 256,256,1)
+    batch = np.empty((len(cands) * zmax, 256, 256, 1), dtype=np.float32)
+    idx = 0
+    for t in cands:
+        for z in range(zmax):
+            sl = _prep_slice_float01(mri_data_norm_ica[:, :, z, t], flip_lr=flip_lr)
+            batch[idx, :, :, 0] = sl
+            idx += 1
+
+    try:
+        preds = slice_classifier.predict(batch, verbose=0)
+    except TypeError:
+        preds = slice_classifier.predict(batch)
+    scores = np.asarray(preds, dtype=np.float32).reshape(len(cands), zmax)
+    max_per_frame = np.max(scores, axis=1)
+    best_i = int(np.argmax(max_per_frame))
+    return int(cands[best_i]), float(max_per_frame[best_i])
+
+
+def extract_and_accumulate_rois_single_frame(
+    mri_data_norm_ica: np.ndarray,
+    slice_classifier,
+    roi_model,
+    choice,
+    *,
+    frame_index: int,
+    slice_relevance_threshold: float = 0.5,
+    flip_lr: bool = False,
+):
+    """Fast ICA inference on a single chosen frame (batched predict).
+
+    Returns the same 5-tuple as other extract_* helpers.
+    """
+    relevant_slices = []
+    relevant_rois = []
+    original_slices = []
+    slice_labels = []
+    roi_voxels = {}
+
+    zmax = int(mri_data_norm_ica.shape[2])
+    t = int(frame_index)
+    t = max(0, min(t, int(mri_data_norm_ica.shape[3]) - 1))
+
+    batch = np.empty((zmax, 256, 256, 1), dtype=np.float32)
+    for z in range(zmax):
+        batch[z, :, :, 0] = _prep_slice_float01(mri_data_norm_ica[:, :, z, t], flip_lr=flip_lr)
+
+    try:
+        preds = slice_classifier.predict(batch, verbose=0)
+    except TypeError:
+        preds = slice_classifier.predict(batch)
+    scores = np.asarray(preds, dtype=np.float32).reshape(zmax)
+
+    relevant_idx = [int(z) for z in range(zmax) if float(scores[z]) > float(slice_relevance_threshold)]
+    if relevant_idx:
+        for z in relevant_idx:
+            print(
+                f"Slice {z + 1} is classified as relevant (probability: {float(scores[z]):.2f}, frame: {t})."
+            )
+    else:
+        return (original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels)
+
+    roi_batch = batch[relevant_idx, :, :, :]
+    try:
+        roi_preds = roi_model.predict(roi_batch, verbose=0)
+    except TypeError:
+        roi_preds = roi_model.predict(roi_batch)
+    roi_preds = np.asarray(roi_preds)
+
+    for j, z in enumerate(relevant_idx):
+        mask = np.squeeze(roi_preds[j])
+        thr = 0.5 * float(np.max(mask)) if np.size(mask) else 0.0
+        binary_mask_model = (mask > thr).astype(np.uint8)
+        binary_mask = np.fliplr(binary_mask_model) if flip_lr else binary_mask_model
+
+        # Resize mask back to native slice resolution for voxel indexing.
+        try:
+            h, w = int(mri_data_norm_ica.shape[0]), int(mri_data_norm_ica.shape[1])
+            binary_mask_native = cv2.resize(binary_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            binary_mask_native = (binary_mask_native > 0).astype(np.uint8)
+        except Exception:
+            binary_mask_native = binary_mask
+
+        roi_coords = np.argwhere(binary_mask_native)
+        roi_voxels[z] = roi_coords
+
+        # Store for montage plotting.
+        selected_slice = mri_data_norm_ica[:, :, z, t]
+        if flip_lr:
+            selected_slice = np.fliplr(selected_slice)
+        original_slices.append(selected_slice)
+        relevant_slices.append(batch[z, :, :, 0])
+        relevant_rois.append(binary_mask)
+        slice_labels.append(choice)
+
+    return (original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels)
+
+
+def _max_slice_relevance(rotated_data: np.ndarray, model, *, flip_lr: bool = False) -> float:
+    max_p = 0.0
+    for slice_index in range(rotated_data.shape[2]):
+        # Keep the same normalization semantics used in the main inference path
+        # (volume-level normalization from preprocess_data).
+        sl = rotated_data[:, :, slice_index].astype(np.float32, copy=False)
+        if flip_lr:
+            sl = np.fliplr(sl)
+        x = cv2.resize(sl, (256, 256), interpolation=cv2.INTER_LINEAR)
+        x = np.expand_dims(x, axis=-1)
+        x = np.expand_dims(x, axis=0)
+        try:
+            p = float(model.predict(x, verbose=0)[0][0])
+        except TypeError:
+            p = float(model.predict(x)[0][0])
+        if p > max_p:
+            max_p = p
+    return float(max_p)
+
+
+def _choose_best_rotation_k(
+    filename: str,
+    slice_classifier_rica,
+    slice_classifier_ss,
+    *,
+    ica_flip_lr: bool,
+    default_k: int,
+) -> int:
+    """Pick the rotation that best matches the carotid + SSS classifiers.
+
+    This is a safety net for cases where the stored NIfTI orientation differs
+    from what the artery model was trained on.
+    """
+    candidates = [default_k % 4] + [k for k in (0, 1, 2, 3) if k != (default_k % 4)]
+    best_k = candidates[0]
+    best_ica = -1.0
+    best_ss = -1.0
+
+    for k in candidates:
+        try:
+            os.environ["P_BRAIN_AI_ROT90_K"] = str(int(k))
+            rotated_data, _ = preprocess_data(filename)
+            ica_max = _max_slice_relevance(rotated_data, slice_classifier_rica, flip_lr=ica_flip_lr)
+            ss_max = _max_slice_relevance(rotated_data, slice_classifier_ss, flip_lr=False)
+        except Exception:
+            continue
+
+        # Primary objective: maximize ICA confidence; tie-break with SSS.
+        if (ica_max > best_ica + 1e-6) or (abs(ica_max - best_ica) <= 1e-6 and ss_max > best_ss + 1e-6):
+            best_k, best_ica, best_ss = int(k), float(ica_max), float(ss_max)
+
+    # Restore default env (caller may override later).
+    os.environ["P_BRAIN_AI_ROT90_K"] = str(int(default_k % 4))
+    return int(best_k)
 
 def extract_and_accumulate_rois(
     rotated_data,
@@ -329,34 +567,206 @@ def extract_and_accumulate_rois(
     roi_model,
     choice,
     slice_relevance_threshold=0.5,
+    flip_lr: bool = False,
 ):
     relevant_slices = []
     relevant_rois = []
     original_slices = []
     slice_labels = []
     roi_voxels = {}
+    max_relevance_seen = 0.0
 
-    for slice_index in range(rotated_data.shape[2]):
-        selected_slice = rotated_data[:, :, slice_index]
-        resized_slice = cv2.resize(selected_slice, (256, 256), interpolation=cv2.INTER_LINEAR)
-        resized_slice_expanded = np.expand_dims(resized_slice, axis=-1)
-        resized_slice_expanded = np.expand_dims(resized_slice_expanded, axis=0)
+    zmax = int(rotated_data.shape[2])
+    batch = np.empty((zmax, 256, 256, 1), dtype=np.float32)
 
-        slice_relevance = slice_classifier.predict(resized_slice_expanded)[0][0]
+    for slice_index in range(zmax):
+        selected_slice = rotated_data[:, :, slice_index].astype(np.float32, copy=False)
+        if flip_lr:
+            selected_slice = np.fliplr(selected_slice)
+        if selected_slice.shape != (256, 256):
+            selected_slice = cv2.resize(selected_slice, (256, 256), interpolation=cv2.INTER_LINEAR)
+        batch[slice_index, :, :, 0] = selected_slice
 
-        if slice_relevance > slice_relevance_threshold:
-            print(f"Slice {slice_index} is classified as relevant (probability: {slice_relevance:.2f}).")
-            predicted_mask = roi_model.predict(resized_slice_expanded).squeeze()
-            threshold = 0.5 * predicted_mask.max()
-            binary_mask = (predicted_mask > threshold).astype(np.uint8)
-            roi_coords = np.argwhere(binary_mask)
+    try:
+        preds = slice_classifier.predict(batch, verbose=0)
+    except TypeError:
+        preds = slice_classifier.predict(batch)
+    scores = np.asarray(preds, dtype=np.float32).reshape(zmax)
+    if scores.size:
+        max_relevance_seen = float(np.max(scores))
+
+    relevant_idx = [int(z) for z in range(zmax) if float(scores[z]) > float(slice_relevance_threshold)]
+    if relevant_idx:
+        for z in relevant_idx:
+            print(f"Slice {z + 1} is classified as relevant (probability: {float(scores[z]):.2f}).")
+
+        try:
+            roi_preds = roi_model.predict(batch[relevant_idx], verbose=0)
+        except TypeError:
+            roi_preds = roi_model.predict(batch[relevant_idx])
+        roi_preds = np.asarray(roi_preds)
+
+        for j, slice_index in enumerate(relevant_idx):
+            predicted_mask = np.squeeze(roi_preds[j])
+            threshold = 0.5 * float(np.max(predicted_mask)) if np.size(predicted_mask) else 0.0
+            binary_mask_model = (predicted_mask > threshold).astype(np.uint8)
+            binary_mask = np.fliplr(binary_mask_model) if flip_lr else binary_mask_model
+
+            # IMPORTANT: `binary_mask` is in model/display space (256x256). Downstream
+            # curve extraction indexes into `mri_data` (original resolution), so we
+            # must resize the mask back to the original slice shape before extracting
+            # voxel coordinates.
+            try:
+                h, w = int(rotated_data.shape[0]), int(rotated_data.shape[1])
+                binary_mask_native = cv2.resize(binary_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                binary_mask_native = (binary_mask_native > 0).astype(np.uint8)
+            except Exception:
+                binary_mask_native = binary_mask
+
+            roi_coords = np.argwhere(binary_mask_native)
             roi_voxels[slice_index] = roi_coords
-            original_slices.append(selected_slice)
-            relevant_slices.append(resized_slice)
+            original_slices.append(rotated_data[:, :, slice_index])
+            relevant_slices.append(batch[slice_index, :, :, 0])
             relevant_rois.append(binary_mask)
             slice_labels.append(choice)
 
-    return original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels
+    if not relevant_rois:
+        try:
+            print(
+                colored(
+                    f"Max slice relevance observed: {float(max_relevance_seen):.2f}",
+                    "cyan",
+                )
+            )
+        except Exception:
+            pass
+
+    return (
+        original_slices,
+        relevant_slices,
+        relevant_rois,
+        slice_labels,
+        roi_voxels,
+        float(max_relevance_seen),
+    )
+
+
+def extract_and_accumulate_rois_raw_dce(
+    mri_data_norm,
+    slice_classifier,
+    roi_model,
+    choice,
+    slice_relevance_threshold=0.5,
+    flip_lr: bool = False,
+    frame_stride: int = 1,
+):
+    """ICA-specific inference using raw DCE frames.
+
+    The ICA slice-classifier appears to be trained on single-frame anatomy, not
+    on the time-averaged projection. We therefore scan frames per slice and use
+    the best-scoring frame for ROI segmentation.
+    """
+    relevant_slices = []
+    relevant_rois = []
+    original_slices = []
+    slice_labels = []
+    roi_voxels = {}
+    max_relevance_seen = 0.0
+
+    try:
+        stride = int(frame_stride)
+    except Exception:
+        stride = 1
+    stride = max(1, stride)
+
+    for slice_index in range(mri_data_norm.shape[2]):
+        best_p = -1.0
+        best_t = 0
+
+        for t in range(0, mri_data_norm.shape[3], stride):
+            selected_slice = mri_data_norm[:, :, slice_index, t]
+            u8 = _normalize_to_uint8_slice(selected_slice)
+            if int(choice) == 2:
+                u8 = 255 - u8
+            selected_slice_for_model = np.fliplr(u8) if flip_lr else u8
+
+            resized_slice_model = cv2.resize(
+                selected_slice_for_model, (256, 256), interpolation=cv2.INTER_LINEAR
+            )
+            resized_slice_expanded = np.expand_dims(resized_slice_model.astype(np.float32) / 255.0, axis=-1)
+            resized_slice_expanded = np.expand_dims(resized_slice_expanded, axis=0)
+
+            try:
+                p = slice_classifier.predict(resized_slice_expanded, verbose=0)[0][0]
+            except TypeError:
+                p = slice_classifier.predict(resized_slice_expanded)[0][0]
+
+            try:
+                if float(p) > float(max_relevance_seen):
+                    max_relevance_seen = float(p)
+            except Exception:
+                pass
+
+            if float(p) > float(best_p):
+                best_p = float(p)
+                best_t = int(t)
+
+        if best_p > slice_relevance_threshold:
+            print(
+                f"Slice {slice_index} is classified as relevant (probability: {best_p:.2f}, frame: {best_t})."
+            )
+
+            selected_slice = mri_data_norm[:, :, slice_index, best_t]
+            u8 = _normalize_to_uint8_slice(selected_slice)
+            if int(choice) == 2:
+                u8 = 255 - u8
+            selected_slice_for_model = np.fliplr(u8) if flip_lr else u8
+
+            resized_slice_display = cv2.resize(u8, (256, 256), interpolation=cv2.INTER_LINEAR)
+            resized_slice_model = cv2.resize(
+                selected_slice_for_model, (256, 256), interpolation=cv2.INTER_LINEAR
+            )
+            resized_slice_expanded = np.expand_dims(resized_slice_model.astype(np.float32) / 255.0, axis=-1)
+            resized_slice_expanded = np.expand_dims(resized_slice_expanded, axis=0)
+
+            try:
+                predicted_mask = roi_model.predict(resized_slice_expanded, verbose=0).squeeze()
+            except TypeError:
+                predicted_mask = roi_model.predict(resized_slice_expanded).squeeze()
+            threshold = 0.5 * predicted_mask.max()
+            binary_mask_model = (predicted_mask > threshold).astype(np.uint8)
+            binary_mask = np.fliplr(binary_mask_model) if flip_lr else binary_mask_model
+
+            # Resize mask back to native slice resolution for voxel indexing.
+            try:
+                h, w = int(selected_slice.shape[0]), int(selected_slice.shape[1])
+                binary_mask_native = cv2.resize(binary_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                binary_mask_native = (binary_mask_native > 0).astype(np.uint8)
+            except Exception:
+                binary_mask_native = binary_mask
+
+            roi_coords = np.argwhere(binary_mask_native)
+            roi_voxels[slice_index] = roi_coords
+
+            original_slices.append(selected_slice)
+            relevant_slices.append(resized_slice_display)
+            relevant_rois.append(binary_mask)
+            slice_labels.append(choice)
+
+    if not relevant_rois:
+        try:
+            print(colored(f"Max slice relevance observed: {float(max_relevance_seen):.2f}", "cyan"))
+        except Exception:
+            pass
+
+    return (
+        original_slices,
+        relevant_slices,
+        relevant_rois,
+        slice_labels,
+        roi_voxels,
+        float(max_relevance_seen),
+    )
 
 
 def _describe_choice(choice):
@@ -370,6 +780,7 @@ def extract_rois_with_fallback(
     roi_model,
     choice,
     slice_relevance_thresholds=(0.5, 0.3),
+    flip_lr: bool = False,
 ):
     if not slice_relevance_thresholds:
         slice_relevance_thresholds = (0.5,)
@@ -377,16 +788,31 @@ def extract_rois_with_fallback(
     choice_description = _describe_choice(choice)
     last_result = ([], [], [], [], {})
 
-    for idx, threshold in enumerate(slice_relevance_thresholds):
+    thresholds_to_try = list(slice_relevance_thresholds)
+    tried = set()
+    lower_limit = min(thresholds_to_try) if thresholds_to_try else 0.0
+
+    idx = 0
+    while idx < len(thresholds_to_try):
+        threshold = float(thresholds_to_try[idx])
+        if threshold in tried:
+            idx += 1
+            continue
+        tried.add(threshold)
+
         result = extract_and_accumulate_rois(
             rotated_data,
             slice_classifier,
             roi_model,
             choice,
             slice_relevance_threshold=threshold,
+            flip_lr=flip_lr,
         )
 
-        if result[2]:
+        result_core = result[:5]
+        max_relevance_seen = float(result[5]) if len(result) > 5 else 0.0
+
+        if result_core[2]:
             if idx > 0:
                 print(
                     colored(
@@ -394,31 +820,165 @@ def extract_rois_with_fallback(
                         "yellow",
                     )
                 )
-            return result
+            return result_core
 
-        last_result = result
+        last_result = result_core
 
-        if idx < len(slice_relevance_thresholds) - 1:
+        if idx < len(thresholds_to_try) - 1:
+            # If even the best slice never got close, don't keep retrying.
+            if max_relevance_seen < float(lower_limit) - 1e-6:
+                print(
+                    colored(
+                        f"Max slice relevance observed ({max_relevance_seen:.2f}) is below the minimum threshold ({float(lower_limit):.2f}); not retrying.",
+                        "red",
+                    )
+                )
+                break
+
+            next_idx = idx + 1
+            next_threshold = float(thresholds_to_try[next_idx])
+
+            # Don't invent a new threshold (e.g. 0.37). Instead, skip to the next
+            # *configured* threshold that could possibly pass (<= observed max).
+            if next_threshold > max_relevance_seen + 1e-9:
+                for j in range(idx + 1, len(thresholds_to_try)):
+                    cand = float(thresholds_to_try[j])
+                    if cand <= (max_relevance_seen - 1e-6):
+                        next_idx = j
+                        next_threshold = cand
+                        break
+
             print(
                 colored(
                     f"No {choice_description} slices detected with threshold {threshold:.2f}. "
-                    f"Retrying with {slice_relevance_thresholds[idx + 1]:.2f}...",
+                    f"Retrying with {next_threshold:.2f}...",
                     "yellow",
                 )
             )
+            idx = next_idx
+            continue
 
-    print(
-        colored(
-            f"No {choice_description} slices detected even after lowering the threshold.",
-            "red",
+        idx += 1
+
+    print(colored(f"No {choice_description} slices detected even after lowering the threshold.", "red"))
+    return last_result
+
+
+def extract_rois_with_fallback_raw_dce(
+    mri_data_norm,
+    slice_classifier,
+    roi_model,
+    choice,
+    slice_relevance_thresholds=(0.5, 0.3),
+    flip_lr: bool = False,
+    frame_stride: int = 1,
+):
+    if not slice_relevance_thresholds:
+        slice_relevance_thresholds = (0.5,)
+
+    choice_description = _describe_choice(choice)
+    last_result = ([], [], [], [], {})
+
+    thresholds_to_try = list(slice_relevance_thresholds)
+    tried = set()
+    lower_limit = min(thresholds_to_try) if thresholds_to_try else 0.0
+
+    idx = 0
+    while idx < len(thresholds_to_try):
+        threshold = float(thresholds_to_try[idx])
+        if threshold in tried:
+            idx += 1
+            continue
+        tried.add(threshold)
+
+        result = extract_and_accumulate_rois_raw_dce(
+            mri_data_norm,
+            slice_classifier,
+            roi_model,
+            choice,
+            slice_relevance_threshold=threshold,
+            flip_lr=flip_lr,
+            frame_stride=frame_stride,
         )
-    )
+
+        result_core = result[:5]
+        max_relevance_seen = float(result[5]) if len(result) > 5 else 0.0
+
+        if result_core[2]:
+            if idx > 0:
+                print(colored(f"Detected {choice_description} slices after lowering threshold to {threshold:.2f}.", "green"))
+            return result_core
+
+        last_result = result_core
+
+        # Keep trying lower thresholds.
+        if idx < len(thresholds_to_try) - 1:
+            # If even the best slice never got close, don't keep retrying.
+            if max_relevance_seen < float(lower_limit) - 1e-6:
+                print(
+                    colored(
+                        f"Max slice relevance observed ({max_relevance_seen:.2f}) is below the minimum threshold ({float(lower_limit):.2f}); not retrying.",
+                        "red",
+                    )
+                )
+                break
+
+            next_idx = idx + 1
+            next_threshold = float(thresholds_to_try[next_idx])
+
+            # Don't invent a new threshold (e.g. 0.37). Instead, skip to the next
+            # *configured* threshold that could possibly pass (<= observed max).
+            if next_threshold > max_relevance_seen + 1e-9:
+                for j in range(idx + 1, len(thresholds_to_try)):
+                    cand = float(thresholds_to_try[j])
+                    if cand <= (max_relevance_seen - 1e-6):
+                        next_idx = j
+                        next_threshold = cand
+                        break
+
+            print(
+                colored(
+                    f"No {choice_description} slices detected with threshold {threshold:.2f}. Retrying with {next_threshold:.2f}...",
+                    "yellow",
+                )
+            )
+            idx = next_idx
+            continue
+        else:
+            print(colored(f"No {choice_description} slices detected even after lowering the threshold.", "red"))
+
+        idx += 1
 
     return last_result
 
 def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_rois, slice_labels, image_directory):
     global turbo_mode
     num_slices = len(relevant_slices)
+    if num_slices == 0:
+        # Nothing to plot. Avoid matplotlib throwing when cols=0.
+        return
+
+    try:
+        os.makedirs(os.path.join(image_directory, "AI"), exist_ok=True)
+    except Exception:
+        pass
+
+    def _label_name(lbl) -> str:
+        try:
+            i = int(lbl)
+        except Exception:
+            return str(lbl)
+        if i == 1:
+            return "SSS"
+        if i == 2:
+            return "LICA"
+        if i == 3:
+            return "RICA"
+        try:
+            _t, subtype = choice2type(i)
+            return str(subtype)
+        except Exception:
+            return str(i)
     rows = 2
     cols = num_slices
 
@@ -435,7 +995,7 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
         # Flip the original slice along the vertical axis
         flipped_original_slice = np.flipud(original_slices[i])
         ax1.imshow(flipped_original_slice, cmap='gray')
-        ax1.set_title(f'Original Slice {slice_labels[i]}')
+        ax1.set_title(f"Original Slice {_label_name(slice_labels[i])}")
         ax1.axis('off')
 
         # Normalize and flip the relevant slice along the vertical axis
@@ -451,7 +1011,7 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
         cv2.drawContours(contour_image, contours, -1, (255, 0, 0), 2)
 
         ax2.imshow(contour_image)
-        ax2.set_title(f'Predicted ROI {slice_labels[i]}')
+        ax2.set_title(f"Predicted ROI {_label_name(slice_labels[i])}")
         ax2.axis('off')
 
     plt.tight_layout()
@@ -467,6 +1027,80 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
 def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, IsVFA=False, filenames='filenames'):
     print(colored('Starting AI-based ROI extraction...', 'green'))
 
+    def _build_slice_thresholds() -> tuple[float, ...]:
+        """Return descending slice-relevance thresholds.
+
+        Defaults to the legacy fast schedule (0.50, 0.30).
+
+        Optional overrides:
+        - P_BRAIN_AI_SLICE_CONF_THRESHOLDS="0.5,0.3,0.1"
+        - P_BRAIN_AI_SLICE_CONF_START=0.5
+          P_BRAIN_AI_SLICE_CONF_MIN=0.1
+          P_BRAIN_AI_SLICE_CONF_STEP=0.05
+        """
+
+        raw = os.getenv("P_BRAIN_AI_SLICE_CONF_THRESHOLDS")
+        if raw and str(raw).strip():
+            vals = []
+            for part in str(raw).split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    v = float(part)
+                except Exception:
+                    continue
+                if np.isfinite(v) and 0.0 < v <= 1.0:
+                    vals.append(float(v))
+            if vals:
+                vals = sorted(set(vals), reverse=True)
+                return tuple(vals)
+
+        def _f(name: str, default: float) -> float:
+            try:
+                v = float(os.getenv(name, str(default)))
+            except Exception:
+                v = float(default)
+            if not np.isfinite(v):
+                v = float(default)
+            return float(v)
+
+        start = _f("P_BRAIN_AI_SLICE_CONF_START", 0.50)
+        min_v = _f("P_BRAIN_AI_SLICE_CONF_MIN", 0.30)
+        step = _f("P_BRAIN_AI_SLICE_CONF_STEP", 0.20)
+
+        start = max(0.01, min(1.0, start))
+        min_v = max(0.01, min(1.0, min_v))
+        if start < min_v:
+            start, min_v = min_v, start
+        if step <= 0 or not np.isfinite(step):
+            step = 0.05
+        step = max(0.01, min(0.50, step))
+
+        out = []
+        v = start
+        # Build inclusive sequence down to min_v.
+        while v >= (min_v - 1e-9):
+            out.append(round(float(v), 4))
+            v -= step
+        # Ensure min_v is included.
+        if out and out[-1] > min_v + 1e-6:
+            out.append(round(float(min_v), 4))
+        out = sorted(set(out), reverse=True)
+        return tuple(out) if out else (0.5, 0.3)
+
+    selected_artery = (getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA") or "RICA").strip().upper()
+    if selected_artery == "LICA":
+        ica_choice = 2
+        ica_flip_lr = True
+    else:
+        # Default to rICA behaviour.
+        ica_choice = 3
+        ica_flip_lr = False
+
+    used_ica_choice = int(ica_choice)
+    used_ica_flip_lr = bool(ica_flip_lr)
+
     slice_classifier_rica = load_model(
         AI_MODEL_PATHS['slice_classifier_rica'], compile=False
     )
@@ -480,58 +1114,334 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
         AI_MODEL_PATHS['ss_roi'], compile=False
     )
 
-    rotated_data, mri_data = preprocess_data(filename)
+    # Use default rotation first (can be overridden by P_BRAIN_AI_ROT90_K)
+    orig_rot_env = os.environ.get("P_BRAIN_AI_ROT90_K")
+    try:
+        default_rot_k = int(str(os.getenv("P_BRAIN_AI_ROT90_K", "-1")).strip())
+    except Exception:
+        default_rot_k = -1
 
-    slice_thresholds = (0.5, 0.3)
+    default_rot_k_mod = int(default_rot_k) % 4
+    os.environ["P_BRAIN_AI_ROT90_K"] = str(default_rot_k_mod)
 
-    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = extract_rois_with_fallback(
-        rotated_data,
+    # Keep a stable default-rotation view for SSS (and as the starting point for ICA).
+    rotated_data_default, mri_data_default, mri_data_norm_default = preprocess_data(filename, projection="mean")
+    rotated_data, mri_data = rotated_data_default, mri_data_default
+
+    # Track ICA-specific rotated/mri data in case we need to try a different rotation.
+    rotated_data_ica, mri_data_ica = rotated_data_default, mri_data_default
+    mri_data_norm_ica = mri_data_norm_default
+    rotated_data_ss, mri_data_ss = rotated_data_default, mri_data_default
+
+    slice_thresholds = _build_slice_thresholds()
+
+    used_artery_code = "LICA" if int(ica_choice) == 2 else "RICA"
+
+    try:
+        ica_frame_stride = int(str(os.getenv("P_BRAIN_AI_ICA_FRAME_STRIDE", "1")).strip())
+    except Exception:
+        ica_frame_stride = 1
+    ica_frame_stride = max(1, int(ica_frame_stride))
+
+    # First attempt: projection-based inference (matches the debug script behavior).
+    # ICA (RICA/LICA): the slice-classifier is most reliable on a *single DCE frame*
+    # (e.g. early post-bolus anatomy). Mean/max projections often score ~0 in
+    # the packaged runtime, which used to trigger the very slow full-frame scan.
+    #
+    # To keep this lightning fast, we pick one good frame from a small candidate
+    # set using a single batched predict(), then run batched ROI on that frame.
+    tmax = int(mri_data_norm_ica.shape[3])
+    # Search the early part of the series by default; override via env.
+    try:
+        frame_search_max = int(str(os.getenv("P_BRAIN_AI_ICA_FRAME_SEARCH_MAX", "60")).strip())
+    except Exception:
+        frame_search_max = 60
+    frame_search_max = max(1, min(frame_search_max, tmax))
+
+    try:
+        frame_search_stride = int(str(os.getenv("P_BRAIN_AI_ICA_FRAME_SEARCH_STRIDE", "2")).strip())
+    except Exception:
+        frame_search_stride = 2
+    frame_search_stride = max(1, int(frame_search_stride))
+
+    frame_candidates = list(range(0, frame_search_max, frame_search_stride))
+
+    # For LICA, the training orientation can vary across datasets.
+    # Try with and without LR flip and keep the better scoring variant.
+    if int(ica_choice) == 2:
+        best_frame_flip, best_score_flip = _select_best_ica_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            flip_lr=True,
+            frame_candidates=frame_candidates,
+        )
+        best_frame_noflip, best_score_noflip = _select_best_ica_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            flip_lr=False,
+            frame_candidates=frame_candidates,
+        )
+
+        if float(best_score_noflip) > float(best_score_flip):
+            best_frame, best_score = int(best_frame_noflip), float(best_score_noflip)
+            ica_flip_lr = False
+        else:
+            best_frame, best_score = int(best_frame_flip), float(best_score_flip)
+            ica_flip_lr = True
+
+        print(
+            colored(
+                f"ICA frame selection (LICA): flip_lr={ica_flip_lr} best_t={best_frame} (max p={best_score:.2f})",
+                "cyan",
+            )
+        )
+    else:
+        best_frame, best_score = _select_best_ica_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            flip_lr=ica_flip_lr,
+            frame_candidates=frame_candidates,
+        )
+        print(colored(f"ICA frame selection: best_t={best_frame} (max p={best_score:.2f})", "cyan"))
+
+    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = extract_and_accumulate_rois_single_frame(
+        mri_data_norm_ica,
         slice_classifier_rica,
         rica_roi_model,
-        choice=3,
-        slice_relevance_thresholds=slice_thresholds,
+        choice=ica_choice,
+        frame_index=best_frame,
+        slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
+        flip_lr=ica_flip_lr,
     )
 
+    used_ica_flip_lr = bool(ica_flip_lr)
+
+    # If LICA is missing, try the other flip before switching sides.
+    if (not rica_rois) and int(ica_choice) == 2:
+        alt_flip = not bool(ica_flip_lr)
+        alt_best_frame, alt_best_score = _select_best_ica_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            flip_lr=alt_flip,
+            frame_candidates=frame_candidates,
+        )
+        print(
+            colored(
+                f"ICA LICA flip fallback: flip_lr={alt_flip} best_t={alt_best_frame} (max p={alt_best_score:.2f})",
+                "yellow",
+            )
+        )
+        alt_result = extract_and_accumulate_rois_single_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            rica_roi_model,
+            choice=ica_choice,
+            frame_index=alt_best_frame,
+            slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
+            flip_lr=alt_flip,
+        )
+        if alt_result[2]:
+            ica_flip_lr = bool(alt_flip)
+            rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = alt_result
+
+    # If preferred side is missing, retry the other side using its own best frame.
+    if not rica_rois:
+        alt_choice = 2 if int(ica_choice) == 3 else 3
+        alt_flip = bool(alt_choice == 2)
+        alt_desc = "LICA" if int(alt_choice) == 2 else "RICA"
+        alt_best_frame, alt_best_score = _select_best_ica_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            flip_lr=alt_flip,
+            frame_candidates=frame_candidates,
+        )
+        print(colored(f"ICA fallback side: {alt_desc} best_t={alt_best_frame} (max p={alt_best_score:.2f})", "yellow"))
+        alt_result = extract_and_accumulate_rois_single_frame(
+            mri_data_norm_ica,
+            slice_classifier_rica,
+            rica_roi_model,
+            choice=alt_choice,
+            frame_index=alt_best_frame,
+            slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
+            flip_lr=alt_flip,
+        )
+        if alt_result[2]:
+            used_artery_code = alt_desc
+            used_ica_choice = int(alt_choice)
+            used_ica_flip_lr = bool(alt_flip)
+            rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = alt_result
+
+    # NOTE: legacy brute-force rotation and full-frame scanning are intentionally
+    # disabled here for speed. If ICA is missing, downstream will fall back to
+    # deterministic ROI selection.
+
+    # Restore default rotation before extracting SSS.
+    os.environ["P_BRAIN_AI_ROT90_K"] = str(default_rot_k_mod)
+
     ss_orig_slices, ss_slices, ss_rois, ss_labels, ss_voxels = extract_rois_with_fallback(
-        rotated_data,
+        rotated_data_ss,
         slice_classifier_ss,
         ss_roi_model,
         choice=1,
         slice_relevance_thresholds=slice_thresholds,
     )
 
-    all_orig_slices = rica_orig_slices + ss_orig_slices
-    all_slices = rica_slices + ss_slices
-    all_rois = rica_rois + ss_rois
-    all_labels = rica_labels + ss_labels
-    all_voxels = {**rica_voxels, **ss_voxels}
+    # Build a montage that includes SSS + selected carotid.
+    all_orig_slices = list(rica_orig_slices)
+    all_slices = list(rica_slices)
+    all_rois = list(rica_rois)
+    all_labels = list(rica_labels)
 
+    all_orig_slices += list(ss_orig_slices)
+    all_slices += list(ss_slices)
+    all_rois += list(ss_rois)
+    all_labels += list(ss_labels)
     plot_relevant_slices_with_rois(all_orig_slices, all_slices, all_rois, all_labels, image_dir)
 
-    for idx, (slice_index, roi_voxels) in enumerate(all_voxels.items()):
-        type, subtype = choice2type(all_labels[idx])
+    # Process artery and vein ROIs separately to avoid slice-index collisions and any
+    # label/voxel misalignment.
+    artery_label = rica_labels[0] if rica_labels else int(ica_choice)
+    for slice_index, roi_voxels in rica_voxels.items():
+        type, subtype = choice2type(int(artery_label))
 
-        max_intensity = -1
-        max_intensity_frame = 0
+        curve_method = (getattr(settings, "VASCULAR_ROI_CURVE_METHOD", "max") or "max").strip().lower()
+        if curve_method not in {"max", "mean", "median"}:
+            curve_method = "max"
+        adaptive_enabled = bool(getattr(settings, "VASCULAR_ROI_ADAPTIVE_MAX", False))
 
-        for (x, y) in roi_voxels:
-            voxel_intensity = mri_data[x, y, slice_index, :]
-            voxel_max_frame = np.argmax(voxel_intensity)
-            voxel_max_intensity = voxel_intensity[voxel_max_frame]
+        roi_voxels_arr = np.asarray(roi_voxels)
+        if roi_voxels_arr.size == 0:
+            continue
+        roi_tc = mri_data_ica[
+            roi_voxels_arr[:, 0].astype(int),
+            roi_voxels_arr[:, 1].astype(int),
+            int(slice_index),
+            :,
+        ]
+        if roi_tc.ndim != 2 or roi_tc.shape[0] == 0:
+            continue
 
-            if voxel_max_intensity > max_intensity:
-                max_intensity = voxel_max_intensity
-                max_intensity_frame = voxel_max_frame
+        if curve_method == "mean":
+            sel_tc = roi_tc.mean(axis=0)
+        elif curve_method == "median":
+            sel_tc = np.median(roi_tc, axis=0)
+        elif curve_method == "max" and adaptive_enabled:
+            sel_tc = roi_tc.max(axis=0)
+        else:
+            idx = int(np.argmax(roi_tc.max(axis=1)))
+            sel_tc = roi_tc[idx]
 
-        plot_time_intensity_curves_AI(mri_data, roi_voxels, slice_index, max_intensity_frame, time, analysis_dir, image_dir, type=type, subtype=subtype)
-        plot_time_intensity_curves_and_CTC_AI(mri_data, max_intensity_frame, roi_voxels, slice_index, max_intensity_frame, time, analysis_dir, image_dir, nifti_dir, type=type, subtype=subtype, IsVFA=IsVFA, filenames=filenames)
+        baseline_frames = int(getattr(settings, "ROI_DCE_BASELINE_FRAMES", 5))
+        baseline = sel_tc[:baseline_frames].mean() if sel_tc.size else 0.0
+        max_intensity_frame = int(np.argmax(sel_tc - baseline)) if sel_tc.size else 0
+
+        plot_time_intensity_curves_AI(
+            mri_data_ica,
+            roi_voxels,
+            slice_index,
+            max_intensity_frame,
+            time,
+            analysis_dir,
+            image_dir,
+            type=type,
+            subtype=subtype,
+        )
+        plot_time_intensity_curves_and_CTC_AI(
+            mri_data_ica,
+            max_intensity_frame,
+            roi_voxels,
+            slice_index,
+            max_intensity_frame,
+            time,
+            analysis_dir,
+            image_dir,
+            nifti_dir,
+            type=type,
+            subtype=subtype,
+            IsVFA=IsVFA,
+            filenames=filenames,
+            rotate_ac=True,
+        )
+
+    for slice_index, roi_voxels in ss_voxels.items():
+        type, subtype = choice2type(1)
+
+        curve_method = (getattr(settings, "VASCULAR_ROI_CURVE_METHOD", "max") or "max").strip().lower()
+        if curve_method not in {"max", "mean", "median"}:
+            curve_method = "max"
+        adaptive_enabled = bool(getattr(settings, "VASCULAR_ROI_ADAPTIVE_MAX", False))
+
+        roi_voxels_arr = np.asarray(roi_voxels)
+        if roi_voxels_arr.size == 0:
+            continue
+        roi_tc = mri_data_ss[
+            roi_voxels_arr[:, 0].astype(int),
+            roi_voxels_arr[:, 1].astype(int),
+            int(slice_index),
+            :,
+        ]
+        if roi_tc.ndim != 2 or roi_tc.shape[0] == 0:
+            continue
+
+        if curve_method == "mean":
+            sel_tc = roi_tc.mean(axis=0)
+        elif curve_method == "median":
+            sel_tc = np.median(roi_tc, axis=0)
+        elif curve_method == "max" and adaptive_enabled:
+            sel_tc = roi_tc.max(axis=0)
+        else:
+            idx = int(np.argmax(roi_tc.max(axis=1)))
+            sel_tc = roi_tc[idx]
+
+        baseline_frames = int(getattr(settings, "ROI_DCE_BASELINE_FRAMES", 5))
+        baseline = sel_tc[:baseline_frames].mean() if sel_tc.size else 0.0
+        max_intensity_frame = int(np.argmax(sel_tc - baseline)) if sel_tc.size else 0
+
+        plot_time_intensity_curves_AI(
+            mri_data_ss,
+            roi_voxels,
+            slice_index,
+            max_intensity_frame,
+            time,
+            analysis_dir,
+            image_dir,
+            type=type,
+            subtype=subtype,
+        )
+        plot_time_intensity_curves_and_CTC_AI(
+            mri_data_ss,
+            max_intensity_frame,
+            roi_voxels,
+            slice_index,
+            max_intensity_frame,
+            time,
+            analysis_dir,
+            image_dir,
+            nifti_dir,
+            type=type,
+            subtype=subtype,
+            IsVFA=IsVFA,
+            filenames=filenames,
+            rotate_ac=True,
+        )
+
+    # Restore the caller's env (best-effort).
+    if orig_rot_env is None:
+        os.environ.pop("P_BRAIN_AI_ROT90_K", None)
+    else:
+        os.environ["P_BRAIN_AI_ROT90_K"] = orig_rot_env
 
     print(colored('AI-based ROI extraction completed.', 'green'))
 
-    # Now add the time-shifting functionality:
-    time_shifting(analysis_dir, nifti_dir, image_dir)
-
-    print(colored('Time shifting completed.', 'green'))
+    # Optional: TSCC time shifting (SSS -> arterial reference) for AIF.
+    if bool(getattr(settings, "INPUT_FUNCTION_USE_SSS", True)):
+        tscc.time_shifting(
+            analysis_dir,
+            nifti_dir,
+            image_dir,
+            artery=str(used_artery_code or getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA")),
+        )
+        print(colored('Time shifting completed.', 'green'))
 
 def time_shifting(analysis_directory, nifti_directory, image_directory):
     if auto_logging_enabled():
@@ -572,7 +1482,7 @@ def refresh_nifti_directory(nifti_directory):
 
 def input_function_AI(analysis_directory, nifti_directory, image_directory, filenames, parameters):
     if _roi_method() == "geometry":
-        from modules.geometry_input_functions import input_function_geometry
+        from modules.deterministic_input_functions import input_function_geometry
 
         return input_function_geometry(
             analysis_directory,
@@ -599,9 +1509,8 @@ def input_function_AI(analysis_directory, nifti_directory, image_directory, file
 
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
-    TR = nifti_img.header.get_zooms()[-1] 
     num_volumes = nifti_img.shape[-1]
-    total_scan_duration = TR * num_volumes 
-    time_points_s = np.linspace(0, total_scan_duration, num_volumes)
+    dt_s = resolve_dce_time_step_s(filename, default=None)
+    time_points_s = build_time_points_s(num_volumes, dt_s)
     np.save(os.path.join(analysis_directory,'Fitting', 'time_points_s.npy'), time_points_s)
     start_roi_selection(filename, rotate_AC=True, time=time_points_s, analysis=analysis_directory, image=image_directory, nifti=nifti_directory, IsVFA=IsVFA, filenames=filenames)

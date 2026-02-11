@@ -27,27 +27,182 @@ else:
 CONTROLS = 0#os.environ.get("PBRAIN_CONTROLS", "False").lower() in ("1", "true", "yes")
 CONTROL_FLAG_FILENAME = "control.json"
 
-# Toggle multiprocessing for compute-heavy routines
-MULTIPROCESSING = True
-# Default number of CPU cores used when multiprocessing is enabled
-NUMBER_OF_CORES = int(os.environ.get("P_BRAIN_CORES", 4))
+# Toggle multiprocessing for compute-heavy routines.
+# Default on, but allow disabling via env when debugging or when the Python
+# runtime has issues with multiprocessing (e.g. some macOS setups).
+MULTIPROCESSING = (os.environ.get("P_BRAIN_MULTIPROCESSING", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _default_core_count() -> int:
+    ncpu = os.cpu_count() or 1
+    # Default to 80% of available cores, clamped.
+    return max(1, int(ncpu * 0.8))
+
+
+def _parse_core_setting(raw: str | None) -> int:
+    """Parse P_BRAIN_CORES.
+
+    Supported values:
+    - unset/empty/"auto": 80% of available CPUs
+    - integer (e.g. 4)
+    - fraction in (0,1] (e.g. 0.8 => 80% of CPUs)
+    """
+
+    raw = (raw or "").strip().lower()
+    if not raw or raw == "auto":
+        return _default_core_count()
+
+    try:
+        if any(ch in raw for ch in (".", "e")):
+            frac = float(raw)
+            if 0 < frac <= 1:
+                return max(1, int((os.cpu_count() or 1) * frac))
+            return max(1, int(frac))
+        return max(1, int(raw))
+    except Exception:
+        return _default_core_count()
+
+
+# Default number of CPU cores used when multiprocessing is enabled.
+_cores = _parse_core_setting(os.environ.get("P_BRAIN_CORES"))
+if not MULTIPROCESSING:
+    _cores = 1
+else:
+    ncpu = os.cpu_count() or 1
+    _cores = max(1, min(int(_cores), int(ncpu)))
+NUMBER_OF_CORES = int(_cores)
+
+# Input-function ROI extraction method.
+#
+# - ai (default): TensorFlow-backed AI ROI extraction.
+# - deterministic: deterministic (non-AI) ROI extraction using PCA/connected-components.
+# - file: load ROI masks/curves from files (e.g. user-drawn ROI exported by p-brain-web).
+# - geometry: legacy alias for deterministic.
+ROI_METHOD = (os.environ.get("P_BRAIN_ROI_METHOD") or os.environ.get("ROI_METHOD") or "ai").strip().lower()
+if ROI_METHOD == "geometry":
+    ROI_METHOD = "deterministic"
+if ROI_METHOD not in {"ai", "deterministic", "file"}:
+    ROI_METHOD = "ai"
+
+# Metadata strictness / overrides.
+# If STRICT_METADATA is enabled, missing required acquisition metadata should be treated as an error.
+STRICT_METADATA = (os.environ.get("P_BRAIN_STRICT_METADATA", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Optional flip-angle override (degrees).
+# NOTE: The primary flip-angle configuration is defined further below as
+# FLIP_ANGLE_SETTING/FLIP_ANGLE_DEG. This early parsing exists for historical
+# reasons; keep it robust to non-numeric values like "auto".
+_fa_env = os.environ.get("P_BRAIN_FLIP_ANGLE") or os.environ.get("P_BRAIN_FLIP_ANGLE_DEG")
+try:
+    _fa_raw = (str(_fa_env).strip() if _fa_env not in {None, ""} else "")
+    if not _fa_raw or _fa_raw.lower() == "auto":
+        FLIP_ANGLE_DEG = None
+    else:
+        FLIP_ANGLE_DEG = float(_fa_raw)
+except Exception:
+    FLIP_ANGLE_DEG = None
+
+# Signal->concentration conversion model.
+# Validator parity requirement: only the validated TurboFLASH conversion is supported.
+CTC_MODEL = "turboflash"
+
+# Baseline frames for TurboFLASH conversion (validator default = 10 frames).
+TURBOFLASH_BASELINE_FRAMES = int(os.environ.get("P_BRAIN_TURBOFLASH_BASELINE_FRAMES", "10"))
+
+# Control exporting voxelwise CTC outputs.
+# Defaults enabled to match the validated pipeline expectations.
+CTC_WRITE_MAPS = (os.environ.get("P_BRAIN_CTC_MAPS", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+CTC_WRITE_4D = (os.environ.get("P_BRAIN_CTC_4D", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+try:
+    CTC_MAP_SLICE = int(float(os.environ.get("P_BRAIN_CTC_MAP_SLICE", "5") or "5"))
+except Exception:
+    CTC_MAP_SLICE = 5
+
+# When selecting the global "Max" TSCC curve, optionally skip curves whose main
+# bolus apex appears as a narrow split/fork (two near-maximum local maxima with
+# a dip in-between). Enabled by default to avoid unstable max selection.
+TSCC_SKIP_FORKED_PEAKS = (os.environ.get("P_BRAIN_TSCC_SKIP_FORKED_PEAKS", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+# Conservative defaults for forked-peak detection (see modules/time_shifting.py).
+TSCC_FORKED_PEAK_MIN_PEAK_MM = float(os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_MIN_PEAK_MM", 1.0))
+TSCC_FORKED_PEAK_NEAR_FRAC = float(os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_NEAR_FRAC", 0.95))
+TSCC_FORKED_PEAK_WINDOW_FRAMES = int(os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_WINDOW_FRAMES", 3))
+TSCC_FORKED_PEAK_MAX_SEPARATION_FRAMES = int(
+    os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_MAX_SEPARATION_FRAMES", 3)
+)
+TSCC_FORKED_PEAK_MIN_DIP_FRAC = float(os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_MIN_DIP_FRAC", 0.06))
 
 # Select the recovery equation to use when fitting T1/M0 from inversion or
-# saturation recovery acquisitions. Accepts ``inversion`` (default) or
-# ``saturation``.
+# saturation recovery acquisitions.
+# - inversion:  A - B*exp(-TI/T1)
+# - saturation: M0*(1-exp(-TI/T1))
+# - turboflash: TurboFLASH readout-train model (matches legacy MATLAB turbof_* fit)
 T1_RECOVERY_MODEL = os.environ.get("P_BRAIN_T1_RECOVERY_MODEL", "inversion").strip().lower()
-if T1_RECOVERY_MODEL not in {"inversion", "saturation"}:
+if T1_RECOVERY_MODEL not in {"inversion", "saturation", "turboflash"}:
     T1_RECOVERY_MODEL = "inversion"
 
-# Select kinetic modelling strategy. Valid options are ``patlak``,
-# ``two_compartment`` (regularised two-compartment fit) or ``both`` to execute the two
-# approaches sequentially.  When the environment variable
-# ``P_BRAIN_MODEL`` is not provided the default is ``both``.
-KINETIC_MODEL = os.environ.get("P_BRAIN_MODEL", "both")
+# Select kinetic modelling strategy.
+# Consolidated options:
+# - patlak: permeability only
+# - tikhonov: deconvolution/perfusion only
+# - both: run patlak then tikhonov
+_KINETIC_MODEL_RAW = (os.environ.get("P_BRAIN_MODEL", "both") or "both").strip().lower()
+if _KINETIC_MODEL_RAW in {
+    "both",
+    "all",
+    "patlak_then_tikhonov",
+    "patlak-then-tikhonov",
+    "patlak_tikhonov",
+    "patlak_tikhonov_fast",
+    "patlak-then-tikhonov-fast",
+}:
+    KINETIC_MODEL = "both"
+elif _KINETIC_MODEL_RAW in {
+    "tikhonov",
+    "tikhonov_only",
+    "tikhonov_fast",
+    "tikhonov-only-fast",
+    "two_compartment",
+    "2comp",
+    "two-comp",
+    "two-compartment",
+}:
+    KINETIC_MODEL = "tikhonov"
+elif _KINETIC_MODEL_RAW in {"patlak"}:
+    KINETIC_MODEL = "patlak"
+else:
+    KINETIC_MODEL = "both"
 
 # Optionally use the Patlak permeability (Ki) as the initial guess for
 # Ktrans in the two-compartment optimisation.
-TWO_COMPARTMENT_INIT_FROM_PATLAK = False
+TWO_COMPARTMENT_INIT_FROM_PATLAK = (
+    os.environ.get("P_BRAIN_TWO_COMPARTMENT_INIT_FROM_PATLAK", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # Control writing of additional voxelwise parametric maps derived from the
 # deconvolution residue.
@@ -58,8 +213,35 @@ CTH_MTT_GAMMA_VOXELWISE = os.environ.get(
     "P_BRAIN_CTH_MTT_GAMMA_VOXELWISE", "0"
 ).lower() in {"1", "true", "yes"}
 
-# Regularisation strength for the two-compartment model
-TIKHONOV_LAMBDA = float(os.environ.get("P_BRAIN_LAMBDA", 0.5))
+# Regularisation defaults for Tikhonov deconvolution (CBF/MTT/CTH).
+# Use L-curve by default across a MATLAB-matched grid (0.05:0.3329:40).
+_lambda_env = os.environ.get("P_BRAIN_LAMBDA")
+TIKHONOV_LAMBDA = float(_lambda_env) if _lambda_env not in {None, ""} else 0.5
+TIKHONOV_LAMBDA_MIN = float(os.environ.get("P_BRAIN_LAMBDA_MIN", 0.05))
+TIKHONOV_LAMBDA_MAX = float(os.environ.get("P_BRAIN_LAMBDA_MAX", 40.0))
+TIKHONOV_LAMBDA_STEPS = int(os.environ.get("P_BRAIN_LAMBDA_STEPS", 121))
+# If true, prefer the L-curve selection over any fixed lambda.
+AUTO_LAMBDA = (os.environ.get("P_BRAIN_AUTO_LAMBDA", "1") or "1").strip().lower() in {"1", "true", "yes", "on"}
+
+# Tikhonov penalty operator used for deconvolution/residue-based metrics.
+# Supported values: "identity" (0th-order) and "derivative" (1st-order finite difference).
+TIKHONOV_PENALTY = (os.environ.get("P_BRAIN_TIKHONOV_PENALTY", "derivative") or "derivative").strip().lower()
+if TIKHONOV_PENALTY not in {"identity", "derivative"}:
+    TIKHONOV_PENALTY = "derivative"
+
+# Stabilisation applied when computing MTT/CTH from the residue.
+RESIDUE_ENFORCE_NONNEG = (os.environ.get("P_BRAIN_RESIDUE_ENFORCE_NONNEG", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+RESIDUE_ENFORCE_MONOTONE = (os.environ.get("P_BRAIN_RESIDUE_ENFORCE_MONOTONE", "1") or "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # Physiological constants for residue-based perfusion metrics
 TISSUE_DENSITY = float(os.environ.get("P_BRAIN_TISSUE_DENSITY", 1.04))
@@ -70,14 +252,124 @@ PLASMA_DERIVED_AIF = os.environ.get("P_BRAIN_PLASMA_AIF", "0").lower() in {"1", 
 ALIGN_AIF_BY_XCORR = os.environ.get("P_BRAIN_ALIGN_AIF", "0").lower() in {"1", "true", "yes"}
 ALIGN_AIF_MAX_SHIFT_S = float(os.environ.get("P_BRAIN_ALIGN_AIF_MAX_SHIFT", 4.0))
 
-# Select which input function to use when performing kinetic modelling. The
-# default ``SSS`` corresponds to the legacy behaviour where the superior
-# sagittal sinus curve is time shifted and rescaled to match the arterial
-# signal.  Setting ``P_BRAIN_INPUT_FUNCTION`` to ``RICA`` uses the pure
-# arterial concentration curve from the right internal carotid artery instead.
-INPUT_FUNCTION_SOURCE = os.environ.get("P_BRAIN_INPUT_FUNCTION", "SSS").strip().upper()
-if INPUT_FUNCTION_SOURCE not in {"SSS", "RICA"}:
-    INPUT_FUNCTION_SOURCE = "SSS"
+# MATLAB-style voxelwise offset correction (arrival-time estimation) prior to
+# deconvolution. When enabled, each voxel's tissue curve is shifted in time
+# using MATLAB-equivalent `curve2InitEnhanc_2` + `inputshift3` (pchip).
+MATLAB_OFFSET_CORRECTION = os.environ.get("P_BRAIN_MATLAB_OFFSET_CORRECTION", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+# Write the estimated offset (seconds) as a NIfTI map in voxelwise-only mode.
+WRITE_OFFSET_MAP = os.environ.get("P_BRAIN_WRITE_OFFSET_MAP", "1").lower() in {"1", "true", "yes"}
+
+# Arterial input function configuration.
+#
+# There are two concepts:
+# 1) Which *arterial* ROI to use as the reference artery (RICA/LICA).
+# 2) Whether the *output* AIF used for modelling should be the time-shifted
+#    and rescaled SSS-derived curve (TSCC) or a pure arterial curve.
+#
+# Defaults requested:
+# - reference artery: RICA
+# - use SSS time shifting: enabled
+#
+# Backwards compatibility:
+# - P_BRAIN_INPUT_FUNCTION=SSS forces SSS/TSCC output (reference artery defaults to RICA)
+# - P_BRAIN_INPUT_FUNCTION=RICA or LICA forces pure arterial output
+
+_AIF_ARTERY = (os.environ.get("P_BRAIN_AIF_ARTERY", "RICA") or "RICA").strip().upper()
+if _AIF_ARTERY not in {"RICA", "LICA"}:
+    _AIF_ARTERY = "RICA"
+
+_AIF_USE_SSS = (os.environ.get("P_BRAIN_AIF_USE_SSS", "1") or "1").strip().lower() in {"1", "true", "yes"}
+
+_legacy_if = (os.environ.get("P_BRAIN_INPUT_FUNCTION", "") or "").strip().upper()
+if _legacy_if:
+    if _legacy_if == "SSS":
+        _AIF_USE_SSS = True
+    elif _legacy_if in {"RICA", "LICA"}:
+        _AIF_USE_SSS = False
+        _AIF_ARTERY = _legacy_if
+
+# Optional explicit modelling input-function selector.
+# - tscc (default): time-shifted+rescaled SSS-derived curve
+# - aif: pure arterial curve
+# - vif: pure venous curve (SSS)
+_model_if_raw = (os.environ.get("P_BRAIN_MODELLING_INPUT_FUNCTION", "") or "").strip().lower()
+if _model_if_raw in {"tscc", "aif", "vif"}:
+    MODELLING_INPUT_FUNCTION = _model_if_raw
+else:
+    # Backwards compatible default based on legacy toggle.
+    MODELLING_INPUT_FUNCTION = "tscc" if _AIF_USE_SSS else "aif"
+
+# Align legacy toggle with the modelling selector.
+if MODELLING_INPUT_FUNCTION == "tscc":
+    _AIF_USE_SSS = True
+elif MODELLING_INPUT_FUNCTION in {"aif", "vif"}:
+    _AIF_USE_SSS = False
+
+# Exported settings.
+INPUT_FUNCTION_ARTERY = _AIF_ARTERY
+INPUT_FUNCTION_USE_SSS = bool(_AIF_USE_SSS)
+
+# Legacy-style source string (used by some older callsites).
+INPUT_FUNCTION_SOURCE = "SSS" if INPUT_FUNCTION_USE_SSS else INPUT_FUNCTION_ARTERY
+
+
+# TSCC (time-shifted and rescaled concentration curve) amplitude handling.
+# - P_BRAIN_TSCC_RESCALE=1 enables amplitude rescaling (default).
+# - P_BRAIN_TSCC_RESCALE=0 disables amplitude rescaling (time-shift only).
+# - P_BRAIN_TSCC_RESCALE_METHOD selects how to compute the scale factor:
+#     - peak: match peak heights (legacy behaviour: only upscale when vein peak < artery peak).
+#     - auc:  match areas under the curve ("total volume"; legacy behaviour: only upscale when vein AUC < artery AUC).
+TSCC_RESCALE = (os.environ.get("P_BRAIN_TSCC_RESCALE", "1") or "1").strip().lower() in {"1", "true", "yes"}
+TSCC_RESCALE_METHOD = (os.environ.get("P_BRAIN_TSCC_RESCALE_METHOD", "peak") or "peak").strip().lower()
+if TSCC_RESCALE_METHOD not in {"peak", "auc"}:
+    TSCC_RESCALE_METHOD = "peak"
+
+# TSCC alignment strategy.
+# - peaks (default): peak/cross-correlation heuristic (fast, integer-frame shift).
+# - pchip_fit: continuous-time pchip shifting + shift/scale fitting.
+_tscc_method_raw = (os.environ.get("P_BRAIN_TSCC_METHOD", "") or "").strip().lower()
+# Alignment implementation selector.
+# - peaks: fast discrete peak-based alignment (legacy)
+# - pchip_fit: continuous-time pchip shifting + shift/scale fitting
+if not _tscc_method_raw:
+    TSCC_METHOD = "peaks"
+elif _tscc_method_raw in {"peaks", "pchip_fit"}:
+    TSCC_METHOD = _tscc_method_raw
+else:
+    # Back-compat: older configs may contain previous labels.
+    # Treat any non-empty unknown as the pchip+fit implementation.
+    TSCC_METHOD = "pchip_fit"
+
+# Optional demo plot showing raw SSS vs time-shifted and rescaled TSCC overlayed
+# with available arterial curves.
+TSCC_WRITE_DEMO_PLOT = (os.environ.get("P_BRAIN_TSCC_WRITE_DEMO_PLOT", "1") or "1").strip().lower() in {"1", "true", "yes"}
+
+# How to derive a representative vascular curve from an ROI mask.
+# - max (default): pick the single brightest voxel within the ROI (over time).
+# - mean: average the signal across all ROI voxels.
+VASCULAR_ROI_CURVE_METHOD = (
+    os.environ.get("P_BRAIN_VASCULAR_ROI_CURVE_METHOD", "max") or "max"
+).strip().lower()
+if VASCULAR_ROI_CURVE_METHOD not in {"max", "mean", "median"}:
+    VASCULAR_ROI_CURVE_METHOD = "max"
+
+# Optional adaptive-max tracking for vascular ROI curves.
+# When enabled (and VASCULAR_ROI_CURVE_METHOD=max), the brightest voxel is
+# re-selected independently at each time frame within the ROI.
+VASCULAR_ROI_ADAPTIVE_MAX = (
+    os.environ.get("P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX", "1") or "1"
+).strip().lower() in {"1", "true", "yes"}
+
+# How to aggregate tissue/atlas ROI voxels into representative curves/values.
+# - median (default): robust to outliers
+# - mean: historical behaviour in some tissue paths
+TISSUE_ROI_AGGREGATION = (os.environ.get("P_BRAIN_TISSUE_ROI_AGGREGATION", "median") or "median").strip().lower()
+if TISSUE_ROI_AGGREGATION not in {"mean", "median"}:
+    TISSUE_ROI_AGGREGATION = "median"
 
 # Flip angle (degrees) used by signal->concentration conversion.
 # Set `P_BRAIN_FLIP_ANGLE=auto` (default) to rely on metadata.
@@ -92,16 +384,147 @@ if _flip_angle_lower and _flip_angle_lower != "auto":
         FLIP_ANGLE_SETTING = "auto"
         FLIP_ANGLE_DEG = None
 
+# When enabled, missing critical acquisition metadata becomes an error rather
+# than silently falling back to heuristics/defaults.
+#
+# Examples of metadata that may be required when STRICT_METADATA is enabled:
+# - FlipAngle for signal->concentration conversion
+# - RepetitionTimeExcitation / InversionTime for TurboFLASH models
+STRICT_METADATA = (os.environ.get("P_BRAIN_STRICT_METADATA", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 # Signal-to-concentration conversion model.
-# - saturation: closed-form saturation-recovery inversion (legacy p-Brain)
-# - turboflash: TurboFLASH readout-train forward model (MATLAB-style), numerically inverted
-CTC_MODEL = (os.environ.get("P_BRAIN_CTC_MODEL", "saturation") or "saturation").strip().lower()
-if CTC_MODEL not in {"saturation", "turboflash"}:
-    CTC_MODEL = "saturation"
+# Validator parity requirement: there is exactly ONE supported conversion path.
+#
+# TurboFLASH (Hemisure validator / MATLAB `menu_15_5.m`, method 4):
+#   c = (-1/(beta*TI_dyn))*( log(1 - s/(M0*sin(alpha))) + TI_dyn*R1_pre )
+#   baseline: c = c - mean(c(1:baseline)); c(1:baseline)=0; nan->0
+CTC_MODEL = (os.environ.get("P_BRAIN_CTC_MODEL", "turboflash") or "turboflash").strip().lower()
+if CTC_MODEL in {"advanced", "validated", "method4", "validated_method4"}:
+    CTC_MODEL = "turboflash"
+if CTC_MODEL != "turboflash":
+    CTC_MODEL = "turboflash"
+
+# TurboFLASH baseline length (frames) for the validated conversion.
+try:
+    TURBOFLASH_BASELINE_FRAMES = int(float(os.environ.get("P_BRAIN_TURBOFLASH_BASELINE_FRAMES", "10")))
+except Exception:
+    TURBOFLASH_BASELINE_FRAMES = 10
+TURBOFLASH_BASELINE_FRAMES = max(1, int(TURBOFLASH_BASELINE_FRAMES))
+
+# Optional override for TurboFLASH excitation TR (seconds).
+#
+# IMPORTANT: DCE JSON sidecars often store `RepetitionTime` as the *volume*
+# sampling interval (seconds per dynamic), not the excitation TR (ms).
+# For TurboFLASH we need the excitation TR. Prefer `RepetitionTimeExcitation`
+# in the JSON sidecar, or set this override explicitly.
+TURBOFLASH_TR_S = None
+_tf_tr_s = (os.environ.get("P_BRAIN_TURBOFLASH_TR_S") or "").strip()
+_tf_tr_ms = (os.environ.get("P_BRAIN_TURBOFLASH_TR_MS") or "").strip()
+try:
+    if _tf_tr_s:
+        v = float(_tf_tr_s)
+        if v > 0:
+            TURBOFLASH_TR_S = v
+    elif _tf_tr_ms:
+        v = float(_tf_tr_ms)
+        if v > 0:
+            TURBOFLASH_TR_S = v * 1e-3
+except Exception:
+    TURBOFLASH_TR_S = None
+
+# Optional override for TurboFLASH nph (turbo factor / ky=0 line index).
+TURBOFLASH_NPH = None
+_tf_nph = (os.environ.get("P_BRAIN_TURBOFLASH_NPH") or os.environ.get("P_BRAIN_TURBO_NPH") or "").strip()
+if _tf_nph:
+    try:
+        v = int(float(_tf_nph))
+        if v > 0:
+            TURBOFLASH_NPH = v
+    except Exception:
+        TURBOFLASH_NPH = None
+
+# TurboFLASH CTC conversion method.
+#
+# p-brain uses a single validated closed-form TurboFLASH conversion (MATLAB menu_5 case12 method1).
+# Exposed as:
+#   TURBOFLASH_CTC_METHOD = "turboflash_advanced"
+TURBOFLASH_CTC_METHOD = (
+    os.environ.get("P_BRAIN_TURBOFLASH_CTC_METHOD", "turboflash_advanced") or "turboflash_advanced"
+).strip().lower()
+
+_TF_ADV_ALIASES = {
+    "turboflash_advanced",
+    "case12",
+    "case12_method1",
+    "matlab_case12",
+    "menu5_case12",
+    "closed_form",
+}
+if TURBOFLASH_CTC_METHOD not in _TF_ADV_ALIASES:
+    TURBOFLASH_CTC_METHOD = "turboflash_advanced"
+
+# TurboFLASH TI during bolus passage (seconds) for the closed-form conversion.
+# MATLAB default is 0.12 s.
+TURBOFLASH_TI_DYN_S = None
+_tf_ti_s = (os.environ.get("P_BRAIN_TURBOFLASH_TI_DYN_S") or os.environ.get("P_BRAIN_TURBOFLASH_TI_S") or "").strip()
+_tf_ti_ms = (os.environ.get("P_BRAIN_TURBOFLASH_TI_DYN_MS") or os.environ.get("P_BRAIN_TURBOFLASH_TI_MS") or "").strip()
+try:
+    if _tf_ti_s:
+        v = float(_tf_ti_s)
+        if v > 0:
+            TURBOFLASH_TI_DYN_S = v
+    elif _tf_ti_ms:
+        v = float(_tf_ti_ms)
+        if v > 0:
+            TURBOFLASH_TI_DYN_S = v * 1e-3
+except Exception:
+    TURBOFLASH_TI_DYN_S = None
+
+# When enabled, use the strict saturation inversion *without* the
+# additional stability clamps / M0 re-estimation.
+CTC_SATURATION_STRICT = (os.environ.get("P_BRAIN_CTC_SATURATION_STRICT", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+# DCE temporal sampling (seconds per volume).
+#
+# Defaults to "auto" (None) and will be resolved from metadata (NIfTI header
+# pixdim[4]/zooms[3], then JSON sidecar) when needed.
+#
+# Optional overrides:
+# - P_BRAIN_DCE_TIME_STEP_S=<float>
+# - P_BRAIN_DCE_DT_S=<float>
+_dce_dt_raw = None
+for _key in (
+    "P_BRAIN_DCE_TIME_STEP_S",
+    "P_BRAIN_DCE_DT_S",
+    "P_BRAIN_DCE_TEMPORAL_RESOLUTION_S",
+    "P_BRAIN_DCE_TEMPORAL_RESOLUTION",
+):
+    _val = os.environ.get(_key)
+    if _val is not None and str(_val).strip() != "":
+        _dce_dt_raw = str(_val).strip()
+        break
+
+DCE_TIME_STEP_S = None
+if _dce_dt_raw is not None and _dce_dt_raw.lower() != "auto":
+    try:
+        _dt = float(_dce_dt_raw)
+        if _dt > 0:
+            DCE_TIME_STEP_S = _dt
+    except (TypeError, ValueError):
+        DCE_TIME_STEP_S = None
 
 # TurboFLASH model parameters (only used when CTC_MODEL=turboflash).
-# nph is the phase-encode line index (1-based) at ky=0 (k-space center).
-TURBOFLASH_NPH = int(os.environ.get("P_BRAIN_TURBO_NPH", 1))
+# NOTE: Do not clobber TURBOFLASH_NPH here; it is resolved above from
+# overrides/metadata with better fallbacks.
 
 # T1/M0 fitting input source.
 # - auto: prefer inversion-recovery if present, otherwise try VFA.
@@ -118,8 +541,62 @@ VFA_FILE_GLOB = (os.environ.get("P_BRAIN_VFA_GLOB", "*VFA*.nii*") or "*VFA*.nii*
 
 # When enabled, pick the regularisation weight automatically using an L-curve
 # search across ``AUTO_LAMBDA_CANDIDATES``.
-AUTO_LAMBDA = False
-AUTO_LAMBDA_CANDIDATES = np.logspace(-2, 2, 30)
+AUTO_LAMBDA = (os.environ.get("P_BRAIN_AUTO_LAMBDA", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+_auto_lambda_candidates_raw = (os.environ.get("P_BRAIN_AUTO_LAMBDA_CANDIDATES") or "").strip()
+_auto_lambda_space = (os.environ.get("P_BRAIN_AUTO_LAMBDA_SPACE", "linear") or "linear").strip().lower()
+try:
+    _auto_lambda_min = float(os.environ.get("P_BRAIN_AUTO_LAMBDA_MIN", 0.05))
+except Exception:
+    _auto_lambda_min = 0.05
+try:
+    _auto_lambda_max = float(os.environ.get("P_BRAIN_AUTO_LAMBDA_MAX", 40.0))
+except Exception:
+    _auto_lambda_max = 40.0
+try:
+    _auto_lambda_steps = int(os.environ.get("P_BRAIN_AUTO_LAMBDA_STEPS", 120))
+except Exception:
+    _auto_lambda_steps = 120
+
+if _auto_lambda_candidates_raw:
+    try:
+        AUTO_LAMBDA_CANDIDATES = np.array(
+            [float(x) for x in re.split(r"[ ,;]+", _auto_lambda_candidates_raw) if x.strip() != ""],
+            dtype=float,
+        )
+    except Exception:
+        AUTO_LAMBDA_CANDIDATES = np.array([], dtype=float)
+else:
+    # Legacy default: linear sweep (uniform spacing) across [0.05, 40] with 120 intervals.
+    # This yields 121 candidates, matching MATLAB's `L_min:(L_max-L_min)/L_no:L_max`.
+    if _auto_lambda_steps < 1:
+        _auto_lambda_steps = 120
+    if not np.isfinite(_auto_lambda_min) or _auto_lambda_min <= 0:
+        _auto_lambda_min = 0.05
+    if not np.isfinite(_auto_lambda_max) or _auto_lambda_max <= _auto_lambda_min:
+        _auto_lambda_max = 40.0
+
+    if _auto_lambda_space == "log":
+        AUTO_LAMBDA_CANDIDATES = np.logspace(
+            np.log10(_auto_lambda_min),
+            np.log10(_auto_lambda_max),
+            int(_auto_lambda_steps) + 1,
+        )
+    else:
+        AUTO_LAMBDA_CANDIDATES = np.linspace(
+            _auto_lambda_min,
+            _auto_lambda_max,
+            int(_auto_lambda_steps) + 1,
+        )
+
+if AUTO_LAMBDA_CANDIDATES.size < 3:
+    # Safety fallback for curvature estimation.
+    AUTO_LAMBDA_CANDIDATES = np.linspace(0.05, 40.0, 121)
 # Holds the most recently chosen value when ``AUTO_LAMBDA`` is True
 AUTO_LAMBDA_VALUE = None
 
@@ -164,13 +641,9 @@ AI_MODEL_PATHS = {
 }
 
 # ROI extraction method.
-# - ai: neural-network slice classifier + ROI models (default)
-# - geometry: deterministic DCE-based geometric detector (no ML dependencies)
-ROI_METHOD = (os.environ.get("P_BRAIN_ROI_METHOD", "ai") or "ai").strip().lower()
-if ROI_METHOD not in {"ai", "geometry"}:
-    ROI_METHOD = "ai"
+# (Defined and validated earlier; supports ROI_METHOD=file for user-supplied ROIs.)
 
-# Geometry ROI parameters (used when ROI_METHOD=geometry).
+# Deterministic ROI parameters (used when ROI_METHOD=deterministic).
 ROI_RICA_RADIUS = int(os.environ.get("P_BRAIN_ROI_RICA_RADIUS", 10))
 ROI_LICA_RADIUS = int(os.environ.get("P_BRAIN_ROI_LICA_RADIUS", 10))
 ROI_SSS_RADIUS = int(os.environ.get("P_BRAIN_ROI_SSS_RADIUS", 12))
@@ -190,62 +663,10 @@ ROI_SSS_MIDLINE_BAND = int(os.environ.get("P_BRAIN_ROI_SSS_MIDLINE_BAND", 24))
 # Baseline frames used to compute peak contrast on DCE.
 ROI_DCE_BASELINE_FRAMES = int(os.environ.get("P_BRAIN_ROI_DCE_BASELINE_FRAMES", 5))
 
-# Geometry ROI probability-map controls.
-# When enabled, ROI centers are picked from probability maps computed from DCE
-# time-series features (peak, upslope, time-to-peak, late tail), and radii can
-# be chosen based on probability mass instead of fixed pixels.
-ROI_GEOM_USE_PROBABILITY = (os.environ.get("P_BRAIN_ROI_GEOM_USE_PROB", "1") or "1").lower() in {
-    "1",
-    "true",
-    "yes",
-}
-ROI_GEOM_DYNAMIC_RADIUS = (os.environ.get("P_BRAIN_ROI_GEOM_DYNAMIC_RADIUS", "1") or "1").lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
-# Minimum radius (pixels) when dynamic radius selection is enabled.
-ROI_GEOM_RADIUS_MIN = int(os.environ.get("P_BRAIN_ROI_GEOM_RADIUS_MIN", 3))
-
-# Target probability mass (fraction of slice probability) to include inside the
-# chosen ROI disk when dynamic radius selection is enabled.
-ROI_GEOM_PROB_MASS_FRACTION = float(os.environ.get("P_BRAIN_ROI_GEOM_PROB_MASS", 0.20))
-
-# Centrality prior exponent; values >0 bias selection away from edge vessels
-# like sinuses. 0 disables the prior.
-ROI_GEOM_CENTRALITY_GAMMA = float(os.environ.get("P_BRAIN_ROI_GEOM_CENTRALITY_GAMMA", 1.0))
-
-# Hard exclusion of the most peripheral brain rim using the normalized
-# distance-to-edge centrality map (0=edge, 1=center). This directly suppresses
-# transverse sinus/edge vessels.
-ROI_GEOM_MIN_CENTRALITY = float(os.environ.get("P_BRAIN_ROI_GEOM_MIN_CENTRALITY", 0.12))
-
-# Cross-slice coherence: selected ICA centers should cluster spatially across
-# slices (in pixels). Larger values allow more motion.
-ROI_GEOM_COHERENCE_PX = float(os.environ.get("P_BRAIN_ROI_GEOM_COHERENCE_PX", 35.0))
-
-# Component/blob filtering for ICA candidates (operates on per-slice probability
-# maps). We threshold at a high percentile, then keep only small, roughly round
-# blobs (vessel cross-sections).
-ROI_GEOM_COMPONENT_Q = float(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_Q", 99.6))
-ROI_GEOM_COMPONENT_MIN_AREA = int(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_MIN_AREA", 6))
-ROI_GEOM_COMPONENT_MAX_AREA = int(os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_MAX_AREA", 250))
-ROI_GEOM_COMPONENT_ECC_RATIO_MAX = float(
-    os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_ECC_RATIO_MAX", 3.0)
-)
-
-# Use connected-component voxels (shape) as ROI instead of a fixed-radius disk
-# around a peak point.
-ROI_GEOM_USE_COMPONENT_ROI = (os.environ.get("P_BRAIN_ROI_GEOM_COMPONENT_ROI", "1") or "1").lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
-# Additional elongated-structure suppression for artery selection. Higher values
-# penalize banana/arc-like sinuses.
-ROI_GEOM_ARTERY_PERIM_AREA_MAX = float(os.environ.get("P_BRAIN_ROI_GEOM_ARTERY_PERIM_AREA_MAX", 1.2))
+# If enabled (default), normalize voxelwise curves for PCA/diagnostic plots by
+# subtracting a baseline mean, clamping the baseline window to zero, and
+# scaling by a robust percentile of the deviation. Disable for raw-curve PCA.
+ROI_NORMALIZE_CURVES = (os.environ.get("P_BRAIN_ROI_NORMALIZE_CURVES", "1") or "1").strip().lower() in {"1", "true", "yes"}
 
 
 def _default_data_root():
