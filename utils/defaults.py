@@ -14,6 +14,7 @@ The JSON schema is intentionally permissive. Supported keys (case-insensitive):
 - t1RecoveryModel / t1_recovery_model: inversion | saturation | turboflash
 - pkModel / model / kineticModel / p_brain_model: patlak | tikhonov | both
 - ctcModel / ctc_model: MUST be turboflash (only supported model)
+- aifArtery / inputFunctionArtery / aifSide: RICA | LICA | BOTH | right | left
 - turboFlashBaselineFrames / turboflash_baseline_frames: int
 - vascularRoiCurveMethod / vascular_roi_curve_method: max | mean | median
 - writeSliceDiagnostics / write_slice_diagnostics: bool
@@ -25,6 +26,7 @@ The JSON schema is intentionally permissive. Supported keys (case-insensitive):
 The env vars written are:
 - P_BRAIN_T1_RECOVERY_MODEL
 - P_BRAIN_MODEL
+- P_BRAIN_AIF_ARTERY
 - P_BRAIN_TURBOFLASH_BASELINE_FRAMES
 - P_BRAIN_VASCULAR_ROI_CURVE_METHOD
 - P_BRAIN_WRITE_SLICE_DIAGNOSTICS
@@ -56,15 +58,17 @@ def _as_bool(value: Any) -> bool:
         return False
     raw = str(value).strip().lower()
     return raw in {"1", "true", "yes", "y", "on"}
+    if val in {"BOTH", "BILATERAL", "LR", "RL", "RICA+LICA", "LICA+RICA", "RICA,LICA", "LICA,RICA"}:
+        return "BOTH"
 
 
 def _set_env(name: str, value: Any) -> None:
     if value is None:
         return
-    os.environ[str(name)] = str(value)
-
-
-def _apply_t1_recovery_model(raw: Any) -> None:
+    raise ValueError(
+        "aifArtery/inputFunctionArtery/aifSide must be one of RICA|LICA|BOTH|right|left; "
+        f"got {raw!r}"
+    )
     if raw is None:
         return
     model = str(raw).strip().lower()
@@ -124,6 +128,44 @@ def _apply_vascular_roi_curve_method(raw: Any) -> None:
     settings.VASCULAR_ROI_CURVE_METHOD = method
 
 
+def _normalize_aif_artery(raw: Any) -> str:
+    val = ("" if raw is None else str(raw)).strip().upper()
+    if not val:
+        return "RICA"
+
+    # Common spellings from UI / user input.
+    if val in {"R", "RIGHT", "RIGHTICA", "RIGHT_ICA", "RIGHT INTERIOR CAROTID", "RIGHTINTERIORCAROTID", "RICA"}:
+        return "RICA"
+    if val in {"L", "LEFT", "LEFTICA", "LEFT_ICA", "LEFT INTERIOR CAROTID", "LEFTINTERIORCAROTID", "LICA"}:
+        return "LICA"
+
+    # If already canonical but different casing.
+    if val in {"RICA", "LICA"}:
+        return val
+
+    raise ValueError(
+        "aifArtery/inputFunctionArtery/aifSide must be one of RICA|LICA|right|left; "
+        f"got {raw!r}"
+    )
+
+
+def _apply_aif_artery(raw: Any) -> None:
+    if raw is None:
+        return
+    artery = _normalize_aif_artery(raw)
+    _set_env("P_BRAIN_AIF_ARTERY", artery)
+    # Keep runtime-consistent: some modules read settings.* values computed at import time.
+    settings.INPUT_FUNCTION_ARTERY = artery if artery in {"RICA", "LICA"} else "RICA"
+    try:
+        # Maintain legacy-style source string.
+        if getattr(settings, "MODELLING_INPUT_FUNCTION", "") == "tscc":
+            settings.INPUT_FUNCTION_SOURCE = "SSS"
+        else:
+            settings.INPUT_FUNCTION_SOURCE = settings.INPUT_FUNCTION_ARTERY
+    except Exception:
+        pass
+
+
 def apply_defaults_json(path: str, *, args: argparse.Namespace | None = None) -> dict[str, Any]:
     """Apply Defaults JSON to env vars + settings.
 
@@ -152,6 +194,15 @@ def apply_defaults_json(path: str, *, args: argparse.Namespace | None = None) ->
         or norm.get("kineticmodel")
         or norm.get("p_brain_model")
         or norm.get("pbrain_model")
+    )
+
+    # Reference artery selection (RICA/LICA). This affects AIF selection and TSCC time shifting.
+    _apply_aif_artery(
+        norm.get("aifartery")
+        or norm.get("inputfunctionartery")
+        or norm.get("input_function_artery")
+        or norm.get("aifside")
+        or norm.get("aif_side")
     )
 
     _apply_vascular_roi_curve_method(

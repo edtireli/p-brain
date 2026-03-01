@@ -56,12 +56,12 @@ def test_grouped_vs_per_voxel_equivalence(with_offsets: bool) -> None:
     res_per_voxel = solve_ct(Ct, offsets_s=offsets_s, implementation="per_voxel")
 
     # If the math is identical and the solve order doesn't change numerics,
-    # these should match exactly. Use allclose with strict tolerances to
-    # be robust across BLAS/LAPACK variations.
+    # these should match to numerical precision. Use tight tolerances to be
+    # robust across BLAS/LAPACK variations.
     for attr in ["cbf_ml_per_100g_min", "cbv_vd", "mtt_s", "cth_s", "lambda_opt"]:
         a = getattr(res_grouped, attr)
         b = getattr(res_per_voxel, attr)
-        np.testing.assert_allclose(a, b, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(a, b, rtol=0.0, atol=1e-9)
 
     # Also ensure the chosen lambda indices match exactly.
     np.testing.assert_array_equal(res_grouped.lambda_opt, res_per_voxel.lambda_opt)

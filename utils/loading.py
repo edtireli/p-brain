@@ -1624,9 +1624,30 @@ def _load_shifted_input_function(analysis_directory, subtype, venous_slice, arte
         ]
         if not npy_files:
             raise FileNotFoundError(f"No .npy files found in {max_dir}.")
-        npy_files.sort()
-        filename = npy_files[0]
-        venous_slice, arterial_slice = _parse_tscc_filename(filename)
+        # When multiple candidates exist, prefer the curve with the highest peak.
+        # Picking the first lexicographically can select an all-zero/failed export.
+        best = None
+        best_peak = None
+        best_vs = None
+        best_as = None
+        for fname in sorted(npy_files):
+            try:
+                vs, a_s = _parse_tscc_filename(fname)
+            except Exception:
+                continue
+            path0 = os.path.join(max_dir, fname)
+            try:
+                curve0 = np.load(path0)
+                peak0 = float(np.nanmax(curve0)) if curve0.size else float('-inf')
+            except Exception:
+                continue
+            if best is None or (np.isfinite(peak0) and (best_peak is None or peak0 > best_peak)):
+                best = fname
+                best_peak = peak0
+                best_vs = vs
+                best_as = a_s
+        filename = best or sorted(npy_files)[0]
+        venous_slice, arterial_slice = (best_vs, best_as) if best is not None else _parse_tscc_filename(filename)
         artery_type = _read_max_artery_type(analysis_directory) or 'Max'
         path = os.path.join(max_dir, filename)
     else:
@@ -1927,28 +1948,62 @@ def get_input_function_curve(analysis_directory, subtype='Max',
         input function and *metadata* a dictionary describing the selection.
     """
 
+    def _is_valid_input_curve(curve):
+        arr = np.asarray(curve, dtype=float).reshape(-1)
+        if arr.size < 3:
+            return False
+        if not np.any(np.isfinite(arr)):
+            return False
+        peak = float(np.nanmax(arr))
+        if not np.isfinite(peak) or peak <= 0:
+            return False
+        if not np.any(arr != 0):
+            return False
+        return True
+
     mode = str(getattr(settings, 'MODELLING_INPUT_FUNCTION', '') or '').strip().lower()
     if mode == 'vif':
-        return _load_vif_input_function(analysis_directory, venous_slice=venous_slice)
+        curve, metadata = _load_vif_input_function(analysis_directory, venous_slice=venous_slice)
+        if _is_valid_input_curve(curve):
+            return curve, metadata
+        print("[!] VIF input curve invalid (all zeros or non-finite); falling back to arterial AIF.")
+        curve, metadata = _load_pure_input_function(
+            analysis_directory,
+            subtype,
+            venous_slice,
+            arterial_slice,
+        )
+        metadata = dict(metadata)
+        metadata['fallback_from'] = 'vif'
+        metadata['fallback_reason'] = 'invalid_vif_curve'
+        if not _is_valid_input_curve(curve):
+            raise ValueError("No valid arterial input function available after VIF fallback.")
+        return curve, metadata
 
     source = settings.INPUT_FUNCTION_SOURCE
     # Explicit AIF mode forces pure arterial, regardless of legacy toggle.
     if mode == 'aif' or source in {'RICA', 'LICA'}:
-        return _load_pure_input_function(
+        curve, metadata = _load_pure_input_function(
             analysis_directory,
             subtype,
             venous_slice,
             arterial_slice,
         )
+        if not _is_valid_input_curve(curve):
+            raise ValueError("Arterial input curve invalid (all zeros or non-finite).")
+        return curve, metadata
 
     try:
-        return _load_shifted_input_function(
+        curve, metadata = _load_shifted_input_function(
             analysis_directory,
             subtype,
             venous_slice,
             arterial_slice,
         )
-    except FileNotFoundError as exc:
+        if not _is_valid_input_curve(curve):
+            raise ValueError("Shifted input curve invalid (all zeros or non-finite).")
+        return curve, metadata
+    except (FileNotFoundError, ValueError) as exc:
         curve, metadata = _load_pure_input_function(
             analysis_directory,
             subtype,
@@ -1958,5 +2013,7 @@ def get_input_function_curve(analysis_directory, subtype='Max',
         metadata = dict(metadata)
         metadata['fallback_from'] = source
         metadata['fallback_reason'] = str(exc)
+        if not _is_valid_input_curve(curve):
+            raise ValueError("No valid arterial input function available after fallback.")
         return curve, metadata
 

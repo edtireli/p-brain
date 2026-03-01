@@ -184,6 +184,25 @@ def turboflash(
         sin_th,
     )
 
+    if _env_bool("P_BRAIN_CTC_DEBUG", False):
+        try:
+            ratio = s_arr / (m0_arr * sin_th)
+            inside = 1.0 - ratio
+            dbg = (
+                f"[CTC_DEBUG] theta_deg={theta:.3f} TD_ms={float(TD):.3f} "
+                f"S[min,max]=({np.nanmin(s_arr):.6g},{np.nanmax(s_arr):.6g}) "
+                f"M0[min,max]=({np.nanmin(m0_arr):.6g},{np.nanmax(m0_arr):.6g}) "
+                f"T1_ms[min,max]=({np.nanmin(t1_arr):.6g},{np.nanmax(t1_arr):.6g}) "
+                f"ratio[min,max]=({np.nanmin(ratio):.6g},{np.nanmax(ratio):.6g}) "
+                f"inside[min,max]=({np.nanmin(inside):.6g},{np.nanmax(inside):.6g}) "
+                f"inside<=0={int(np.count_nonzero(np.asarray(inside) <= 0))}/{inside.size}"
+            )
+            if not getattr(turboflash, "_ctc_debug_printed", False):
+                print(dbg)
+                turboflash._ctc_debug_printed = True
+        except Exception:
+            pass
+
     # Diagnostic option: allow a true "raw" curve with no baseline subtraction
     # and no forced zeroing. Used only for debugging/overlay plots.
     if baseline_frames is not None:
@@ -207,6 +226,14 @@ def turboflash(
         else:
             baseline_region = c_out[..., :baseline_frames]
         baseline = np.nanmean(baseline_region, axis=-1, keepdims=True)
+        # If the entire baseline window is NaN (e.g. invalid log argument),
+        # nanmean returns NaN and would wipe the whole curve to zeros.
+        # Treat "no baseline" as zero-offset so later valid samples survive.
+        try:
+            baseline = np.where(np.isfinite(baseline), baseline, 0.0)
+        except Exception:
+            if not np.isfinite(float(baseline)):
+                baseline = 0.0
         c_out = c_out - baseline
         try:
             c_out[..., :baseline_frames] = 0.0
@@ -214,6 +241,8 @@ def turboflash(
             pass
     else:
         baseline = np.nanmean(c_out)
+        if not np.isfinite(baseline):
+            baseline = 0.0
         c_out = c_out - baseline
 
     return np.nan_to_num(c_out, nan=0.0, posinf=0.0, neginf=0.0)
@@ -243,7 +272,15 @@ def _turboflash_raw_concentration(
             except Exception:
                 pass
         c = (-1.0 / (float(r1_s) * float(TD_s))) * (np.log(inside) + float(TD_s) * r1_pre)
-        c = np.where(valid_t1, c, np.nan)
+        valid = valid_t1
+        # Support batched voxel curves: e.g. valid_t1 (N,) with c (N,T) or
+        # valid_t1 (X,Y,Z) with c (X,Y,Z,T).
+        if getattr(c, "ndim", 0) == getattr(valid, "ndim", 0) + 1:
+            try:
+                valid = np.expand_dims(valid, axis=-1)
+            except Exception:
+                valid = valid_t1
+        c = np.where(valid, c, np.nan)
     return c
 
 

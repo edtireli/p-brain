@@ -1,4 +1,10 @@
 import os
+
+# In noninteractive/headless runs (e.g., p-brain-web), ensure Matplotlib does not
+# try to use GUI backends like TkAgg (which requires tkinter).
+if os.environ.get("PBRAIN_NONINTERACTIVE") == "1" or os.environ.get("PBRAIN_TURBO") == "1":
+    os.environ["MPLBACKEND"] = "Agg"
+
 import numpy as np
 import nibabel as nib
 import matplotlib.pyplot as plt
@@ -375,19 +381,41 @@ def _normalize_to_uint8_slice(img2d: np.ndarray) -> np.ndarray:
     return (y * 255.0 + 0.5).astype(np.uint8)
 
 
+def _center_crop_or_pad_2d(img: np.ndarray, target_hw: tuple[int, int] = (256, 256)) -> np.ndarray:
+    h, w = img.shape
+    th, tw = target_hw
+
+    pad_h = max(0, th - h)
+    pad_w = max(0, tw - w)
+    if pad_h or pad_w:
+        top = pad_h // 2
+        bottom = pad_h - top
+        left = pad_w // 2
+        right = pad_w - left
+        img = np.pad(img, ((top, bottom), (left, right)), mode="constant", constant_values=0)
+        h, w = img.shape
+
+    start_h = (h - th) // 2
+    start_w = (w - tw) // 2
+    return img[start_h : start_h + th, start_w : start_w + tw]
+
+
 def _prep_slice_float01(sl2d: np.ndarray, *, flip_lr: bool) -> np.ndarray:
     """Prepare a single 2D slice for the ICA classifier/ROI models.
 
     For ICA we found the rICA slice-classifier behaves well on individual DCE
     frames normalized to [0,1]. We keep this lightweight to stay fast.
     """
-    x = np.asarray(sl2d, dtype=np.float32)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    # Match the working CLI debug semantics:
+    # - per-slice min-max normalize to uint8
+    # - center crop/pad to 256x256 (do NOT stretch via resize)
+    # - scale to [0,1]
+    u8 = _normalize_to_uint8_slice(sl2d)
     if flip_lr:
-        x = np.fliplr(x)
-    if x.shape != (256, 256):
-        x = cv2.resize(x, (256, 256), interpolation=cv2.INTER_LINEAR)
-    return x
+        u8 = np.fliplr(u8)
+    if u8.shape != (256, 256):
+        u8 = _center_crop_or_pad_2d(u8, (256, 256))
+    return (u8.astype(np.float32) / 255.0)
 
 
 def _select_best_ica_frame(
@@ -425,6 +453,155 @@ def _select_best_ica_frame(
     max_per_frame = np.max(scores, axis=1)
     best_i = int(np.argmax(max_per_frame))
     return int(cands[best_i]), float(max_per_frame[best_i])
+
+
+def _select_best_ica_per_slice(
+    mri_data_norm_ica: np.ndarray,
+    slice_classifier,
+    *,
+    flip_lr: bool,
+    frame_candidates: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """For each slice z, pick the frame t that maximizes slice-classifier score.
+
+    Returns:
+    - best_t_per_slice: (z,) int
+    - best_score_per_slice: (z,) float
+    """
+    tmax = int(mri_data_norm_ica.shape[3])
+    cands = [int(t) for t in frame_candidates if 0 <= int(t) < tmax]
+    if not cands:
+        zmax = int(mri_data_norm_ica.shape[2])
+        return np.zeros((zmax,), dtype=np.int32), np.zeros((zmax,), dtype=np.float32)
+
+    zmax = int(mri_data_norm_ica.shape[2])
+
+    # Build one big batch: (n_frames * n_slices, 256,256,1)
+    batch = np.empty((len(cands) * zmax, 256, 256, 1), dtype=np.float32)
+    idx = 0
+    for t in cands:
+        for z in range(zmax):
+            sl = _prep_slice_float01(mri_data_norm_ica[:, :, z, t], flip_lr=flip_lr)
+            batch[idx, :, :, 0] = sl
+            idx += 1
+
+    try:
+        preds = slice_classifier.predict(batch, verbose=0)
+    except TypeError:
+        preds = slice_classifier.predict(batch)
+    scores = np.asarray(preds, dtype=np.float32).reshape(len(cands), zmax)
+
+    best_i = np.argmax(scores, axis=0).astype(np.int32)
+    best_t = np.asarray([cands[int(i)] for i in best_i], dtype=np.int32)
+    best_score = scores[best_i, np.arange(zmax, dtype=np.int32)].astype(np.float32)
+    return best_t, best_score
+
+
+def extract_and_accumulate_rois_best_frame_per_slice(
+    mri_data_norm_ica: np.ndarray,
+    slice_classifier,
+    roi_model,
+    choice,
+    *,
+    frame_candidates: list[int],
+    slice_relevance_thresholds: tuple[float, ...] = (0.5, 0.3),
+    flip_lr: bool = False,
+    max_slices: int = 3,
+):
+    """ICA inference that can return multiple slices.
+
+    We score each slice across candidate frames, pick each slice's best frame,
+    then select up to `max_slices` slices and segment ROIs on those.
+    """
+    relevant_slices: list[np.ndarray] = []
+    relevant_rois: list[np.ndarray] = []
+    original_slices: list[np.ndarray] = []
+    slice_labels: list[int] = []
+    roi_voxels: dict[int, np.ndarray] = {}
+
+    zmax = int(mri_data_norm_ica.shape[2])
+    best_t, best_score = _select_best_ica_per_slice(
+        mri_data_norm_ica,
+        slice_classifier,
+        flip_lr=flip_lr,
+        frame_candidates=frame_candidates,
+    )
+
+    # Select slices: prefer thresholds (high->low), but cap by max_slices.
+    try:
+        max_slices_i = int(max_slices)
+    except Exception:
+        max_slices_i = 3
+    max_slices_i = max(1, min(max_slices_i, zmax))
+
+    thresholds = [float(t) for t in (slice_relevance_thresholds or (0.5,))]
+    thresholds = [t for t in thresholds if np.isfinite(t) and 0.0 < t <= 1.0]
+    if not thresholds:
+        thresholds = [0.5]
+
+    chosen: list[int] = []
+    for thr in thresholds:
+        cand = [int(z) for z in range(zmax) if float(best_score[z]) > float(thr)]
+        cand = sorted(cand, key=lambda z: float(best_score[z]), reverse=True)
+        chosen = cand[:max_slices_i]
+        if chosen:
+            break
+    if not chosen:
+        # As a final fallback: take the top-N slices even if below threshold.
+        order = np.argsort(-best_score)
+        chosen = [int(z) for z in order[:max_slices_i] if float(best_score[int(z)]) > 0.0]
+
+    if not chosen:
+        return (original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels)
+
+    # Report chosen slices.
+    for z in chosen:
+        try:
+            print(
+                f"Slice {z + 1} is classified as relevant (probability: {float(best_score[z]):.2f}, frame: {int(best_t[z])})."
+            )
+        except Exception:
+            pass
+
+    # ROI segmentation batch.
+    roi_batch = np.empty((len(chosen), 256, 256, 1), dtype=np.float32)
+    for i, z in enumerate(chosen):
+        t = int(best_t[z])
+        roi_batch[i, :, :, 0] = _prep_slice_float01(mri_data_norm_ica[:, :, z, t], flip_lr=flip_lr)
+
+    try:
+        roi_preds = roi_model.predict(roi_batch, verbose=0)
+    except TypeError:
+        roi_preds = roi_model.predict(roi_batch)
+    roi_preds = np.asarray(roi_preds)
+
+    for i, z in enumerate(chosen):
+        mask = np.squeeze(roi_preds[i])
+        thr = 0.5 * float(np.max(mask)) if np.size(mask) else 0.0
+        binary_mask_model = (mask > thr).astype(np.uint8)
+        binary_mask = np.fliplr(binary_mask_model) if flip_lr else binary_mask_model
+
+        # Resize mask back to native slice resolution for voxel indexing.
+        try:
+            h, w = int(mri_data_norm_ica.shape[0]), int(mri_data_norm_ica.shape[1])
+            binary_mask_native = cv2.resize(binary_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            binary_mask_native = (binary_mask_native > 0).astype(np.uint8)
+        except Exception:
+            binary_mask_native = binary_mask
+
+        roi_coords = np.argwhere(binary_mask_native)
+        roi_voxels[int(z)] = roi_coords
+
+        t = int(best_t[z])
+        selected_slice = mri_data_norm_ica[:, :, z, t]
+        if flip_lr:
+            selected_slice = np.fliplr(selected_slice)
+        original_slices.append(selected_slice)
+        relevant_slices.append(roi_batch[i, :, :, 0])
+        relevant_rois.append(binary_mask)
+        slice_labels.append(int(choice))
+
+    return (original_slices, relevant_slices, relevant_rois, slice_labels, roi_voxels)
 
 
 def extract_and_accumulate_rois_single_frame(
@@ -1027,6 +1204,18 @@ def plot_relevant_slices_with_rois(original_slices, relevant_slices, relevant_ro
 def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, IsVFA=False, filenames='filenames'):
     print(colored('Starting AI-based ROI extraction...', 'green'))
 
+    def _normalize_artery_choice(raw: str | None) -> str | None:
+        s = (raw or "").strip().upper()
+        if not s:
+            return None
+        if s in {"BOTH", "BILATERAL", "LR", "RL", "RICA+LICA", "LICA+RICA", "RICA,LICA", "LICA,RICA"}:
+            return "BOTH"
+        if s in {"RICA", "RIGHT", "RIGHTICA", "R", "R-ICA", "R_ICA"}:
+            return "RICA"
+        if s in {"LICA", "LEFT", "LEFTICA", "L", "L-ICA", "L_ICA"}:
+            return "LICA"
+        return None
+
     def _build_slice_thresholds() -> tuple[float, ...]:
         """Return descending slice-relevance thresholds.
 
@@ -1089,8 +1278,27 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
         out = sorted(set(out), reverse=True)
         return tuple(out) if out else (0.5, 0.3)
 
-    selected_artery = (getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA") or "RICA").strip().upper()
-    if selected_artery == "LICA":
+    # Prefer env overrides (used by p-brain-web/p-brain-platform runners) but
+    # fall back to legacy settings attribute.
+    selected_artery = (
+        _normalize_artery_choice(os.getenv("P_BRAIN_AIF_ARTERY"))
+        or _normalize_artery_choice(os.getenv("P_BRAIN_INPUT_FUNCTION_ARTERY"))
+        or _normalize_artery_choice(getattr(settings, "INPUT_FUNCTION_ARTERY", None))
+        or "RICA"
+    )
+    extract_both_ica = selected_artery == "BOTH"
+    preferred_artery = selected_artery
+    if extract_both_ica:
+        # When extracting both ICA sides, keep downstream selection behaviour
+        # aligned with the legacy setting (or default to RICA).
+        preferred_artery = (
+            _normalize_artery_choice(getattr(settings, "INPUT_FUNCTION_ARTERY", None))
+            or "RICA"
+        )
+        if preferred_artery == "BOTH":
+            preferred_artery = "RICA"
+
+    if preferred_artery == "LICA":
         ica_choice = 2
         ica_flip_lr = True
     else:
@@ -1101,17 +1309,41 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
     used_ica_choice = int(ica_choice)
     used_ica_flip_lr = bool(ica_flip_lr)
 
+    # Resolve model paths relative to the p-brain repo root so that callers can
+    # run from any working directory (e.g. p-brain-web / tauri runners).
+    from pathlib import Path as _FsPath
+
+    _pbrain_root = _FsPath(__file__).resolve().parents[1]
+
+    def _resolve_model_path(p: str) -> str:
+        s = str(p or "").strip()
+        if not s:
+            return s
+        if os.path.isabs(s):
+            return s
+        cand = _pbrain_root / s
+        if cand.exists():
+            return str(cand)
+        cand = _pbrain_root / "AI" / s
+        if cand.exists():
+            return str(cand)
+        return s
+
     slice_classifier_rica = load_model(
-        AI_MODEL_PATHS['slice_classifier_rica'], compile=False
+        _resolve_model_path(AI_MODEL_PATHS.get('slice_classifier_rica', 'AI/slice_classifier_model_rica.keras')),
+        compile=False,
     )
     rica_roi_model = load_model(
-        AI_MODEL_PATHS['rica_roi'], compile=False
+        _resolve_model_path(AI_MODEL_PATHS.get('rica_roi', 'AI/rica_roi_model.keras')),
+        compile=False,
     )
     slice_classifier_ss = load_model(
-        AI_MODEL_PATHS['slice_classifier_ss'], compile=False
+        _resolve_model_path(AI_MODEL_PATHS.get('slice_classifier_ss', 'AI/ss_slice_classifier.keras')),
+        compile=False,
     )
     ss_roi_model = load_model(
-        AI_MODEL_PATHS['ss_roi'], compile=False
+        _resolve_model_path(AI_MODEL_PATHS.get('ss_roi', 'AI/ss_roi_model.keras')),
+        compile=False,
     )
 
     # Use default rotation first (can be overridden by P_BRAIN_AI_ROT90_K)
@@ -1151,125 +1383,295 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
     # To keep this lightning fast, we pick one good frame from a small candidate
     # set using a single batched predict(), then run batched ROI on that frame.
     tmax = int(mri_data_norm_ica.shape[3])
-    # Search the early part of the series by default; override via env.
-    try:
-        frame_search_max = int(str(os.getenv("P_BRAIN_AI_ICA_FRAME_SEARCH_MAX", "60")).strip())
-    except Exception:
-        frame_search_max = 60
-    frame_search_max = max(1, min(frame_search_max, tmax))
+    # Use *all* frames for ICA slice scoring.
+    # This is slower than an early-window scan but is much more robust for
+    # datasets where the best anatomy/contrast frame occurs later in the series.
+    frame_candidates = list(range(0, tmax, 1))
 
     try:
-        frame_search_stride = int(str(os.getenv("P_BRAIN_AI_ICA_FRAME_SEARCH_STRIDE", "2")).strip())
+        ica_max_slices = int(str(os.getenv("P_BRAIN_AI_ICA_MAX_SLICES", "3")).strip())
     except Exception:
-        frame_search_stride = 2
-    frame_search_stride = max(1, int(frame_search_stride))
+        ica_max_slices = 3
+    ica_max_slices = max(1, min(int(ica_max_slices), int(mri_data_norm_ica.shape[2])))
 
-    frame_candidates = list(range(0, frame_search_max, frame_search_stride))
+    def _ica_score(res: tuple) -> tuple[int, float]:
+        # Prefer more slices; then prefer larger ROI area.
+        try:
+            n = len(res[2])
+        except Exception:
+            n = 0
+        try:
+            area = float(sum(int(np.sum(r)) for r in (res[2] or [])))
+        except Exception:
+            area = 0.0
+        return (int(n), float(area))
 
-    # For LICA, the training orientation can vary across datasets.
-    # Try with and without LR flip and keep the better scoring variant.
-    if int(ica_choice) == 2:
-        best_frame_flip, best_score_flip = _select_best_ica_frame(
-            mri_data_norm_ica,
-            slice_classifier_rica,
-            flip_lr=True,
-            frame_candidates=frame_candidates,
-        )
-        best_frame_noflip, best_score_noflip = _select_best_ica_frame(
-            mri_data_norm_ica,
-            slice_classifier_rica,
-            flip_lr=False,
-            frame_candidates=frame_candidates,
-        )
+    def _extract_ica(choice: int) -> tuple[list, list, list, list, dict, bool]:
+        """Extract ICA ROIs for one side.
 
-        if float(best_score_noflip) > float(best_score_flip):
-            best_frame, best_score = int(best_frame_noflip), float(best_score_noflip)
-            ica_flip_lr = False
-        else:
-            best_frame, best_score = int(best_frame_flip), float(best_score_flip)
-            ica_flip_lr = True
+        Returns: (orig_slices, slices, rois, labels, voxels, used_flip_lr)
+        """
 
-        print(
-            colored(
-                f"ICA frame selection (LICA): flip_lr={ica_flip_lr} best_t={best_frame} (max p={best_score:.2f})",
-                "cyan",
+        if int(choice) == 2:
+            # LICA: try both flips and keep the better scoring variant.
+            res_flip = extract_and_accumulate_rois_best_frame_per_slice(
+                mri_data_norm_ica,
+                slice_classifier_rica,
+                rica_roi_model,
+                choice=2,
+                frame_candidates=frame_candidates,
+                slice_relevance_thresholds=slice_thresholds,
+                flip_lr=True,
+                max_slices=ica_max_slices,
             )
-        )
-    else:
-        best_frame, best_score = _select_best_ica_frame(
+            res_noflip = extract_and_accumulate_rois_best_frame_per_slice(
+                mri_data_norm_ica,
+                slice_classifier_rica,
+                rica_roi_model,
+                choice=2,
+                frame_candidates=frame_candidates,
+                slice_relevance_thresholds=slice_thresholds,
+                flip_lr=False,
+                max_slices=ica_max_slices,
+            )
+            if _ica_score(res_noflip) > _ica_score(res_flip):
+                orig_slices, slices, rois, labels, voxels = res_noflip
+                used_flip = False
+            else:
+                orig_slices, slices, rois, labels, voxels = res_flip
+                used_flip = True
+            try:
+                print(colored(f"ICA multi-slice (LICA): flip_lr={used_flip} slices={len(rois)}", "cyan"))
+            except Exception:
+                pass
+            return list(orig_slices), list(slices), list(rois), list(labels), dict(voxels), bool(used_flip)
+
+        # RICA: fixed orientation.
+        orig_slices, slices, rois, labels, voxels = extract_and_accumulate_rois_best_frame_per_slice(
             mri_data_norm_ica,
             slice_classifier_rica,
-            flip_lr=ica_flip_lr,
+            rica_roi_model,
+            choice=3,
             frame_candidates=frame_candidates,
+            slice_relevance_thresholds=slice_thresholds,
+            flip_lr=False,
+            max_slices=ica_max_slices,
         )
-        print(colored(f"ICA frame selection: best_t={best_frame} (max p={best_score:.2f})", "cyan"))
+        try:
+            print(colored(f"ICA multi-slice (RICA): slices={len(rois)}", "cyan"))
+        except Exception:
+            pass
+        return list(orig_slices), list(slices), list(rois), list(labels), dict(voxels), False
 
-    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = extract_and_accumulate_rois_single_frame(
-        mri_data_norm_ica,
-        slice_classifier_rica,
-        rica_roi_model,
-        choice=ica_choice,
-        frame_index=best_frame,
-        slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
-        flip_lr=ica_flip_lr,
-    )
+    ica_results: dict[str, dict] = {}
 
+    # Extract preferred side first.
+    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels, ica_flip_lr = _extract_ica(int(ica_choice))
     used_ica_flip_lr = bool(ica_flip_lr)
+    used_ica_choice = int(ica_choice)
+    used_artery_code = "LICA" if int(ica_choice) == 2 else "RICA"
+    ica_results[used_artery_code] = {
+        "choice": int(ica_choice),
+        "flip_lr": bool(ica_flip_lr),
+        "orig_slices": rica_orig_slices,
+        "slices": rica_slices,
+        "rois": rica_rois,
+        "labels": rica_labels,
+        "voxels": rica_voxels,
+    }
 
-    # If LICA is missing, try the other flip before switching sides.
-    if (not rica_rois) and int(ica_choice) == 2:
-        alt_flip = not bool(ica_flip_lr)
-        alt_best_frame, alt_best_score = _select_best_ica_frame(
-            mri_data_norm_ica,
-            slice_classifier_rica,
-            flip_lr=alt_flip,
-            frame_candidates=frame_candidates,
-        )
+    # If requested, also extract the other ICA side in the same run.
+    if extract_both_ica:
+        other_choice = 2 if int(ica_choice) == 3 else 3
+        other_code = "LICA" if int(other_choice) == 2 else "RICA"
+        o_orig, o_slices, o_rois, o_labels, o_voxels, o_flip = _extract_ica(int(other_choice))
+        ica_results[other_code] = {
+            "choice": int(other_choice),
+            "flip_lr": bool(o_flip),
+            "orig_slices": o_orig,
+            "slices": o_slices,
+            "rois": o_rois,
+            "labels": o_labels,
+            "voxels": o_voxels,
+        }
+
+    # If preferred side is missing (and we didn't already extract both), retry the other side.
+    if (not rica_rois) and (not extract_both_ica):
+        alt_choice = 2 if int(ica_choice) == 3 else 3
+        alt_desc = "LICA" if int(alt_choice) == 2 else "RICA"
+        print(colored(f"ICA fallback side: {alt_desc}", "yellow"))
+        a_orig, a_slices, a_rois, a_labels, a_voxels, a_flip = _extract_ica(int(alt_choice))
+        if a_rois:
+            used_artery_code = alt_desc
+            used_ica_choice = int(alt_choice)
+            used_ica_flip_lr = bool(a_flip)
+            rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = a_orig, a_slices, a_rois, a_labels, a_voxels
+            ica_results[alt_desc] = {
+                "choice": int(alt_choice),
+                "flip_lr": bool(a_flip),
+                "orig_slices": a_orig,
+                "slices": a_slices,
+                "rois": a_rois,
+                "labels": a_labels,
+                "voxels": a_voxels,
+            }
+
+    # Final ICA safety net: if we still have no carotid ROI, retry with an explicit
+    # full-series scan (all frames, stride=1) or with a wider stride when requested.
+    # This is still a single batched predict over (n_frames * n_slices).
+    def _widen_ica_if_missing(choice: int) -> tuple[list, list, list, list, dict, bool]:
+        """Widen ICA frame search for the given side and return the extracted result."""
+
+        full_stride = max(1, int(ica_frame_stride))
+        full_candidates = list(range(0, tmax, full_stride))
+        if not full_candidates or full_candidates == frame_candidates:
+            return ([], [], [], [], {}, False)
+
+        desc = "LICA" if int(choice) == 2 else "RICA"
         print(
             colored(
-                f"ICA LICA flip fallback: flip_lr={alt_flip} best_t={alt_best_frame} (max p={alt_best_score:.2f})",
+                f"ICA widening search ({desc}): frames=0..{tmax-1} stride={full_stride} (no ROI in default window)",
                 "yellow",
             )
         )
-        alt_result = extract_and_accumulate_rois_single_frame(
-            mri_data_norm_ica,
-            slice_classifier_rica,
-            rica_roi_model,
-            choice=ica_choice,
-            frame_index=alt_best_frame,
-            slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
-            flip_lr=alt_flip,
-        )
-        if alt_result[2]:
-            ica_flip_lr = bool(alt_flip)
-            rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = alt_result
 
-    # If preferred side is missing, retry the other side using its own best frame.
-    if not rica_rois:
-        alt_choice = 2 if int(ica_choice) == 3 else 3
-        alt_flip = bool(alt_choice == 2)
-        alt_desc = "LICA" if int(alt_choice) == 2 else "RICA"
-        alt_best_frame, alt_best_score = _select_best_ica_frame(
-            mri_data_norm_ica,
-            slice_classifier_rica,
-            flip_lr=alt_flip,
-            frame_candidates=frame_candidates,
-        )
-        print(colored(f"ICA fallback side: {alt_desc} best_t={alt_best_frame} (max p={alt_best_score:.2f})", "yellow"))
-        alt_result = extract_and_accumulate_rois_single_frame(
+        if int(choice) == 2:
+            res_flip = extract_and_accumulate_rois_best_frame_per_slice(
+                mri_data_norm_ica,
+                slice_classifier_rica,
+                rica_roi_model,
+                choice=2,
+                frame_candidates=full_candidates,
+                slice_relevance_thresholds=slice_thresholds,
+                flip_lr=True,
+                max_slices=ica_max_slices,
+            )
+            res_noflip = extract_and_accumulate_rois_best_frame_per_slice(
+                mri_data_norm_ica,
+                slice_classifier_rica,
+                rica_roi_model,
+                choice=2,
+                frame_candidates=full_candidates,
+                slice_relevance_thresholds=slice_thresholds,
+                flip_lr=False,
+                max_slices=ica_max_slices,
+            )
+            if _ica_score(res_noflip) > _ica_score(res_flip):
+                orig_slices, slices, rois, labels, voxels = res_noflip
+                used_flip = False
+            else:
+                orig_slices, slices, rois, labels, voxels = res_flip
+                used_flip = True
+            try:
+                print(colored(f"ICA widened (LICA): flip_lr={used_flip} slices={len(rois)}", "yellow"))
+            except Exception:
+                pass
+            return list(orig_slices), list(slices), list(rois), list(labels), dict(voxels), bool(used_flip)
+
+        orig_slices, slices, rois, labels, voxels = extract_and_accumulate_rois_best_frame_per_slice(
             mri_data_norm_ica,
             slice_classifier_rica,
             rica_roi_model,
-            choice=alt_choice,
-            frame_index=alt_best_frame,
-            slice_relevance_threshold=float(slice_thresholds[0]) if slice_thresholds else 0.5,
-            flip_lr=alt_flip,
+            choice=3,
+            frame_candidates=full_candidates,
+            slice_relevance_thresholds=slice_thresholds,
+            flip_lr=False,
+            max_slices=ica_max_slices,
         )
-        if alt_result[2]:
-            used_artery_code = alt_desc
-            used_ica_choice = int(alt_choice)
-            used_ica_flip_lr = bool(alt_flip)
-            rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = alt_result
+        try:
+            print(colored(f"ICA widened (RICA): slices={len(rois)}", "yellow"))
+        except Exception:
+            pass
+        return list(orig_slices), list(slices), list(rois), list(labels), dict(voxels), False
+
+    if not rica_rois:
+        full_stride = max(1, int(ica_frame_stride))
+        full_candidates = list(range(0, tmax, full_stride))
+        if full_candidates and full_candidates != frame_candidates:
+            print(
+                colored(
+                    f"ICA widening search: frames=0..{tmax-1} stride={full_stride} (no ROI in default window)",
+                    "yellow",
+                )
+            )
+
+            def _try_choice(choice: int, *, flip_lr: bool) -> tuple[int, float, tuple]:
+                # We no longer use a single best frame, but keep the signature for logs.
+                res = extract_and_accumulate_rois_best_frame_per_slice(
+                    mri_data_norm_ica,
+                    slice_classifier_rica,
+                    rica_roi_model,
+                    choice=choice,
+                    frame_candidates=full_candidates,
+                    slice_relevance_thresholds=slice_thresholds,
+                    flip_lr=flip_lr,
+                    max_slices=ica_max_slices,
+                )
+                # Best score proxy for logs: max slice relevance among selected.
+                try:
+                    bs = float(max(float(np.max(r)) for r in (res[2] or [])))
+                except Exception:
+                    bs = 0.0
+                return 0, float(bs), res
+
+            # Retry preferred side first.
+            if int(ica_choice) == 2:
+                # LICA: try both flips.
+                bf1, bs1, res1 = _try_choice(2, flip_lr=True)
+                bf0, bs0, res0 = _try_choice(2, flip_lr=False)
+                bf, bs, res = (bf0, bs0, res0) if float(bs0) > float(bs1) else (bf1, bs1, res1)
+                chosen_flip = False if float(bs0) > float(bs1) else True
+                print(colored(f"ICA widened (LICA): flip_lr={chosen_flip} best_t={bf} (max p={bs:.2f})", "yellow"))
+                if res[2]:
+                    used_artery_code = "LICA"
+                    used_ica_choice = 2
+                    used_ica_flip_lr = bool(chosen_flip)
+                    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = res
+            else:
+                bf, bs, res = _try_choice(3, flip_lr=False)
+                print(colored(f"ICA widened (RICA): best_t={bf} (max p={bs:.2f})", "yellow"))
+                if res[2]:
+                    used_artery_code = "RICA"
+                    used_ica_choice = 3
+                    used_ica_flip_lr = False
+                    rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = res
+
+            # If still missing, try the opposite side as a last resort.
+            if not rica_rois:
+                if int(ica_choice) == 3:
+                    bf, bs, res = _try_choice(2, flip_lr=True)
+                    print(colored(f"ICA widened fallback side (LICA): best_t={bf} (max p={bs:.2f})", "yellow"))
+                    if res[2]:
+                        used_artery_code = "LICA"
+                        used_ica_choice = 2
+                        used_ica_flip_lr = True
+                        rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = res
+                else:
+                    bf, bs, res = _try_choice(3, flip_lr=False)
+                    print(colored(f"ICA widened fallback side (RICA): best_t={bf} (max p={bs:.2f})", "yellow"))
+                    if res[2]:
+                        used_artery_code = "RICA"
+                        used_ica_choice = 3
+                        used_ica_flip_lr = False
+                        rica_orig_slices, rica_slices, rica_rois, rica_labels, rica_voxels = res
+
+    # If extracting both sides, optionally widen the search for a missing side.
+    if extract_both_ica:
+        for code, choice in (("RICA", 3), ("LICA", 2)):
+            existing = ica_results.get(code, {})
+            if existing.get("rois"):
+                continue
+            w_orig, w_slices, w_rois, w_labels, w_voxels, w_flip = _widen_ica_if_missing(int(choice))
+            if w_rois:
+                ica_results[code] = {
+                    "choice": int(choice),
+                    "flip_lr": bool(w_flip),
+                    "orig_slices": w_orig,
+                    "slices": w_slices,
+                    "rois": w_rois,
+                    "labels": w_labels,
+                    "voxels": w_voxels,
+                }
 
     # NOTE: legacy brute-force rotation and full-frame scanning are intentionally
     # disabled here for speed. If ICA is missing, downstream will fall back to
@@ -1286,11 +1688,20 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
         slice_relevance_thresholds=slice_thresholds,
     )
 
-    # Build a montage that includes SSS + selected carotid.
-    all_orig_slices = list(rica_orig_slices)
-    all_slices = list(rica_slices)
-    all_rois = list(rica_rois)
-    all_labels = list(rica_labels)
+    # Build a montage that includes SSS + any extracted carotids.
+    all_orig_slices: list = []
+    all_slices: list = []
+    all_rois: list = []
+    all_labels: list = []
+
+    for code in ("RICA", "LICA"):
+        r = ica_results.get(code)
+        if not r:
+            continue
+        all_orig_slices += list(r.get("orig_slices") or [])
+        all_slices += list(r.get("slices") or [])
+        all_rois += list(r.get("rois") or [])
+        all_labels += list(r.get("labels") or [])
 
     all_orig_slices += list(ss_orig_slices)
     all_slices += list(ss_slices)
@@ -1300,68 +1711,86 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
 
     # Process artery and vein ROIs separately to avoid slice-index collisions and any
     # label/voxel misalignment.
-    artery_label = rica_labels[0] if rica_labels else int(ica_choice)
-    for slice_index, roi_voxels in rica_voxels.items():
-        type, subtype = choice2type(int(artery_label))
-
-        curve_method = (getattr(settings, "VASCULAR_ROI_CURVE_METHOD", "max") or "max").strip().lower()
-        if curve_method not in {"max", "mean", "median"}:
-            curve_method = "max"
-        adaptive_enabled = bool(getattr(settings, "VASCULAR_ROI_ADAPTIVE_MAX", False))
-
-        roi_voxels_arr = np.asarray(roi_voxels)
-        if roi_voxels_arr.size == 0:
+    for code, r in ica_results.items():
+        vox = r.get("voxels") or {}
+        if not vox:
             continue
-        roi_tc = mri_data_ica[
-            roi_voxels_arr[:, 0].astype(int),
-            roi_voxels_arr[:, 1].astype(int),
-            int(slice_index),
-            :,
-        ]
-        if roi_tc.ndim != 2 or roi_tc.shape[0] == 0:
-            continue
+        artery_choice = int(r.get("choice") or (2 if code == "LICA" else 3))
 
-        if curve_method == "mean":
-            sel_tc = roi_tc.mean(axis=0)
-        elif curve_method == "median":
-            sel_tc = np.median(roi_tc, axis=0)
-        elif curve_method == "max" and adaptive_enabled:
-            sel_tc = roi_tc.max(axis=0)
-        else:
-            idx = int(np.argmax(roi_tc.max(axis=1)))
-            sel_tc = roi_tc[idx]
+        for slice_index, roi_voxels in vox.items():
+            type, subtype = choice2type(int(artery_choice))
 
-        baseline_frames = int(getattr(settings, "ROI_DCE_BASELINE_FRAMES", 5))
-        baseline = sel_tc[:baseline_frames].mean() if sel_tc.size else 0.0
-        max_intensity_frame = int(np.argmax(sel_tc - baseline)) if sel_tc.size else 0
+            curve_method = (getattr(settings, "VASCULAR_ROI_CURVE_METHOD", "max") or "max").strip().lower()
+            if curve_method not in {"max", "mean", "median"}:
+                curve_method = "max"
+            adaptive_enabled = bool(getattr(settings, "VASCULAR_ROI_ADAPTIVE_MAX", False))
 
-        plot_time_intensity_curves_AI(
-            mri_data_ica,
-            roi_voxels,
-            slice_index,
-            max_intensity_frame,
-            time,
-            analysis_dir,
-            image_dir,
-            type=type,
-            subtype=subtype,
-        )
-        plot_time_intensity_curves_and_CTC_AI(
-            mri_data_ica,
-            max_intensity_frame,
-            roi_voxels,
-            slice_index,
-            max_intensity_frame,
-            time,
-            analysis_dir,
-            image_dir,
-            nifti_dir,
-            type=type,
-            subtype=subtype,
-            IsVFA=IsVFA,
-            filenames=filenames,
-            rotate_ac=True,
-        )
+            roi_voxels_arr = np.asarray(roi_voxels)
+            if roi_voxels_arr.size == 0:
+                continue
+            roi_tc = mri_data_ica[
+                roi_voxels_arr[:, 0].astype(int),
+                roi_voxels_arr[:, 1].astype(int),
+                int(slice_index),
+                :,
+            ]
+            if roi_tc.ndim != 2 or roi_tc.shape[0] == 0:
+                continue
+
+            if curve_method == "mean":
+                sel_tc = roi_tc.mean(axis=0)
+            elif curve_method == "median":
+                sel_tc = np.median(roi_tc, axis=0)
+            elif curve_method == "max" and adaptive_enabled:
+                sel_tc = roi_tc.max(axis=0)
+            else:
+                idx = int(np.argmax(roi_tc.max(axis=1)))
+                sel_tc = roi_tc[idx]
+
+            baseline_frames = int(getattr(settings, "ROI_DCE_BASELINE_FRAMES", 5))
+            baseline = sel_tc[:baseline_frames].mean() if sel_tc.size else 0.0
+            max_intensity_frame = int(np.argmax(sel_tc - baseline)) if sel_tc.size else 0
+
+            plot_time_intensity_curves_AI(
+                mri_data_ica,
+                roi_voxels,
+                slice_index,
+                max_intensity_frame,
+                time,
+                analysis_dir,
+                image_dir,
+                type=type,
+                subtype=subtype,
+            )
+            try:
+                plot_time_intensity_curves_and_CTC_AI(
+                    mri_data_ica,
+                    max_intensity_frame,
+                    roi_voxels,
+                    slice_index,
+                    max_intensity_frame,
+                    time,
+                    analysis_dir,
+                    image_dir,
+                    nifti_dir,
+                    type=type,
+                    subtype=subtype,
+                    IsVFA=IsVFA,
+                    filenames=filenames,
+                    rotate_ac=True,
+                )
+            except FileNotFoundError as e:
+                # Some runners invoke input-functions before T1/CTC prerequisites exist.
+                # Keep ROI extraction results and let downstream stages compute CTC later.
+                try:
+                    print(colored(f"[AI] Skipping CTC plot (missing prerequisite): {e}", "yellow"))
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    print(colored(f"[AI] Skipping CTC plot (error): {type(e).__name__}: {e}", "yellow"))
+                except Exception:
+                    pass
 
     for slice_index, roi_voxels in ss_voxels.items():
         type, subtype = choice2type(1)
@@ -1408,22 +1837,33 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
             type=type,
             subtype=subtype,
         )
-        plot_time_intensity_curves_and_CTC_AI(
-            mri_data_ss,
-            max_intensity_frame,
-            roi_voxels,
-            slice_index,
-            max_intensity_frame,
-            time,
-            analysis_dir,
-            image_dir,
-            nifti_dir,
-            type=type,
-            subtype=subtype,
-            IsVFA=IsVFA,
-            filenames=filenames,
-            rotate_ac=True,
-        )
+        try:
+            plot_time_intensity_curves_and_CTC_AI(
+                mri_data_ss,
+                max_intensity_frame,
+                roi_voxels,
+                slice_index,
+                max_intensity_frame,
+                time,
+                analysis_dir,
+                image_dir,
+                nifti_dir,
+                type=type,
+                subtype=subtype,
+                IsVFA=IsVFA,
+                filenames=filenames,
+                rotate_ac=True,
+            )
+        except FileNotFoundError as e:
+            try:
+                print(colored(f"[AI] Skipping CTC plot (missing prerequisite): {e}", "yellow"))
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(colored(f"[AI] Skipping CTC plot (error): {type(e).__name__}: {e}", "yellow"))
+            except Exception:
+                pass
 
     # Restore the caller's env (best-effort).
     if orig_rot_env is None:
@@ -1434,13 +1874,51 @@ def run_ai_roi_extraction(filename, analysis_dir, image_dir, nifti_dir, time, Is
     print(colored('AI-based ROI extraction completed.', 'green'))
 
     # Optional: TSCC time shifting (SSS -> arterial reference) for AIF.
+    # If we extracted both ICA sides, generate TSCC for both; the Max selection
+    # should happen after both sides exist, so the global Max considers all
+    # candidates across *all* available arteries.
     if bool(getattr(settings, "INPUT_FUNCTION_USE_SSS", True)):
-        tscc.time_shifting(
-            analysis_dir,
-            nifti_dir,
-            image_dir,
-            artery=str(used_artery_code or getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA")),
-        )
+        if extract_both_ica:
+            # Order doesn't matter for the final Max selection, but running
+            # preferred first keeps logs stable.
+            preferred = str(used_artery_code or getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA"))
+            preferred = preferred if preferred in {"RICA", "LICA"} else "RICA"
+            other = "LICA" if preferred == "RICA" else "RICA"
+            for artery in (preferred, other):
+                try:
+                    tscc.time_shifting(
+                        analysis_dir,
+                        nifti_dir,
+                        image_dir,
+                        artery=str(artery),
+                        write_max=False,
+                        reference_artery="BOTH",
+                    )
+                except TypeError:
+                    # Legacy signature fallback.
+                    tscc.time_shifting(analysis_dir, nifti_dir, image_dir)
+            try:
+                tscc.write_tscc_max_outputs(
+                    analysis_dir,
+                    nifti_dir,
+                    image_dir,
+                    reference_artery="BOTH",
+                )
+            except Exception as e:
+                try:
+                    print(colored(f"[AI] TSCC Max refresh failed: {type(e).__name__}: {e}", "yellow"))
+                except Exception:
+                    pass
+                # Legacy fallback: a full TSCC run will still compute a global
+                # Max across all candidates present on disk.
+                tscc.time_shifting(analysis_dir, nifti_dir, image_dir, artery=str(preferred))
+        else:
+            tscc.time_shifting(
+                analysis_dir,
+                nifti_dir,
+                image_dir,
+                artery=str(used_artery_code or getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA")),
+            )
         print(colored('Time shifting completed.', 'green'))
 
 def time_shifting(analysis_directory, nifti_directory, image_directory):

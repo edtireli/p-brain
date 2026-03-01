@@ -1030,6 +1030,8 @@ def time_shifting(
     image_directory: str,
     *,
     artery: str | None = None,
+    write_max: bool = True,
+    reference_artery: str | None = None,
 ) -> None:
     """Generate TSCC curves by aligning SSS (vein) to the selected artery."""
 
@@ -1244,97 +1246,23 @@ def time_shifting(
                 time_shift=time_shift,
             )
 
-    if forced_aif and forced_vif:
-        try:
-            venous_slice = int(forced_vif.get("sliceIndex"))
-            arterial_slice = int(forced_aif.get("sliceIndex"))
-        except Exception:
-            venous_slice = -1
-            arterial_slice = -1
-        forced_path = os.path.join(
-            analysis_directory,
-            "TSCC Data",
-            str(artery_subtype),
-            f"TSCC_slice_{venous_slice}_{arterial_slice}.npy",
-        )
-        if os.path.isfile(forced_path):
-            try:
-                arr = np.load(forced_path)
-                best = _TsccBest(
-                    file_path=forced_path,
-                    value=float(np.max(arr)) if arr.size else float("-inf"),
-                    subtype=str(artery_subtype),
-                    venous_slice=int(venous_slice),
-                    arterial_slice=int(arterial_slice),
-                )
-            except Exception:
-                best = find_max_npy_file(analysis_directory)
-        else:
-            best = find_max_npy_file(analysis_directory)
-    else:
-        best = find_max_npy_file(analysis_directory)
-    if not best.file_path or not os.path.isfile(best.file_path):
+    if not bool(write_max):
         if auto_logging_enabled():
             log_process_end("Time shifting")
         return
 
-    # Refresh Max outputs.
-    for f in glob.glob(os.path.join(analysis_directory, "TSCC Data", "Max", "*.npy")):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
-
-    corresponding = np.load(best.file_path)
-    try:
-        best_vein, best_artery = load_curves(
-            int(best.venous_slice),
-            int(best.arterial_slice),
-            str(best.subtype),
-            analysis_directory,
-        )
-    except Exception:
-        best_vein, best_artery = None, None
-    plot_transformed_curves_max(
-        corresponding,
-        venous_slice_index=int(best.venous_slice),
-        arterial_slice_index=int(best.arterial_slice),
+    best = write_tscc_max_outputs(
+        analysis_directory,
+        nifti_directory,
+        image_directory,
+        forced_aif=forced_aif,
+        forced_vif=forced_vif,
+        reference_artery=(reference_artery if reference_artery is not None else artery_norm),
         time_points_s=time_points_s,
-        analysis_directory=analysis_directory,
-        image_directory=image_directory,
-        subtype=str(best.subtype),
-        original_vein_curve=best_vein,
-        artery_curve=best_artery,
     )
 
-    with open(os.path.join(analysis_directory, "max_info.json"), "w") as f:
-        json.dump([f"Max artery type: {best.subtype}"], f)
-
-    # Extra debug metadata (non-breaking; separate file).
-    try:
-        with open(os.path.join(analysis_directory, "tscc_selection.json"), "w") as f:
-            json.dump(
-                {
-                    "reference_artery": str(getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA")),
-                    "artery_subtype": str(best.subtype),
-                    "venous_slice": int(best.venous_slice),
-                    "arterial_slice": int(best.arterial_slice),
-                    "forced_aif": forced_aif,
-                    "forced_vif": forced_vif,
-                    "tscc_method": str(getattr(settings, "TSCC_METHOD", "peaks")),
-                    "tscc_rescale": bool(getattr(settings, "TSCC_RESCALE", True)),
-                    "tscc_rescale_method": str(getattr(settings, "TSCC_RESCALE_METHOD", "peak")),
-                    "num_peaks": int(getattr(settings, "NUMBER_OF_PEAKS", 2)),
-                },
-                f,
-                indent=2,
-            )
-            f.write("\n")
-    except Exception:
-        pass
-
     # One compact demo plot (raw SSS vs shifted-only vs shifted+rescaled) overlaid with arteries.
-    if bool(getattr(settings, "TSCC_WRITE_DEMO_PLOT", True)):
+    if best is not None and bool(getattr(settings, "TSCC_WRITE_DEMO_PLOT", True)):
         try:
             ref_curve = _load_ctc_curve(
                 analysis_directory=analysis_directory,
@@ -1409,3 +1337,131 @@ def time_shifting(
 
     if auto_logging_enabled():
         log_process_end("Time shifting")
+
+
+def write_tscc_max_outputs(
+    analysis_directory: str,
+    nifti_directory: str,
+    image_directory: str,
+    *,
+    forced_aif: dict | None = None,
+    forced_vif: dict | None = None,
+    reference_artery: str | None = None,
+    time_points_s: np.ndarray | None = None,
+) -> _TsccBest | None:
+    """(Re)compute the global Max TSCC and refresh `TSCC Data/Max/*` artifacts.
+
+    This is useful when multiple arterial subtypes are generated in one run
+    (e.g. bilateral ICA): generate all per-artery TSCCs first, then call this
+    once so the final `Max` selection considers all candidates.
+    """
+
+    if forced_aif is None or forced_vif is None:
+        forced_aif2, forced_vif2 = _read_input_function_forces(analysis_directory)
+        forced_aif = forced_aif if forced_aif is not None else forced_aif2
+        forced_vif = forced_vif if forced_vif is not None else forced_vif2
+
+    if time_points_s is None:
+        time_path = os.path.join(analysis_directory, "Fitting", "time_points_s.npy")
+        if not os.path.isfile(time_path):
+            return None
+        time_points_s = np.load(time_path)
+
+    best: _TsccBest
+    if forced_aif and forced_vif:
+        try:
+            venous_slice = int(forced_vif.get("sliceIndex"))
+            arterial_slice = int(forced_aif.get("sliceIndex"))
+            artery_subtype = str(forced_aif.get("roiSubType") or "")
+        except Exception:
+            venous_slice = -1
+            arterial_slice = -1
+            artery_subtype = ""
+        forced_path = os.path.join(
+            analysis_directory,
+            "TSCC Data",
+            str(artery_subtype),
+            f"TSCC_slice_{venous_slice}_{arterial_slice}.npy",
+        )
+        if artery_subtype and os.path.isfile(forced_path):
+            try:
+                arr = np.load(forced_path)
+                best = _TsccBest(
+                    file_path=forced_path,
+                    value=float(np.max(arr)) if arr.size else float("-inf"),
+                    subtype=str(artery_subtype),
+                    venous_slice=int(venous_slice),
+                    arterial_slice=int(arterial_slice),
+                )
+            except Exception:
+                best = find_max_npy_file(analysis_directory)
+        else:
+            best = find_max_npy_file(analysis_directory)
+    else:
+        best = find_max_npy_file(analysis_directory)
+
+    if not best.file_path or not os.path.isfile(best.file_path):
+        return None
+
+    _ensure_dir(os.path.join(analysis_directory, "TSCC Data", "Max"))
+    _ensure_dir(os.path.join(image_directory, "Time Shifted Concentration Curves", "Max"))
+
+    # Refresh Max outputs.
+    for f in glob.glob(os.path.join(analysis_directory, "TSCC Data", "Max", "*.npy")):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+    corresponding = np.load(best.file_path)
+    try:
+        best_vein, best_artery = load_curves(
+            int(best.venous_slice),
+            int(best.arterial_slice),
+            str(best.subtype),
+            analysis_directory,
+        )
+    except Exception:
+        best_vein, best_artery = None, None
+
+    plot_transformed_curves_max(
+        corresponding,
+        venous_slice_index=int(best.venous_slice),
+        arterial_slice_index=int(best.arterial_slice),
+        time_points_s=np.asarray(time_points_s),
+        analysis_directory=analysis_directory,
+        image_directory=image_directory,
+        subtype=str(best.subtype),
+        original_vein_curve=best_vein,
+        artery_curve=best_artery,
+    )
+
+    with open(os.path.join(analysis_directory, "max_info.json"), "w") as f:
+        json.dump([f"Max artery type: {best.subtype}"], f)
+
+    # Extra debug metadata (non-breaking; separate file).
+    try:
+        if reference_artery is None:
+            reference_artery = str(getattr(settings, "INPUT_FUNCTION_ARTERY", "RICA"))
+        with open(os.path.join(analysis_directory, "tscc_selection.json"), "w") as f:
+            json.dump(
+                {
+                    "reference_artery": str(reference_artery),
+                    "artery_subtype": str(best.subtype),
+                    "venous_slice": int(best.venous_slice),
+                    "arterial_slice": int(best.arterial_slice),
+                    "forced_aif": forced_aif,
+                    "forced_vif": forced_vif,
+                    "tscc_method": str(getattr(settings, "TSCC_METHOD", "peaks")),
+                    "tscc_rescale": bool(getattr(settings, "TSCC_RESCALE", True)),
+                    "tscc_rescale_method": str(getattr(settings, "TSCC_RESCALE_METHOD", "peak")),
+                    "num_peaks": int(getattr(settings, "NUMBER_OF_PEAKS", 2)),
+                },
+                f,
+                indent=2,
+            )
+            f.write("\n")
+    except Exception:
+        pass
+
+    return best

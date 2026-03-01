@@ -49,6 +49,8 @@ def _cleanup_input_function_artifacts(analysis_directory: str) -> None:
     targets = [
         Path("CTC Data") / "Artery",
         Path("CTC Data") / "Vein",
+        Path("ITC Data") / "Artery",
+        Path("ITC Data") / "Vein",
         Path("TSCC Data"),
         Path("ROI Data"),
         Path("Frame Data"),

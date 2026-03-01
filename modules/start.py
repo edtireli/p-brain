@@ -234,6 +234,8 @@ import subprocess
 from collections import defaultdict
 import os
 import shutil
+import hashlib
+import time
 
 
 def decompress_gz_in_directory(directory):
@@ -258,13 +260,78 @@ def decompress_gz_in_directory(directory):
             with gzip.open(gz_path, 'rb') as f_in:
                 with open(gz_path[:-3], 'wb') as f_out:
                     f_out.write(f_in.read())
-            print(f'Decompressed: {gz_path}')
 
 
 def parrec2nifti(directory, nifti_directory):
+    """Convert Philips PAR/REC (or DICOM) to NIfTI using dcm2niix.
+
+    Rules:
+    - When PAR/REC pairs exist: convert per PAR only if matching NIfTI outputs
+      are missing or older than the PAR ("outdated").
+    - Always enrich JSON sidecar metadata from PAR when PAR is available.
+    - When no PAR/REC exists: if NIfTI is missing, attempt recursive DICOM conversion.
+    """
+
     directory = os.fspath(directory)
     nifti_directory = os.fspath(nifti_directory)
+    if not directory or not os.path.isdir(directory):
+        return
+    if not nifti_directory:
+        return
+
     os.makedirs(nifti_directory, exist_ok=True)
+
+    retry_failed = (os.environ.get("P_BRAIN_DCM2NIIX_RETRY_FAILED", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    failed_dir = os.path.join(nifti_directory, ".pbrain_dcm2niix_failed")
+    try:
+        os.makedirs(failed_dir, exist_ok=True)
+    except Exception:
+        failed_dir = nifti_directory
+
+    def _failure_marker_path(par_path: str) -> str:
+        abs_path = os.path.abspath(os.fspath(par_path))
+        h = hashlib.sha1(abs_path.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+        stem = os.path.splitext(os.path.basename(abs_path))[0]
+        stem = sanitize_dcm2niix_basename(stem) or "parrec"
+        return os.path.join(failed_dir, f"{stem}_{h}.json")
+
+    def _load_failure_marker(par_path: str) -> dict | None:
+        p = _failure_marker_path(par_path)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else None
+        except Exception:
+            return None
+
+    def _write_failure_marker(par_path: str, *, stderr: str | None) -> None:
+        p = _failure_marker_path(par_path)
+        try:
+            d = {
+                "par_path": os.path.abspath(os.fspath(par_path)),
+                "par_mtime": _mtime(par_path),
+                "dcm2niix": dcm2niix_path,
+                "stderr": (stderr or "")[-4000:],
+                "ts": time.time(),
+            }
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2)
+        except Exception:
+            pass
+
+    def _clear_failure_marker(par_path: str) -> None:
+        p = _failure_marker_path(par_path)
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
 
     def _ensure_common_tool_paths() -> None:
         """GUI apps on macOS often start with a minimal PATH.
@@ -371,94 +438,111 @@ def parrec2nifti(directory, nifti_directory):
             return ""
         return re.sub(r"[^0-9A-Za-z]+", "", str(name)).lower()
 
-    par_file_paths = _find_parrec_pairs_one_level(directory)
-    par_files = [os.path.basename(p) for p in par_file_paths]
+    def _candidate_jsons_for_par(par_path: str) -> list[str]:
+        protocol_name = read_protocol_name_from_par(par_path, default=None)
+        protocol_sanitized = sanitize_dcm2niix_basename(protocol_name) if protocol_name else None
+        protocol_compact = _compact_name(protocol_name)
 
-    # If NIfTI already exists, we still try to enrich JSON metadata from PAR.
-    nifti_present = False
-    try:
-        nifti_files = os.listdir(nifti_directory)
-        nifti_present = any(f.endswith('.nii') or f.endswith('.nii.gz') for f in nifti_files)
-    except Exception:
-        nifti_present = False
+        candidate_jsons: list[str] = []
+        try:
+            for fname in os.listdir(nifti_directory):
+                if not fname.lower().endswith('.json'):
+                    continue
+                if fname.startswith('.'):
+                    continue
 
-    if nifti_present and par_files:
-        for file in par_files:
-            file_to_convert = os.path.join(directory, file)
-            flip_angle_deg = settings.FLIP_ANGLE_DEG
-            if flip_angle_deg is None:
-                flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
-            tr_exc_s = read_repetition_time_excitation_s_from_par(file_to_convert, default=None)
-            turbo_factor = read_turbo_factor_from_par(file_to_convert, default=None)
-            # Even when specific scalar fields are missing, we still enrich JSON
-            # with PAR-derived spacing/timing/TI to keep downstream metadata consistent.
+                # Most robust: match using metadata inside the JSON itself.
+                try:
+                    json_path = os.path.join(nifti_directory, fname)
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                    if isinstance(meta, dict) and protocol_compact:
+                        proto_c = _compact_name(meta.get('ProtocolName'))
+                        series_c = _compact_name(meta.get('SeriesDescription'))
+                        if proto_c == protocol_compact or series_c == protocol_compact:
+                            candidate_jsons.append(json_path)
+                            continue
+                except Exception:
+                    pass
 
-            protocol_name = read_protocol_name_from_par(file_to_convert, default=None)
-            protocol_sanitized = sanitize_dcm2niix_basename(protocol_name) if protocol_name else None
-            protocol_compact = _compact_name(protocol_name)
+                if protocol_sanitized:
+                    base = os.path.splitext(fname)[0]
+                    base_sanitized = sanitize_dcm2niix_basename(base)
+                    if base_sanitized.lower() == protocol_sanitized.lower():
+                        candidate_jsons.append(os.path.join(nifti_directory, fname))
+                        continue
 
-            candidate_jsons = []
-            try:
+                # More robust match: compare compacted (alphanumeric-only) forms.
+                if protocol_compact:
+                    base = os.path.splitext(fname)[0]
+                    base_compact = _compact_name(base)
+                    if base_compact == protocol_compact:
+                        candidate_jsons.append(os.path.join(nifti_directory, fname))
+
+            if not candidate_jsons and protocol_sanitized:
+                # Fallback: substring match.
                 for fname in os.listdir(nifti_directory):
                     if not fname.lower().endswith('.json'):
                         continue
                     if fname.startswith('.'):
                         continue
-
-                    # Most robust: match using metadata inside the JSON itself.
-                    try:
-                        json_path = os.path.join(nifti_directory, fname)
-                        with open(json_path, 'r', encoding='utf-8') as f:
-                            meta = json.load(f)
-                        if isinstance(meta, dict) and protocol_compact:
-                            proto_c = _compact_name(meta.get('ProtocolName'))
-                            series_c = _compact_name(meta.get('SeriesDescription'))
-                            if proto_c == protocol_compact or series_c == protocol_compact:
-                                candidate_jsons.append(json_path)
-                                continue
-                    except Exception:
-                        pass
-
-                    if protocol_sanitized:
-                        base = os.path.splitext(fname)[0]
-                        base_sanitized = sanitize_dcm2niix_basename(base)
-                        if base_sanitized.lower() == protocol_sanitized.lower():
-                            candidate_jsons.append(os.path.join(nifti_directory, fname))
-                            continue
-                    # More robust match: compare compacted (alphanumeric-only) forms.
+                    base = os.path.splitext(fname)[0]
+                    if protocol_sanitized.lower() in sanitize_dcm2niix_basename(base).lower():
+                        candidate_jsons.append(os.path.join(nifti_directory, fname))
+                        continue
                     if protocol_compact:
-                        base = os.path.splitext(fname)[0]
                         base_compact = _compact_name(base)
-                        if base_compact == protocol_compact:
+                        if protocol_compact in base_compact or base_compact in protocol_compact:
                             candidate_jsons.append(os.path.join(nifti_directory, fname))
-                if not candidate_jsons and protocol_sanitized:
-                    # Fallback: substring match.
-                    for fname in os.listdir(nifti_directory):
-                        if not fname.lower().endswith('.json'):
-                            continue
-                        if fname.startswith('.'):
-                            continue
-                        base = os.path.splitext(fname)[0]
-                        if protocol_sanitized.lower() in sanitize_dcm2niix_basename(base).lower():
-                            candidate_jsons.append(os.path.join(nifti_directory, fname))
-                            continue
-                        if protocol_compact:
-                            base_compact = _compact_name(base)
-                            if protocol_compact in base_compact or base_compact in protocol_compact:
-                                candidate_jsons.append(os.path.join(nifti_directory, fname))
-            except Exception:
-                candidate_jsons = []
+        except Exception:
+            return []
 
-            for json_path in candidate_jsons:
-                nifti_path = _nifti_path_from_json(json_path)
-                if flip_angle_deg is not None:
-                    inject_flip_angle_into_sidecar_json(nifti_path, flip_angle_deg)
-                if tr_exc_s is not None:
-                    inject_repetition_time_excitation_into_sidecar_json(nifti_path, tr_exc_s)
-                if turbo_factor is not None:
-                    inject_turbo_factor_into_sidecar_json(nifti_path, turbo_factor)
-                inject_parrec_metadata_into_sidecar_json(nifti_path, file_to_convert)
-        return
+        return candidate_jsons
+
+    def _mtime(path: str) -> float | None:
+        try:
+            return float(os.path.getmtime(path))
+        except Exception:
+            return None
+
+    def _par_outputs_outdated(par_path: str, json_paths: list[str]) -> bool:
+        """Return True when NIfTI/sidecar are missing or older than the PAR."""
+
+        par_mtime = _mtime(par_path)
+        if par_mtime is None:
+            return False
+        if not json_paths:
+            return True
+
+        newest_out = None
+        for json_path in json_paths:
+            nifti_path = _nifti_path_from_json(json_path)
+            json_m = _mtime(json_path)
+            nii_m = _mtime(nifti_path)
+            if json_m is None or nii_m is None:
+                return True
+            out_m = max(json_m, nii_m)
+            newest_out = out_m if newest_out is None else max(newest_out, out_m)
+
+        # Coarse FS/zip extraction can smear mtimes; tolerate 1s.
+        return newest_out is None or (par_mtime - newest_out) > 1.0
+
+    def _enrich_from_par(par_path: str, json_paths: list[str]) -> None:
+        flip_angle_deg = settings.FLIP_ANGLE_DEG
+        if flip_angle_deg is None:
+            flip_angle_deg = read_flip_angle_deg_from_par(par_path, default=None)
+        tr_exc_s = read_repetition_time_excitation_s_from_par(par_path, default=None)
+        turbo_factor = read_turbo_factor_from_par(par_path, default=None)
+
+        for json_path in json_paths:
+            nifti_path = _nifti_path_from_json(json_path)
+            if flip_angle_deg is not None:
+                inject_flip_angle_into_sidecar_json(nifti_path, flip_angle_deg)
+            if tr_exc_s is not None:
+                inject_repetition_time_excitation_into_sidecar_json(nifti_path, tr_exc_s)
+            if turbo_factor is not None:
+                inject_turbo_factor_into_sidecar_json(nifti_path, turbo_factor)
+            inject_parrec_metadata_into_sidecar_json(nifti_path, par_path)
 
     def _run_dcm2niix(input_path: str) -> bool:
         nonlocal dcm2niix_path
@@ -498,7 +582,13 @@ def parrec2nifti(directory, nifti_directory):
             )
             if res.returncode != 0:
                 print(f"[parrec2nifti] dcm2niix failed for '{input_path}': {res.stderr}")
+                # Persist failure so subsequent stages don't keep retrying the
+                # same broken PAR/REC pair (common in p-brain-web stage runners).
+                if os.path.splitext(str(input_path).lower())[1] == ".par":
+                    _write_failure_marker(str(input_path), stderr=res.stderr)
                 return False
+            if os.path.splitext(str(input_path).lower())[1] == ".par":
+                _clear_failure_marker(str(input_path))
             return True
         except Exception as e:
             print(f"[parrec2nifti] Exception running dcm2niix for '{input_path}': {e}")
@@ -513,51 +603,31 @@ def parrec2nifti(directory, nifti_directory):
         except Exception:
             return False
 
-    if par_file_paths:
-        # Convert each .PAR file
-        for file_to_convert in par_file_paths:
-            file = os.path.basename(file_to_convert)
-            before_json = set()
-            try:
-                before_json = {
-                    f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
-                }
-            except Exception:
-                before_json = set()
-            try:
-                ok = _run_dcm2niix(file_to_convert)
-                if ok:
-                    # If conversion was successful, print a confirmation message
-                    print(f"Converted {file} successfully.")
+    par_file_paths = _find_parrec_pairs_one_level(directory)
 
-                    flip_angle_deg = settings.FLIP_ANGLE_DEG
-                    if flip_angle_deg is None:
-                        flip_angle_deg = read_flip_angle_deg_from_par(file_to_convert, default=None)
-                    tr_exc_s = read_repetition_time_excitation_s_from_par(file_to_convert, default=None)
-                    turbo_factor = read_turbo_factor_from_par(file_to_convert, default=None)
-                    after_json = set()
-                    try:
-                        after_json = {
-                            f for f in os.listdir(nifti_directory) if f.lower().endswith('.json')
-                        }
-                    except Exception:
-                        after_json = set()
-                    new_json = sorted(after_json - before_json)
-                    for fname in new_json:
-                        if fname.startswith('.'):
-                            continue
-                        json_path = os.path.join(nifti_directory, fname)
-                        nifti_path = _nifti_path_from_json(json_path)
-                        if flip_angle_deg is not None:
-                            inject_flip_angle_into_sidecar_json(nifti_path, flip_angle_deg)
-                        if tr_exc_s is not None:
-                            inject_repetition_time_excitation_into_sidecar_json(nifti_path, tr_exc_s)
-                        if turbo_factor is not None:
-                            inject_turbo_factor_into_sidecar_json(nifti_path, turbo_factor)
-                        inject_parrec_metadata_into_sidecar_json(nifti_path, file_to_convert)
-            except Exception as e:
-                # If there was an exception, output the exception details
-                print(f"Exception during conversion of {file}: {e}")
+    if par_file_paths:
+        # Convert/enrich each PAR independently.
+        for par_path in par_file_paths:
+            candidate_jsons = _candidate_jsons_for_par(par_path)
+            needs_reconvert = _par_outputs_outdated(par_path, candidate_jsons)
+            if needs_reconvert:
+                marker = _load_failure_marker(par_path)
+                par_mtime = _mtime(par_path)
+                if (not retry_failed) and marker and marker.get("par_mtime") == par_mtime:
+                    # Avoid spamming logs + wasting time if the PAR/REC is
+                    # consistently unconvertible (e.g. truncated REC or unknown type).
+                    pass
+                else:
+                    ok = _run_dcm2niix(par_path)
+                    if ok:
+                        print(f"Converted {os.path.basename(par_path)} successfully.")
+                # Refresh after conversion (files may be overwritten).
+                candidate_jsons = _candidate_jsons_for_par(par_path)
+
+            # Always enrich sidecars from PAR when possible.
+            if candidate_jsons:
+                _enrich_from_par(par_path, candidate_jsons)
+        return
     else:
         # No .PAR files. If no NIfTI exists yet, try DICOM conversion.
         if not _has_nifti(nifti_directory):

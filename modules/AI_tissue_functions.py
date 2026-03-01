@@ -11,68 +11,342 @@ correct_signal_jumps = False
 # previous one-step "-applyxfm -usesqform" approach is retained.
 use_flirt_registration = False
 
-import nibabel as nib
-import matplotlib.pyplot as plt
-import numpy as np
-import subprocess
-import os
+import json
+import functools
+import logging
 import multiprocessing
+import os
+import pickle
 import shutil
-    if compute_per_voxel_Ki:
-        # Write JSON
-        json_file_path_total = os.path.join(analysis_directory, "AI_values_median_total.json")
-        with open(json_file_path_total, "w") as jf:
-            extra_keys = [
-                "cth_mtt_method", "MTT_tikh_s", "CTH_tikh_s", "MTT_gamma_s", "CTH_gamma_s",
-                "gamma_a", "gamma_b", "gamma_t0_s", "gamma_F_ml_per_100g_min", "gamma_E",
-                "gamma_shape_ratio", "gamma_residual_norm", "gamma_iterations", "gamma_success",
-            ]
-            payload = {
-                t + "_median_total": {
-                    "Ki":            d["Ki"],
-                    "SD_Ki":         d["SD_Ki"],
-                    "lambda":        d["lam"],
-                    "CBF_tikhonov":  d["CBF_tikhonov"],
-                    "MTT_tikhonov":  d["MTT_tikhonov"],
-                    "CTH_tikhonov":  d["CTH_tikhonov"],
-                    "voxel_count":   d["vox"],
-                    **{k: d[k] for k in extra_keys if k in d},
-                }
-                for t, d in tissue_results.items()
-                if isinstance(d, dict) and {"Ki", "SD_Ki", "lam", "CBF_tikhonov", "MTT_tikhonov", "CTH_tikhonov", "vox"} <= d.keys()
-            }
-            payload["cth_mtt_method"] = settings.CTH_MTT_METHOD
-            json.dump(payload, jf, indent=4)
+import subprocess
+import warnings
+from typing import Any
+from types import SimpleNamespace
 
-        # -----------------------------------------------------------------------------
-        # 5) Create one PNG per tissue (Patlak + CT)
-        # -----------------------------------------------------------------------------
-        for tissue_name, vals in tissue_results.items():
-            if not isinstance(vals, dict) or "C_t" not in vals:
-                continue
-            save_path = os.path.join(
-                image_directory,
-                "AI",
-                "Tissue functions",
-                f"{tissue_name}_total_CT_and_patlak.png",
-            )
-            plot_total_ct_and_patlak(
-                time_points=time_points_total,
-                C_t_total=vals["C_t"],
-                C_a=C_a_total,
-                Ki=vals["Ki"],
-                lam=vals["lam"],
-                SD_Ki=vals["SD_Ki"],
-                fit_curve=vals.get("fit_curve"),
-                tissue_name=tissue_name.replace('_', ' ').title(),
-                save_path=save_path,
-            )
+import matplotlib.pyplot as plt
+import nibabel as nib
+import numpy as np
+from tqdm import tqdm
+
+from utils import settings
+from utils.cli_logging import auto_logging_suppressed
+from utils.loading import (
+    get_input_function_curve,
+    load_dce_4d,
+    resolve_flip_angle_deg,
+    resolve_turboflash_ti_s,
+)
+from utils.plotting import (
+    butter_lowpass_filter,
+    close_plot_after_delay,
+    compute_CTC,
+    custom_shifter,
+    find_major_peaks,
+)
+
+from modules.kinetic_models import (
+    build_spline_lcurve_deconvolution_solver,
+    construct_convolution_matrix as km_construct_convolution_matrix,
+    tikhonov_regularization as km_tikhonov_regularization,
+)
+
+# Patlak model implementation (new modular location). Some code paths still
+# expect `model_patlak_with_exclusions` to exist at module scope.
+from models.patlak import fit_patlak_tuple as model_patlak_with_exclusions
+
+
+def load_from_pickle(file_path: str) -> Any:
+    """Load and return a Python object from a pickle file.
+
+    Compatibility shim: some runners import this module as `AIT` and expect
+    `AIT.load_from_pickle(...)` to exist.
     """
 
+    path = os.fspath(file_path)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    with open(path, "rb") as file:
+        return pickle.load(file)
+
+
+def _tqdm(*args, **kwargs):
     kwargs.setdefault("disable", False)
     kwargs.setdefault("dynamic_ncols", True)
     kwargs.setdefault("leave", False)
     return tqdm(*args, **kwargs)
+
+
+def _resolve_lambda_candidates(
+    *,
+    lambda_candidates,
+    auto_lambda: bool,
+    auto_lambda_value,
+    lambd_default,
+):
+    """Resolve lambda candidates for Tikhonov/L-curve selection.
+
+    Notes:
+    - `build_spline_lcurve_deconvolution_solver` requires *uniformly spaced* lambda
+      candidates when performing curvature-based selection.
+    - If a non-uniform grid is provided, we fall back to a single `lambd_default`.
+    """
+
+    if lambda_candidates is not None:
+        cand = np.asarray(lambda_candidates, dtype=float).reshape(-1)
+    elif auto_lambda and auto_lambda_value is not None and np.isfinite(auto_lambda_value):
+        cand = np.asarray([float(auto_lambda_value)], dtype=float)
+    elif auto_lambda:
+        cand = np.asarray(getattr(settings, "AUTO_LAMBDA_CANDIDATES", np.array([], dtype=float)), dtype=float).reshape(-1)
+    else:
+        cand = np.asarray([float(lambd_default)], dtype=float)
+
+    cand = cand[np.isfinite(cand) & (cand > 0)]
+    if cand.size == 0:
+        return np.asarray([float(lambd_default)], dtype=float)
+    if cand.size < 3:
+        return cand
+
+    diffs = np.diff(cand)
+    if diffs.size and not np.allclose(diffs, diffs[0], rtol=1e-5, atol=1e-10):
+        return np.asarray([float(lambd_default)], dtype=float)
+    return cand
+
+
+def build_tikhonov_validated_slow_solver(
+    time_s,
+    ca,
+    lambda_candidates=None,
+    *,
+    auto_lambda=settings.AUTO_LAMBDA,
+    auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
+    lambd_default=settings.TIKHONOV_LAMBDA,
+    tissue_density=None,
+    hematocrit=None,
+    plasma_derived_aif=None,
+    **_ignored,
+):
+    """Return a validated (L-curve) spline+Tikhonov solver with a legacy API.
+
+    Returns a callable `solver(Ct_mat, offsets_s=None)` that produces an object
+    with `.cbf_ml_per_100g_min`, `.mtt_s`, `.cth_s`, `.lambda_opt`, `.cbv_vd`.
+
+    This matches the attribute-based access patterns in older code paths.
+    """
+
+    lam = _resolve_lambda_candidates(
+        lambda_candidates=lambda_candidates,
+        auto_lambda=bool(auto_lambda),
+        auto_lambda_value=auto_lambda_value,
+        lambd_default=lambd_default,
+    )
+    core = build_spline_lcurve_deconvolution_solver(np.asarray(time_s, dtype=float), np.asarray(ca, dtype=float), lam)
+
+    def _solve(Ct_mat, offsets_s=None):
+        # offsets_s is accepted for API compatibility; validated spline solver
+        # does not currently apply per-curve sub-frame shifting in this wrapper.
+        _ = offsets_s
+        sol = core(Ct_mat)
+        cbf = np.asarray(sol.get("cbf_ml_per_100g_min"), dtype=float)
+        mtt = np.asarray(sol.get("mtt_s"), dtype=float)
+        cth = np.asarray(sol.get("cth_s"), dtype=float)
+        lam_opt = np.asarray(sol.get("lambda_opt"), dtype=float)
+        cbv_vd = cbf * mtt / 60.0
+
+        return SimpleNamespace(
+            cbf_ml_per_100g_min=cbf,
+            mtt_s=mtt,
+            cth_s=cth,
+            lambda_opt=lam_opt,
+            cbv_vd=cbv_vd,
+            residue=sol.get("residue"),
+            f_internal=sol.get("f_internal"),
+        )
+
+    return _solve
+
+
+def model_tikhonov_validated_tuple(
+    C_a,
+    C_t,
+    t,
+    *,
+    offsets_s=0.0,
+    return_residue: bool = False,
+    auto_lambda=settings.AUTO_LAMBDA,
+    auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
+    lambd_default=settings.TIKHONOV_LAMBDA,
+):
+    """Legacy tuple API used by plotting/QA paths.
+
+    Returns:
+    - when `return_residue=False`: `(Ki, vp, SD_Ki, fit_curve)`
+    - when `return_residue=True`: `(Ki, vp, SD_Ki, fit_curve, impulse, cbf)`
+
+    The validated deconvolution path primarily produces perfusion metrics.
+    Ki/vp are not estimated here and are returned as NaN.
+    """
+
+    t_use = np.asarray(t, dtype=float).reshape(-1)
+    ca_use = np.asarray(C_a, dtype=float).reshape(-1)
+    ct_use = np.asarray(C_t, dtype=float).reshape(-1)
+    n = int(min(t_use.size, ca_use.size, ct_use.size))
+    if n < 2:
+        if return_residue:
+            return (float("nan"), float("nan"), float("nan"), None, None, float("nan"))
+        return (float("nan"), float("nan"), float("nan"), None)
+
+    t_use = t_use[:n]
+    ca_use = ca_use[:n]
+    ct_use = ct_use[:n]
+
+    solver = build_tikhonov_validated_slow_solver(
+        t_use,
+        ca_use,
+        lambda_candidates=None,
+        auto_lambda=bool(auto_lambda),
+        auto_lambda_value=auto_lambda_value,
+        lambd_default=lambd_default,
+        tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
+        hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
+        plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
+    )
+    sol = solver(ct_use.reshape(-1, 1), offsets_s=offsets_s)
+
+    cbf = float(np.asarray(sol.cbf_ml_per_100g_min, dtype=float).reshape(-1)[0])
+
+    impulse = None
+    try:
+        residue = sol.residue
+        f_internal = sol.f_internal
+        if residue is not None and f_internal is not None:
+            residue0 = np.asarray(residue, dtype=float)
+            fin0 = float(np.asarray(f_internal, dtype=float).reshape(-1)[0])
+            if residue0.ndim == 2:
+                residue0 = residue0[:, 0]
+            if residue0.size and np.isfinite(fin0):
+                impulse = residue0 * fin0
+    except Exception:
+        impulse = None
+
+    Ki = float("nan")
+    vp = float("nan")
+    SD_Ki = float("nan")
+    fit_curve = None
+
+    if return_residue:
+        return (Ki, vp, SD_Ki, fit_curve, impulse, cbf)
+    return (Ki, vp, SD_Ki, fit_curve)
+
+
+# Back-compat alias used throughout this module.
+_pbrain_tqdm = _tqdm
+
+
+def export_brain_concentration_4d(
+    *,
+    data_4d: np.ndarray,
+    T1_matrix: np.ndarray,
+    M0_matrix: np.ndarray,
+    brain_mask: np.ndarray,
+    dce_path: str,
+    analysis_directory: str,
+    ref_affine,
+    ref_header,
+    flip_angle_deg=None,
+    output_path: str | None = None,
+) -> str:
+    """Write a brain-masked voxelwise concentration 4D NIfTI.
+
+    Intended to run *before* PK fitting so downstream PK stages can reuse Ct.
+    Uses TurboFLASH conversion (validator parity) in batched form.
+    """
+
+    import math
+
+    from utils.loading import resolve_turboflash_ti_s
+    from utils.plotting import turboflash
+
+    if output_path is None:
+        output_path = os.path.join(
+            analysis_directory,
+            "CTC Data",
+            "Tissue",
+            "brain_concentration_4d.nii.gz",
+        )
+
+    # Hardcoded behaviour: always (re)generate the Ct map.
+    # This is intentionally unconditional for p-brain-web stage runners.
+
+    brain_mask = np.asarray(brain_mask).astype(bool)
+    idx = np.argwhere(brain_mask)
+    if idx.size == 0:
+        raise ValueError("Brain mask is empty; cannot export concentration map.")
+
+    batch_voxels = int(os.environ.get("P_BRAIN_CONCENTRATION_BATCH_VOXELS") or 20000)
+    batch_voxels = max(256, batch_voxels)
+    baseline_frames = os.environ.get("P_BRAIN_CONCENTRATION_BASELINE_FRAMES")
+    if baseline_frames is None or str(baseline_frames).strip() == "":
+        baseline_frames = int(getattr(settings, "TURBOFLASH_BASELINE_FRAMES", 10) or 10)
+    else:
+        baseline_frames = int(baseline_frames)
+    baseline_frames = max(1, baseline_frames)
+
+    ti_s = resolve_turboflash_ti_s(dce_path, default=0.12)
+    td_ms = float(ti_s) * 1e3
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    mm_path = output_path + ".memmap"
+    ctc4d = np.memmap(mm_path, dtype=np.float32, mode="w+", shape=data_4d.shape)
+
+    total_chunks = int(math.ceil(idx.shape[0] / float(batch_voxels)))
+    for chunk_i in _pbrain_tqdm(range(total_chunks), desc="Loading brain Ct (voxelwise)"):
+        start = chunk_i * batch_voxels
+        chunk = idx[start : start + batch_voxels]
+        if chunk.size == 0:
+            continue
+        xs, ys, zs = chunk[:, 0], chunk[:, 1], chunk[:, 2]
+        S = np.asarray(data_4d[xs, ys, zs, :], dtype=np.float32)
+        T1 = np.asarray(T1_matrix[xs, ys, zs], dtype=np.float32)
+        M0 = np.asarray(M0_matrix[xs, ys, zs], dtype=np.float32)[:, None]
+
+        Ct = turboflash(
+            S,
+            T1,
+            TD=td_ms,
+            m0=M0,
+            prints=False,
+            flip_angle_deg=flip_angle_deg,
+            ctc_model="turboflash",
+            baseline_frames=baseline_frames,
+        ).astype(np.float32)
+
+        ctc4d[xs, ys, zs, :] = Ct
+
+    try:
+        ctc4d.flush()
+    except Exception:
+        pass
+
+    header = ref_header.copy() if ref_header is not None else None
+    if header is not None:
+        try:
+            header.set_data_dtype(np.float32)
+        except Exception:
+            pass
+    out_img = nib.Nifti1Image(ctc4d, affine=ref_affine, header=header)
+    nib.save(out_img, output_path)
+
+    try:
+        del ctc4d
+    except Exception:
+        pass
+    try:
+        if os.path.exists(mm_path):
+            os.remove(mm_path)
+    except Exception:
+        pass
+
+    return output_path
 
 
 logger = logging.getLogger(__name__)
@@ -311,6 +585,9 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
         solver = build_tikhonov_validated_slow_solver(
             t_use,
             C_a_use,
+            auto_lambda=bool(auto_lambda),
+            auto_lambda_value=auto_lambda_value,
+            lambd_default=lambd_default,
             tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
             hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
             plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
@@ -344,20 +621,18 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
     residue = None
     h = None
     try:
-        _ki, _vp, _sd, _fit, impulse, _cbf2 = model_tikhonov_validated_tuple(
-            C_a_use,
-            C_t_use,
-            t_use,
-            offsets_s=0.0,
-            return_residue=True,
-        )
-        impulse = np.asarray(impulse, dtype=float).reshape(-1) if impulse is not None else None
-        if impulse is not None and impulse.size:
-            i0 = float(impulse[0])
-            if np.isfinite(i0) and i0 > 0:
-                residue = impulse / i0
-            else:
-                residue = np.full_like(impulse, np.nan, dtype=float)
+        # The validated spline solver provides residue(t) directly.
+        # Recover a non-normalized impulse response as: impulse = residue * f_internal.
+        _res = sol.residue
+        _fin = sol.f_internal
+        if _res is not None and _fin is not None:
+            _res = np.asarray(_res, dtype=float)
+            if _res.ndim == 2:
+                _res = _res[:, 0]
+            fin0 = float(np.asarray(_fin, dtype=float).reshape(-1)[0])
+            if _res.size and np.isfinite(fin0):
+                residue = _res
+                impulse = _res * fin0
     except Exception:
         impulse = None
         residue = None
@@ -937,10 +1212,17 @@ def compute_Ki_from_atlas(
             cth_img = annotate_cth_mtt_header(nib.Nifti1Image(CTH_map, affine))
             nib.save(cth_img, os.path.join(output_directory, 'CTH_tikhonov_map_atlas.nii.gz'))
 
-    # Save numerical results to JSON
-    json_path = os.path.join(output_directory, 'Ki_values_atlas.json')
-    with open(json_path, 'w') as jf:
-        json.dump(atlas_results, jf, indent=4)
+    # Save numerical results to JSON.
+    # p-brain-web expects model-specific filenames; we write both while keeping
+    # the legacy name for compatibility.
+    json_paths = [
+        os.path.join(output_directory, 'Ki_values_atlas.json'),
+        os.path.join(output_directory, 'Ki_values_atlas_patlak.json'),
+        os.path.join(output_directory, 'Ki_values_atlas_tikhonov.json'),
+    ]
+    for json_path in json_paths:
+        with open(json_path, 'w') as jf:
+            json.dump(atlas_results, jf, indent=4)
 
     print("Done. Wrote:")
     print(f"  cth_mtt_method={settings.CTH_MTT_METHOD}")
@@ -958,6 +1240,42 @@ def compute_Ki_from_atlas(
 
 def construct_convolution_matrix(C_a, delta_t):
     return km_construct_convolution_matrix(C_a, delta_t)
+
+
+def _json_finite_to_none(obj):
+    """Convert NaN/Inf floats to None for strict JSON output."""
+    try:
+        import numpy as _np
+    except Exception:  # pragma: no cover
+        _np = None
+
+    if obj is None:
+        return None
+
+    # Numpy scalars
+    if _np is not None and isinstance(obj, _np.generic):
+        try:
+            obj = obj.item()
+        except Exception:
+            obj = float(obj)
+
+    if isinstance(obj, float):
+        try:
+            return obj if np.isfinite(obj) else None
+        except Exception:
+            return obj
+
+    if isinstance(obj, dict):
+        return {k: _json_finite_to_none(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [_json_finite_to_none(v) for v in obj]
+
+    # Avoid leaking arrays into JSON; convert to list if encountered.
+    if _np is not None and isinstance(obj, _np.ndarray):
+        return _json_finite_to_none(obj.tolist())
+
+    return obj
 
 
 _PK_EXCLUDED_ATLAS_LABEL_IDS = {
@@ -1059,6 +1377,10 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
     os.makedirs(os.path.join(image_directory, 'AI', 'Segmentation'), exist_ok=True)
     plt.savefig(os.path.join(image_directory, 'AI', 'Segmentation', 'T2_WM_GM_masks.png'))
     if not turbo_mode:
+        def on_esc(event):
+            if getattr(event, "key", None) == "escape":
+                plt.close(getattr(event, "canvas", None).figure if getattr(event, "canvas", None) else fig)
+
         plt.gcf().canvas.mpl_connect('key_press_event', on_esc)
         close_plot_after_delay(3, fig)
         plt.show()
@@ -2396,6 +2718,45 @@ def compute_and_plot_ctcs_median(
             ref_affine = ref_img.affine
         if ref_header is None:
             ref_header = ref_img.header.copy()
+
+    # ------------------------------------------------------------------
+    # Pre-PK output: voxelwise brain concentration map (segmentation-masked).
+    # ------------------------------------------------------------------
+    try:
+        brain_mask_dce = None
+        for m in (
+            wm_mask_dce,
+            cortical_gm_mask_dce,
+            subcortical_gm_mask_dce,
+            gm_brainstem_mask_dce,
+            gm_cerebellum_mask_dce,
+            wm_cerebellum_mask_dce,
+            wm_cc_mask_dce,
+        ):
+            if m is None:
+                continue
+            mm = np.asarray(m).astype(bool)
+            brain_mask_dce = mm if brain_mask_dce is None else (brain_mask_dce | mm)
+
+        if brain_mask_dce is None or not np.any(brain_mask_dce):
+            # Fallback when segmentation isn't available: treat finite non-zero
+            # baseline signal as "brain".
+            baseline_3d = np.nanmean(np.asarray(data_4d, dtype=float), axis=3)
+            brain_mask_dce = np.isfinite(baseline_3d) & (baseline_3d != 0)
+
+        export_brain_concentration_4d(
+            data_4d=np.asarray(data_4d),
+            T1_matrix=np.asarray(T1_matrix),
+            M0_matrix=np.asarray(M0_matrix),
+            brain_mask=brain_mask_dce,
+            dce_path=dce_path,
+            analysis_directory=analysis_directory,
+            ref_affine=ref_affine,
+            ref_header=ref_header,
+            flip_angle_deg=flip_angle_deg,
+        )
+    except Exception as exc:
+        logger.warning("Failed to export voxelwise brain concentration map: %s", exc)
 
     # ------------------------------------------------------------------
     # Voxelwise-only mode: skip segmentation/tissue masks entirely.
@@ -3984,32 +4345,46 @@ def compute_and_plot_ctcs_median(
 
     json_file_path_t1m0 = os.path.join(analysis_directory, "T1_M0_values_median_total.json")
     with open(json_file_path_t1m0, "w") as jf:
-        json.dump(t1_m0_results, jf, indent=4)
+        safe = _json_finite_to_none(t1_m0_results)
+        try:
+            json.dump(safe, jf, indent=4, allow_nan=False)
+        except ValueError:
+            json.dump(safe, jf, indent=4)
 
-    # Write JSON
-    json_file_path_total = os.path.join(analysis_directory, "AI_values_median_total.json")
-    with open(json_file_path_total, "w") as jf:
-        extra_keys = [
-            "cth_mtt_method", "MTT_tikh_s", "CTH_tikh_s", "MTT_gamma_s", "CTH_gamma_s",
-            "gamma_a", "gamma_b", "gamma_t0_s", "gamma_F_ml_per_100g_min", "gamma_E",
-            "gamma_shape_ratio", "gamma_residual_norm", "gamma_iterations", "gamma_success",
-        ]
-        payload = {
-            t + "_median_total": {
-                "Ki":            d["Ki"],
-                "SD_Ki":         d["SD_Ki"],
-                "lambda":        d["lam"],
-                "CBF_tikhonov":  d["CBF_tikhonov"],
-                "MTT_tikhonov":  d["MTT_tikhonov"],
-                "CTH_tikhonov":  d["CTH_tikhonov"],
-                "voxel_count":   d["vox"],
-                **{k: d[k] for k in extra_keys if k in d},
-            }
-            for t, d in tissue_results.items()
-            if isinstance(d, dict) and {"Ki", "SD_Ki", "lam", "CBF_tikhonov", "MTT_tikhonov", "CTH_tikhonov", "vox"} <= d.keys()
+    # Write JSON (legacy + model-specific names expected by p-brain-web).
+    extra_keys = [
+        "cth_mtt_method", "MTT_tikh_s", "CTH_tikh_s", "MTT_gamma_s", "CTH_gamma_s",
+        "gamma_a", "gamma_b", "gamma_t0_s", "gamma_F_ml_per_100g_min", "gamma_E",
+        "gamma_shape_ratio", "gamma_residual_norm", "gamma_iterations", "gamma_success",
+    ]
+    payload = {
+        t + "_median_total": {
+            "Ki":            d["Ki"],
+            "SD_Ki":         d["SD_Ki"],
+            "lambda":        d["lam"],
+            "CBF_tikhonov":  d["CBF_tikhonov"],
+            "MTT_tikhonov":  d["MTT_tikhonov"],
+            "CTH_tikhonov":  d["CTH_tikhonov"],
+            "voxel_count":   d["vox"],
+            **{k: d[k] for k in extra_keys if k in d},
         }
-        payload["cth_mtt_method"] = settings.CTH_MTT_METHOD
-        json.dump(payload, jf, indent=4)
+        for t, d in tissue_results.items()
+        if isinstance(d, dict) and {"Ki", "SD_Ki", "lam", "CBF_tikhonov", "MTT_tikhonov", "CTH_tikhonov", "vox"} <= d.keys()
+    }
+    payload["cth_mtt_method"] = settings.CTH_MTT_METHOD
+
+    json_paths = [
+        os.path.join(analysis_directory, "AI_values_median_total.json"),
+        os.path.join(analysis_directory, "AI_values_median_total_tikhonov.json"),
+        os.path.join(analysis_directory, "AI_values_median_total_patlak.json"),
+    ]
+    for json_file_path_total in json_paths:
+        with open(json_file_path_total, "w") as jf:
+            safe = _json_finite_to_none(payload)
+            try:
+                json.dump(safe, jf, indent=4, allow_nan=False)
+            except ValueError:
+                json.dump(safe, jf, indent=4)
 
     # ----------------------------------------------------------------------------- 
     # 5) Create one PNG per tissue
@@ -4425,6 +4800,7 @@ def tissue_function_AI(
                 )
                 if not os.path.isfile(segmentation_path):
                     segmentation_path = None
+                from utils.montage import generate_parametric_montages
                 generate_parametric_montages(
                     analysis_directory,
                     image_directory,
