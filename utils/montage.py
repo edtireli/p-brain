@@ -770,6 +770,10 @@ PROJECTION_TARGETS: Dict[str, str] = {
     "tensor_residual_map_atlas": "tensor_residual_projection_parcel",
 }
 
+# FreeSurfer cerebellum labels excluded from projected parcel means
+# (cerebellum WM Ki is at the noise floor and shows artefactual L/R asymmetry).
+_CEREBELLUM_LABELS: frozenset[int] = frozenset({7, 8, 46, 47})
+
 
 def _strip_nii_suffix(name: str) -> str:
     if name.endswith(".nii.gz"):
@@ -1598,6 +1602,22 @@ def generate_projection_montages(
         except Exception as exc:
             print(f"[projection] Failed to render {out_path}: {exc}")
 
+        # --- Save projected volume as NIfTI alongside the montage PNG ---
+        try:
+            png_name = os.path.basename(out_path)
+            stem = png_name.replace(".png", "")
+            nii_name = stem + "_projected.nii.gz"
+            nii_path = os.path.join(analysis_directory, nii_name)
+            proj_img = nib.Nifti1Image(
+                arr.astype(np.float32),
+                np.array(atlas_img.affine, copy=True),
+                atlas_img.header.copy() if atlas_img.header is not None else None,
+            )
+            nib.save(proj_img, nii_path)
+            print(f"[projection] Saved NIfTI {nii_name}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[projection] Failed to save NIfTI for {stem}: {exc}")
+
     if not generated_any:
         print("[projection] No atlas maps found for projection rendering.")
 
@@ -1611,6 +1631,8 @@ def _projection_from_label_means(
     filled_any = False
 
     for label, value in label_means.items():
+        if int(label) in _CEREBELLUM_LABELS:
+            continue
         mask = atlas_data == int(label)
         if not np.any(mask):
             continue
@@ -1653,6 +1675,8 @@ def _parcel_label_means(
 
     label_means: Dict[int, float] = {}
     for label in atlas_labels:
+        if int(label) in _CEREBELLUM_LABELS:
+            continue
         mask = atlas_for_map == int(label)
         if not np.any(mask):
             continue
@@ -2728,6 +2752,8 @@ def _parcel_mean_projection(
 
     projected = np.full_like(data, np.nan, dtype=np.float32)
     for label in atlas_labels:
+        if int(label) in _CEREBELLUM_LABELS:
+            continue
         mask = atlas_for_map == label
         if not np.any(mask):
             continue

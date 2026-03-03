@@ -1397,9 +1397,11 @@ def compute_fa(
 
     brain_union_mask = brain_mask if brain_mask is not None else _brain_union_mask(masks)
     if brain_union_mask is not None:
-        mean_fa = float(np.nanmean(np.where(brain_union_mask, fa, np.nan)))
+        valid = np.asarray(brain_union_mask, dtype=bool) & signal_mask & np.isfinite(fa)
+        mean_fa = float(np.mean(fa[valid], dtype=np.float32)) if np.any(valid) else float("nan")
     else:
-        mean_fa = float(np.nanmean(fa))
+        valid = signal_mask & np.isfinite(fa)
+        mean_fa = float(np.mean(fa[valid], dtype=np.float32)) if np.any(valid) else float("nan")
     wm_union_mask = _union_of_tissues(masks, _WM_TISSUES)
     with open(os.path.join(diffusion_dir, "fa_mean.txt"), "w") as f:
         f.write(f"{mean_fa}\n")
@@ -1407,14 +1409,23 @@ def compute_fa(
 
     if "white_matter" in masks:
         wm_mask = np.asarray(masks["white_matter"][0], dtype=bool)
-        wm_values = fa[wm_mask]
-        if wm_values.size:
-            mean_fa_wm = float(np.nanmean(wm_values))
+
+        wm_valid = wm_mask & signal_mask & np.isfinite(fa)
+        wm_n = int(wm_valid.sum())
+
+        if wm_n > 0:
+            mean_fa_wm = float(np.mean(fa[wm_valid], dtype=np.float32))
             with open(os.path.join(diffusion_dir, "fa_mean_wm.txt"), "w") as f:
                 f.write(f"{mean_fa_wm}\n")
-            print(f"[!] Mean WM FA: {mean_fa_wm:.4f}")
 
-            fa_wm = np.where(wm_mask, fa, np.nan)
+            print(f"[!] Mean WM FA (WM∩signal): {mean_fa_wm:.4f} (n={wm_n})")
+        else:
+            print("[!] WM mask present but no valid WM voxels after signal/finite filtering")
+            print(f"[!] Mean WM FA: {mean_fa_wm:.4f}")
+            bad = wm_mask & (~signal_mask)
+            print(f"[dbg] WM outside signal: {int(bad.sum())} / {int(wm_mask.sum())}")
+
+            fa_wm = np.where(wm_mask & signal_mask & np.isfinite(fa), fa, np.nan)
             fa_wm_img = nib.Nifti1Image(
                 fa_wm.astype(np.float32), img.affine, img.header
             )
