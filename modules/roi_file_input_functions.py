@@ -9,7 +9,22 @@ import utils.settings as settings
 from utils.loading import build_time_points_s, resolve_dce_time_step_s, load_dce_4d
 
 
-def _load_roi_voxels_by_slice(roi_dir: Path) -> dict[int, np.ndarray]:
+def _load_roi_voxels_by_slice(
+    roi_dir: Path,
+    *,
+    native_dim0: int | None = None,
+) -> dict[int, np.ndarray]:
+    """Load ROI voxel arrays per slice from ``ROI_voxels_slice_*.npy`` files.
+
+    The ``.npy`` files are stored in p-brain's rotated in-plane frame
+    (after ``np.rot90(k=-1, axes=(0,1))``).  When *native_dim0* (the raw
+    nibabel shape[0]) is supplied, the coordinates are converted back to the
+    native nibabel frame so that ``_save_roi_outputs`` can correctly index
+    the un-rotated ``dce4d`` array:
+
+        rot90(k=-1) on (X, Y) → (Y, X):  B[r,c] = A[X-1-c, r]
+        Inverse:  native_row = X-1-c_rot,  native_col = r_rot
+    """
     voxels_by_slice: dict[int, np.ndarray] = {}
     if not roi_dir.exists() or not roi_dir.is_dir():
         return voxels_by_slice
@@ -32,6 +47,15 @@ def _load_roi_voxels_by_slice(roi_dir: Path) -> dict[int, np.ndarray]:
         vox = arr[:, :2].astype(int, copy=False)
         if vox.size == 0:
             continue
+
+        # Convert rotated frame → native nibabel frame when shape is known.
+        if native_dim0 is not None:
+            rot_r = vox[:, 0]
+            rot_c = vox[:, 1]
+            native_rows = (native_dim0 - 1 - rot_c).astype(int)
+            native_cols = rot_r.astype(int)
+            vox = np.stack([native_rows, native_cols], axis=1)
+
         voxels_by_slice[int(z)] = vox
 
     return voxels_by_slice
@@ -96,6 +120,10 @@ def input_function_file(analysis_directory, nifti_directory, image_directory, fi
         np.save(time_path, time_points_s)
 
     # Load ROI voxel lists.
+    # The .npy files are in p-brain's rotated frame; pass the native dim-0
+    # size so _load_roi_voxels_by_slice can convert back to native indices
+    # for correct indexing into dce4d.
+    native_dim0 = int(dce4d.shape[0])
     roi_root = Path(analysis_directory) / "ROI Data"
     if not roi_root.exists():
         raise FileNotFoundError(f"Missing ROI Data directory: {roi_root}")
@@ -109,7 +137,9 @@ def input_function_file(analysis_directory, nifti_directory, image_directory, fi
         roi_type = roi_type_dir.name
         for subtype_dir in sorted([d for d in roi_type_dir.iterdir() if d.is_dir()]):
             roi_subtype = subtype_dir.name
-            voxels_by_slice = _load_roi_voxels_by_slice(subtype_dir)
+            voxels_by_slice = _load_roi_voxels_by_slice(
+                subtype_dir, native_dim0=native_dim0,
+            )
             if not voxels_by_slice:
                 continue
 

@@ -1399,6 +1399,16 @@ def segmentation(
 ):
     method = (method or "fastsurfer").lower()
 
+    # Resolve FreeSurfer license path once for all methods that need it.
+    _fs_license = os.environ.get("FS_LICENSE", "").strip()
+    _fs_home = os.environ.get("FREESURFER_HOME", "").strip()
+    if not _fs_license and _fs_home:
+        for _lic_name in ("license.txt", ".license", "license.dat"):
+            _lic_candidate = os.path.join(_fs_home, _lic_name)
+            if os.path.isfile(_lic_candidate):
+                _fs_license = _lic_candidate
+                break
+
     if method == "fastsurfer":
         # Check if FastSurfer is installed
         if not os.path.exists(fastsurfer_path):
@@ -1429,17 +1439,31 @@ def segmentation(
                 print("Rerunning FastSurfer segmentation...")
             else:
                 print("Segmentation output not found, running FastSurfer...")
+            # Build env-export preamble so that FSL and FreeSurfer vars survive
+            # the shell=True subprocess even when launched from a GUI host.
+            _env_exports = ""
+            _fsldir = os.environ.get("FSLDIR", "").strip()
+            _fslout = os.environ.get("FSLOUTPUTTYPE", "NIFTI_GZ")
+            if _fsldir:
+                _env_exports += f"export FSLDIR={_fsldir} FSLOUTPUTTYPE={_fslout} && "
+            if _fs_home:
+                _env_exports += f"export FREESURFER_HOME={_fs_home} && "
+            _lic_flag = f"--fs_license {_fs_license} " if _fs_license else ""
             if apple_metal:
                 command = (
+                    f"{_env_exports}"
                     f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
                     f"{fastsurfer_path} --device mps "
+                    f"{_lic_flag}"
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
                 )
             else:
                 command = (
+                    f"{_env_exports}"
                     f"{fastsurfer_path} "
+                    f"{_lic_flag}"
                     f"--t1 {t1_path} "
                     f"--sid {sid} "
                     f"--sd {output_dir}"
@@ -1449,8 +1473,10 @@ def segmentation(
                 print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
                 if apple_metal:
                     command = (
+                        f"{_env_exports}"
                         f"export PYTORCH_ENABLE_MPS_FALLBACK=1 && "
                         f"{fastsurfer_path} --device mps "
+                        f"{_lic_flag}"
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "
@@ -1459,7 +1485,9 @@ def segmentation(
                     )
                 else:
                     command = (
+                        f"{_env_exports}"
                         f"{fastsurfer_path} "
+                        f"{_lic_flag}"
                         f"--t1 {t1_path} "
                         f"--vox_size 1 "
                         f"--sid {sid} "

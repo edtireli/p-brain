@@ -42,8 +42,12 @@ def _getenv_bool(name: str, *, default: bool) -> bool:
     return default
 
 
-def _cleanup_input_function_artifacts(analysis_directory: str) -> None:
-    """Remove prior AIF/VIF + TSCC artifacts so current run selects only new outputs."""
+def _cleanup_input_function_artifacts(analysis_directory: str, *, preserve_roi_data: bool = False) -> None:
+    """Remove prior AIF/VIF + TSCC artifacts so current run selects only new outputs.
+
+    When *preserve_roi_data* is ``True`` the ``ROI Data`` directory is kept intact.
+    This is required for file-ROI mode where user-saved voxels live there.
+    """
 
     root = Path(analysis_directory)
     targets = [
@@ -52,10 +56,11 @@ def _cleanup_input_function_artifacts(analysis_directory: str) -> None:
         Path("ITC Data") / "Artery",
         Path("ITC Data") / "Vein",
         Path("TSCC Data"),
-        Path("ROI Data"),
         Path("Frame Data"),
         Path("ROI NIfTI"),
     ]
+    if not preserve_roi_data:
+        targets.append(Path("ROI Data"))
     for rel in targets:
         p = root / rel
         try:
@@ -80,14 +85,20 @@ def run_input_function(
 ):
     """Dispatch input-function extraction based on ROI method.
 
+    - ROI_METHOD=file -> load user-provided ROI voxel lists from files.
     - ROI_METHOD=deterministic -> deterministic vessel ROI extraction (no AI model import).
     - ROI_METHOD=ai -> AI model-based input function extraction.
     """
 
-    if _getenv_bool("P_BRAIN_INPUT_FUNCTIONS_PREFER_NEW", default=True):
-        _cleanup_input_function_artifacts(str(analysis_directory))
-
     roi_method = (getattr(settings, "ROI_METHOD", "ai") or "ai").strip().lower()
+
+    if _getenv_bool("P_BRAIN_INPUT_FUNCTIONS_PREFER_NEW", default=True):
+        # In file-ROI mode the user has already saved ROI voxels to ROI Data;
+        # we must preserve that directory.  Clean up derived artifacts only.
+        _cleanup_input_function_artifacts(
+            str(analysis_directory),
+            preserve_roi_data=(roi_method == "file"),
+        )
 
     def _has_any_npy(path: Path) -> bool:
         try:
