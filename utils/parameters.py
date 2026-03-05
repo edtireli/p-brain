@@ -132,6 +132,83 @@ def ordered_diffusion_filenames() -> tuple[str, ...]:
 
 # Global parameters: 
 
+
+def get_freesurfer_version(fs_home: Optional[str] = None) -> Optional[str]:
+    """Return the FreeSurfer version string (e.g. '7.4.1' or '8.1.0').
+
+    Resolution order:
+    1. ``build-stamp.txt`` inside *fs_home*.
+    2. ``recon-all --version`` on PATH.
+    Returns ``None`` when FreeSurfer cannot be found.
+    """
+    import shutil
+    import subprocess as _sp
+
+    if not fs_home:
+        fs_home = os.environ.get("FREESURFER_HOME", "").strip()
+
+    # Try build-stamp.txt first (fastest, no subprocess)
+    if fs_home:
+        stamp = os.path.join(fs_home, "build-stamp.txt")
+        if os.path.isfile(stamp):
+            try:
+                with open(stamp, "r") as fh:
+                    text = fh.read().strip()
+                # e.g. "freesurfer-macOS-darwin_x86_64-7.4.1-20230614-7eb8460"
+                m = re.search(r"(\d+\.\d+\.\d+)", text)
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+
+    # Fallback: recon-all --version
+    recon = shutil.which("recon-all")
+    if recon:
+        try:
+            r = _sp.run(
+                [recon, "--version"],
+                stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                text=True, timeout=10,
+            )
+            m = re.search(r"(\d+\.\d+\.\d+)", r.stdout or "")
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
+    return None
+
+
+def _resolve_segmentation_method(explicit: Optional[str] = None,
+                                  fs_home: Optional[str] = None) -> str:
+    """Choose the right segmentation backend.
+
+    Priority:
+    1. If *explicit* is set (user override via settings) use that directly.
+    2. Default is ``"fastsurfer"``.
+
+    When the caller passes ``"freesurfer"`` the function auto-selects the
+    concrete FreeSurfer tool:
+    - FreeSurfer >= 8.0 → ``"synthseg"``  (mri_synthseg)
+    - FreeSurfer <  8.0 → ``"recon-all"``
+    """
+    method = (explicit or "fastsurfer").strip().lower()
+
+    if method == "freesurfer":
+        ver = get_freesurfer_version(fs_home)
+        if ver:
+            try:
+                major = int(ver.split(".")[0])
+            except (ValueError, IndexError):
+                major = 0
+            method = "synthseg" if major >= 8 else "recon-all"
+        else:
+            # Can't determine version – assume old install
+            method = "recon-all"
+
+    return method
+
+
 def global_parameters():
     t1_mode = getattr(settings, "T1_FIT_MODE", "auto")
     if t1_mode not in {"auto", "ir", "vfa", "none"}:
@@ -145,7 +222,14 @@ def global_parameters():
     apple_metal = True # Enable if running on apple M1/M2/M3...
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
     RERUN_SEGMENTATION = False  # Force rerun of FastSurfer segmentation
-    SEGMENTATION_METHOD = "fastsurfer"  # Choose segmentation tool (default FastSurfer)
+
+    # Resolve segmentation method.  An explicit override stored in settings
+    # takes priority; otherwise default to fastsurfer.  When the value is
+    # "freesurfer" it is further resolved to "synthseg" (FS >= 8) or
+    # "recon-all" (FS < 8) by _resolve_segmentation_method.
+    raw_method = getattr(settings, "SEGMENTATION_METHOD", "fastsurfer")
+    SEGMENTATION_METHOD = _resolve_segmentation_method(raw_method)
+
     COMPUTE_FA = False  # Compute fractional anisotropy from DWI
     return (
         IsVFA,

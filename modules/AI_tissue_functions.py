@@ -1471,8 +1471,133 @@ def segmentation(
                     raise RuntimeError("FastSurfer segmentation failed even with vox_size 1")
         else:
             print("Segmentation file already exists, skipping FastSurfer segmentation.")
+
+    elif method == "synthseg":
+        # ------------------------------------------------------------------ #
+        #  SynthSeg  (FreeSurfer >= 8.0)
+        #  ``mri_synthseg`` produces a whole-brain parcellation from a single
+        #  T1w input without atlas registration.  The output is a standard
+        #  FreeSurfer-compatible aseg volume.
+        # ------------------------------------------------------------------ #
+        import shutil as _shutil
+        synthseg_bin = _shutil.which("mri_synthseg")
+        if not synthseg_bin:
+            fs_home = os.environ.get("FREESURFER_HOME", "")
+            candidate = os.path.join(fs_home, "bin", "mri_synthseg") if fs_home else ""
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                synthseg_bin = candidate
+        if not synthseg_bin:
+            raise FileNotFoundError(
+                "mri_synthseg not found on PATH or under FREESURFER_HOME. "
+                "SynthSeg requires FreeSurfer 8.0 or later."
+            )
+
+        # SynthSeg writes directly to a NIfTI / mgz output file.
+        # We place it so it matches the path the rest of the pipeline expects.
+        mri_dir = os.path.dirname(seg_mgz_path)
+        os.makedirs(mri_dir, exist_ok=True)
+
+        if rerun or not os.path.exists(seg_mgz_path):
+            if os.path.exists(seg_mgz_path):
+                print("Rerunning SynthSeg segmentation...")
+            else:
+                print("Segmentation output not found, running SynthSeg...")
+
+            command = (
+                f"{synthseg_bin} "
+                f"--i {t1_path} "
+                f"--o {seg_mgz_path} "
+                f"--robust "
+                f"--vol {os.path.join(mri_dir, 'synthseg_volumes.csv')} "
+                f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
+            )
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    f"SynthSeg segmentation failed (exit {result.returncode}): "
+                    f"{err[-800:]}"
+                )
+            if not os.path.exists(seg_mgz_path):
+                raise RuntimeError(
+                    "SynthSeg completed but the output file was not created: "
+                    f"{seg_mgz_path}"
+                )
+            print("SynthSeg segmentation completed.")
+        else:
+            print("Segmentation file already exists, skipping SynthSeg.")
+
+    elif method == "recon-all":
+        # ------------------------------------------------------------------ #
+        #  recon-all  (FreeSurfer < 8.0)
+        #  Classic full cortical reconstruction.  We only run the
+        #  ``-autorecon1`` stage (skull-strip + intensity norm) and
+        #  ``-autorecon2`` (segmentation / parcellation) to get the
+        #  aparc+aseg volume that the rest of the pipeline needs.
+        # ------------------------------------------------------------------ #
+        import shutil as _shutil
+        recon_bin = _shutil.which("recon-all")
+        if not recon_bin:
+            raise FileNotFoundError(
+                "recon-all not found on PATH.  Ensure FreeSurfer is "
+                "installed and FREESURFER_HOME is sourced."
+            )
+
+        # recon-all outputs to $SUBJECTS_DIR/sid.  The aseg file we need is
+        # aparc.DKTatlas+aseg.mgz (or aparc+aseg.mgz on older versions).
+        subjects_dir = output_dir
+        aseg_candidate_names = [
+            os.path.join(subjects_dir, sid, "mri", "aparc.DKTatlas+aseg.mgz"),
+            os.path.join(subjects_dir, sid, "mri", "aparc+aseg.mgz"),
+        ]
+
+        def _recon_output_exists():
+            return any(os.path.exists(p) for p in aseg_candidate_names)
+
+        if rerun or not _recon_output_exists():
+            if _recon_output_exists():
+                print("Rerunning recon-all segmentation...")
+            else:
+                print("Segmentation output not found, running recon-all...")
+
+            command = (
+                f"{recon_bin} "
+                f"-i {t1_path} "
+                f"-s {sid} "
+                f"-sd {subjects_dir} "
+                f"-all"
+            )
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            if result.returncode != 0 and not _recon_output_exists():
+                err = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    f"recon-all segmentation failed (exit {result.returncode}): "
+                    f"{err[-800:]}"
+                )
+
+            # Symlink or copy the recon-all output to the path the pipeline
+            # expects (aparc.DKTatlas+aseg.deep.mgz).
+            if not os.path.exists(seg_mgz_path):
+                source = next(
+                    (p for p in aseg_candidate_names if os.path.exists(p)), None
+                )
+                if source:
+                    os.makedirs(os.path.dirname(seg_mgz_path), exist_ok=True)
+                    try:
+                        os.symlink(source, seg_mgz_path)
+                    except OSError:
+                        import shutil as _shutil2
+                        _shutil2.copy2(source, seg_mgz_path)
+                else:
+                    raise RuntimeError(
+                        "recon-all completed but no aparc+aseg volume found."
+                    )
+            print("recon-all segmentation completed.")
+        else:
+            print("Segmentation file already exists, skipping recon-all.")
+
     else:
-        print(f"Segmentation method '{method}' selected. Skipping FastSurfer execution.")
+        print(f"Segmentation method '{method}' selected. Skipping automated execution.")
         if not os.path.exists(seg_mgz_path):
             raise FileNotFoundError(
                 f"Segmentation file not found: {seg_mgz_path}. Provide your own segmentation before running."

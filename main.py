@@ -131,6 +131,15 @@ def parse_args():
     parser.add_argument('--t1-fit', dest='t1_fit', type=str,
                         choices=['auto', 'ir', 'vfa', 'none'], default=None,
                         help='T1/M0 fitting source: auto|ir|vfa|none (default: auto)')
+    parser.add_argument(
+        '--segmentation',
+        dest='segmentation',
+        type=str,
+        choices=['fastsurfer', 'freesurfer', 'synthseg', 'recon-all'],
+        default=None,
+        help='Segmentation method: fastsurfer (default), freesurfer (auto-selects '
+             'synthseg for FS>=8 or recon-all for FS<8), synthseg, recon-all.',
+    )
     parser.add_argument('--vfa-glob', dest='vfa_glob', type=str, default=None,
                         help='Comma-separated glob(s) for VFA NIfTI discovery in NIfTI dir (default: *VFA*.nii*)')
     parser.add_argument(
@@ -465,6 +474,8 @@ def main():
 
     if args.t1_fit is not None:
         settings.T1_FIT_MODE = str(args.t1_fit).strip().lower() or "auto"
+    if getattr(args, 'segmentation', None) is not None:
+        settings.SEGMENTATION_METHOD = str(args.segmentation).strip().lower()
     if args.vfa_glob is not None:
         settings.VFA_FILE_GLOB = str(args.vfa_glob).strip() or settings.VFA_FILE_GLOB
 
