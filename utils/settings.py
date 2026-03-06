@@ -86,7 +86,7 @@ NUMBER_OF_CORES = int(_cores)
 ROI_METHOD = (os.environ.get("P_BRAIN_ROI_METHOD") or os.environ.get("ROI_METHOD") or "ai").strip().lower()
 if ROI_METHOD == "geometry":
     ROI_METHOD = "deterministic"
-if ROI_METHOD not in {"ai", "deterministic", "file"}:
+if ROI_METHOD not in {"ai", "deterministic", "file", "manual"}:
     ROI_METHOD = "ai"
 
 # Metadata strictness / overrides.
@@ -171,10 +171,13 @@ if T1_RECOVERY_MODEL not in {"inversion", "saturation", "turboflash"}:
 # - patlak: permeability only
 # - tikhonov: deconvolution/perfusion only
 # - both: run patlak then tikhonov
+# - extended_tofts: Extended Tofts model only
+# - all: run patlak + tikhonov + extended tofts
 _KINETIC_MODEL_RAW = (os.environ.get("P_BRAIN_MODEL", "both") or "both").strip().lower()
-if _KINETIC_MODEL_RAW in {
+if _KINETIC_MODEL_RAW == "all":
+    KINETIC_MODEL = "all"
+elif _KINETIC_MODEL_RAW in {
     "both",
-    "all",
     "patlak_then_tikhonov",
     "patlak-then-tikhonov",
     "patlak_tikhonov",
@@ -195,6 +198,14 @@ elif _KINETIC_MODEL_RAW in {
     KINETIC_MODEL = "tikhonov"
 elif _KINETIC_MODEL_RAW in {"patlak"}:
     KINETIC_MODEL = "patlak"
+elif _KINETIC_MODEL_RAW in {
+    "extended_tofts",
+    "etofts",
+    "etm",
+    "tofts",
+    "extended-tofts",
+}:
+    KINETIC_MODEL = "extended_tofts"
 else:
     KINETIC_MODEL = "both"
 
@@ -370,6 +381,25 @@ VASCULAR_ROI_ADAPTIVE_MAX = (
 TISSUE_ROI_AGGREGATION = (os.environ.get("P_BRAIN_TISSUE_ROI_AGGREGATION", "median") or "median").strip().lower()
 if TISSUE_ROI_AGGREGATION not in {"mean", "median"}:
     TISSUE_ROI_AGGREGATION = "median"
+
+# Tissue ROI method — how tissue regions are defined for CTC extraction.
+# - automatic (default): uses segmentation (FastSurfer/SynthSeg) to create
+#   tissue masks automatically.
+# - manual: user draws ROIs interactively on DCE/T1 slices; skips
+#   brain segmentation entirely.
+TISSUE_ROI_METHOD = (os.environ.get("P_BRAIN_TISSUE_ROI_METHOD", "automatic") or "automatic").strip().lower()
+if TISSUE_ROI_METHOD not in {"automatic", "manual"}:
+    TISSUE_ROI_METHOD = "automatic"
+
+# Background volume for manual ROI drawing.
+# - auto (default): picks the best available structural (T1 > T2 > FLAIR),
+#   falling back to DCE if none exist.
+# - dce / t1 / t2 / flair: force a specific volume type.
+MANUAL_ROI_OVERLAY = (
+    os.environ.get("P_BRAIN_MANUAL_ROI_OVERLAY", "auto") or "auto"
+).strip().lower()
+if MANUAL_ROI_OVERLAY not in {"auto", "dce", "t1", "t2", "flair"}:
+    MANUAL_ROI_OVERLAY = "auto"
 
 # Flip angle (degrees) used by signal->concentration conversion.
 # Set `P_BRAIN_FLIP_ANGLE=auto` (default) to rely on metadata.
@@ -600,8 +630,17 @@ if AUTO_LAMBDA_CANDIDATES.size < 3:
 # Holds the most recently chosen value when ``AUTO_LAMBDA`` is True
 AUTO_LAMBDA_VALUE = None
 
+# Number of leading DCE volumes (time frames) to discard before analysis.
+# Useful when the first frame(s) are blurry or contain artefacts.
+# Default: 0 (keep all).  Override via ``P_BRAIN_DCE_SKIP_VOLUMES``.
+try:
+    DCE_SKIP_VOLUMES = max(0, int(os.environ.get("P_BRAIN_DCE_SKIP_VOLUMES", 0)))
+except (TypeError, ValueError):
+    DCE_SKIP_VOLUMES = 0
+
 # Number of bolus peaks expected in the acquisition.  Defaults to two but can
 # be overridden via the ``P_BRAIN_NUMBER_OF_PEAKS`` environment variable.
+# Use ``--single-bolus`` CLI flag (sets this to 1) for single-injection protocols.
 NUMBER_OF_PEAKS = int(os.environ.get("P_BRAIN_NUMBER_OF_PEAKS", 2))
 
 # Lower bound for the Patlak inclusion window expressed as a fraction of the

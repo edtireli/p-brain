@@ -37,6 +37,14 @@ from utils import qc as qc
 from utils.compare_matlab import compare_t1m0_to_matlab
 
 
+def log_auto_safe(msg: str, *, level: str = "info") -> None:
+    """Best-effort log_auto that silently no-ops when hooks aren't installed."""
+    try:
+        log_auto(msg, level=level)
+    except Exception:
+        pass
+
+
 def mode_screen():
     print_banner()
     print('=-=-= Select analysis mode =-=-=')
@@ -82,15 +90,18 @@ def parse_args():
     parser.add_argument('--model-only', '--pk-only', dest='model_only', action='store_true',
                         help='Run only the pharmacokinetic modelling stage (skip T1/input/time-shift).')
     parser.add_argument(
-        '--pk-model',
+        '--pk-model', '--pk-models',
         dest='pk_model',
         type=str,
         choices=[
             'patlak',
             'tikhonov',
             'both',
+            'etofts',
+            'extended_tofts',
+            'all',
         ],
-        help='Explicit PK model: patlak | tikhonov | both',
+        help='Explicit PK model: patlak | tikhonov | both | etofts | all',
     )
     parser.add_argument('--tik-fast', '--tikhonov-fast', dest='tik_fast', action='store_true',
                         help='Run only the fast Tikhonov flow (skip Patlak).')
@@ -158,12 +169,57 @@ def parse_args():
         help='TurboFLASH nph (1-based ky=0 line index within readout train). Used when --ctc-model=turboflash.'
     )
     parser.add_argument(
-        '--roi-method',
+        '--roi-method', '--roi-mode',
         dest='roi_method',
         type=str,
-        choices=['ai', 'deterministic', 'geometry', 'file'],
+        choices=['ai', 'deterministic', 'geometry', 'file', 'manual'],
         default=None,
-        help='ROI extraction method for input-function ROIs (ai|deterministic|file).'
+        help='ROI extraction method for input-function ROIs: '
+             'ai (default) | deterministic | file | manual (interactive drawing).',
+    )
+    parser.add_argument(
+        '--tissue-roi', '--tissue-mode',
+        dest='tissue_roi',
+        type=str,
+        choices=['automatic', 'manual', 'voxel'],
+        default=None,
+        help='Tissue ROI method: automatic (default — uses brain segmentation) | '
+             'manual (user draws ROIs interactively, skips segmentation) | '
+             'voxel (voxelwise-only, no segmentation, no manual drawing).',
+    )
+    parser.add_argument(
+        '--overlay',
+        dest='overlay',
+        type=str,
+        choices=['auto', 'dce', 't1', 't2', 'flair'],
+        default=None,
+        help='Background volume for manual ROI drawing: '
+             'auto (default — picks best available structural, falls back to DCE) | '
+             'dce | t1 | t2 | flair.  Only relevant when --tissue-mode=manual or '
+             '--roi-mode=manual.',
+    )
+    parser.add_argument(
+        '--single-bolus',
+        dest='single_bolus',
+        action='store_true',
+        help='Single contrast injection (sets NUMBER_OF_PEAKS=1 so time-shifting '
+             'does not search for a second peak).',
+    )
+    parser.add_argument(
+        '--num-peaks',
+        dest='num_peaks',
+        type=int,
+        default=None,
+        help='Number of bolus peaks expected in the acquisition (default: 2). '
+             'Overrides --single-bolus if both are specified.',
+    )
+    parser.add_argument(
+        '--dce-skip-volumes',
+        dest='dce_skip_volumes',
+        type=int,
+        default=None,
+        help='Number of leading DCE volumes (time frames) to discard before analysis. '
+             'Useful when the first frame(s) are blurry or contain artefacts (default: 0).',
     )
     parser.add_argument(
         '--roi-aif-mat',
@@ -266,10 +322,11 @@ def _set_pk_model(raw: str) -> None:
 
     val = str(raw).strip().lower()
 
-    # Canonical validated keys: patlak | tikhonov | both
-    if val in {
+    # Canonical validated keys: patlak | tikhonov | both | extended_tofts | all
+    if val in {'all'}:
+        canonical = 'all'
+    elif val in {
         'both',
-        'all',
         'patlak_then_tikhonov',
         'patlak-then-tikhonov',
         'patlak_tikhonov',
@@ -294,6 +351,14 @@ def _set_pk_model(raw: str) -> None:
         canonical = 'tikhonov'
     elif val == 'patlak':
         canonical = 'patlak'
+    elif val in {
+        'extended_tofts',
+        'etofts',
+        'etm',
+        'tofts',
+        'extended-tofts',
+    }:
+        canonical = 'extended_tofts'
     else:
         canonical = 'both'
 
@@ -455,6 +520,8 @@ def main():
             raw = 'deterministic'
         settings.ROI_METHOD = raw
         os.environ['P_BRAIN_ROI_METHOD'] = raw
+        if raw == 'manual':
+            log_auto_safe('ROI mode set to manual (interactive ROI drawing).')
 
     if getattr(args, 'roi_aif_mat', None):
         settings.ROI_AIF_MAT = str(args.roi_aif_mat)
@@ -476,6 +543,35 @@ def main():
         settings.T1_FIT_MODE = str(args.t1_fit).strip().lower() or "auto"
     if getattr(args, 'segmentation', None) is not None:
         settings.SEGMENTATION_METHOD = str(args.segmentation).strip().lower()
+    if getattr(args, 'tissue_roi', None) is not None:
+        raw_tr = str(args.tissue_roi).strip().lower()
+        if raw_tr == 'voxel':
+            # voxel = voxelwise-only (no segmentation, no manual drawing)
+            settings.TISSUE_ROI_METHOD = 'automatic'
+            os.environ['PBRAIN_VOXELWISE_ONLY'] = '1'
+        else:
+            settings.TISSUE_ROI_METHOD = raw_tr if raw_tr in {'automatic', 'manual'} else 'automatic'
+        os.environ['P_BRAIN_TISSUE_ROI_METHOD'] = settings.TISSUE_ROI_METHOD
+
+    # Manual ROI overlay background
+    if getattr(args, 'overlay', None) is not None:
+        raw_ov = str(args.overlay).strip().lower()
+        settings.MANUAL_ROI_OVERLAY = raw_ov
+        os.environ['P_BRAIN_MANUAL_ROI_OVERLAY'] = raw_ov
+
+    # Single-bolus / num-peaks
+    if getattr(args, 'num_peaks', None) is not None:
+        settings.NUMBER_OF_PEAKS = max(1, int(args.num_peaks))
+        os.environ['P_BRAIN_NUMBER_OF_PEAKS'] = str(settings.NUMBER_OF_PEAKS)
+    elif getattr(args, 'single_bolus', False):
+        settings.NUMBER_OF_PEAKS = 1
+        os.environ['P_BRAIN_NUMBER_OF_PEAKS'] = '1'
+
+    # DCE skip volumes
+    if getattr(args, 'dce_skip_volumes', None) is not None:
+        settings.DCE_SKIP_VOLUMES = max(0, int(args.dce_skip_volumes))
+        os.environ['P_BRAIN_DCE_SKIP_VOLUMES'] = str(settings.DCE_SKIP_VOLUMES)
+
     if args.vfa_glob is not None:
         settings.VFA_FILE_GLOB = str(args.vfa_glob).strip() or settings.VFA_FILE_GLOB
 
@@ -661,6 +757,31 @@ def main():
             settings.T1_FIT_MODE = "none"
         parameters = global_parameters()
 
+    # ── No-T1 auto-detection ──
+    # When T1 data is absent (T1_FIT_MODE == "none") the pipeline MUST run
+    # voxelwise-only (no segmentation atlas possible without a structural T1).
+    # Additionally, if the user has not explicitly chosen a tissue-ROI method we
+    # auto-switch to manual so the operator can interactively draw ROIs, and if
+    # the user has not explicitly chosen an input-ROI method we also switch to
+    # manual so the operator draws AIF/VIF ROIs interactively.
+    _no_t1 = getattr(settings, "T1_FIT_MODE", "auto") == "none"
+    if _no_t1:
+        # Always force voxelwise when there is no T1.
+        os.environ['PBRAIN_VOXELWISE_ONLY'] = '1'
+        log_auto_safe("No T1 data detected → forcing voxelwise-only mode.", level="info")
+
+        # Auto-switch tissue ROI to manual when user didn't explicitly choose.
+        if getattr(args, 'tissue_roi', None) is None:
+            settings.TISSUE_ROI_METHOD = "manual"
+            os.environ['P_BRAIN_TISSUE_ROI_METHOD'] = "manual"
+            log_auto_safe("No T1 data → tissue ROI auto-set to manual.", level="info")
+
+        # Auto-switch input ROI to manual when user didn't explicitly choose.
+        if getattr(args, 'roi_method', None) is None:
+            settings.ROI_METHOD = "manual"
+            os.environ['P_BRAIN_ROI_METHOD'] = "manual"
+            log_auto_safe("No T1 data → input ROI auto-set to manual.", level="info")
+
     mode = args.mode
     if mode is None and args.option is None:
         mode_screen()
@@ -821,14 +942,26 @@ def main():
                 log_auto(f"QC(input_functions) error: {e}", level="warning")
 
             log_process_start("Tissue kinetic modelling")
-            tissue_function_AI(
-                analysis_directory,
-                nifti_directory,
-                image_directory,
-                filenames,
-                parameters,
-                compute_diffusion=args.diffusion,
-            )
+            _tissue_roi_method = getattr(settings, "TISSUE_ROI_METHOD", "automatic").strip().lower()
+            if _tissue_roi_method == "manual":
+                from modules.manual_tissue_roi import tissue_function_manual
+                tissue_function_manual(
+                    analysis_directory,
+                    nifti_directory,
+                    image_directory,
+                    filenames,
+                    parameters,
+                    compute_diffusion=args.diffusion,
+                )
+            else:
+                tissue_function_AI(
+                    analysis_directory,
+                    nifti_directory,
+                    image_directory,
+                    filenames,
+                    parameters,
+                    compute_diffusion=args.diffusion,
+                )
             log_process_end("Tissue kinetic modelling")
 
             # The tissue_function_AI umbrella covers segmentation + tissue_ctc + modelling.
@@ -882,14 +1015,26 @@ def main():
             T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters)
             run_input_function(analysis_directory, nifti_directory, image_directory, filenames, parameters)
             opt03_time_shifting.time_shifting(analysis_directory, nifti_directory, image_directory)
-            tissue_function_AI(
-                analysis_directory,
-                nifti_directory,
-                image_directory,
-                filenames,
-                parameters,
-                compute_diffusion=args.diffusion,
-            )
+            _tissue_roi_method_pseudo = getattr(settings, "TISSUE_ROI_METHOD", "automatic").strip().lower()
+            if _tissue_roi_method_pseudo == "manual":
+                from modules.manual_tissue_roi import tissue_function_manual
+                tissue_function_manual(
+                    analysis_directory,
+                    nifti_directory,
+                    image_directory,
+                    filenames,
+                    parameters,
+                    compute_diffusion=args.diffusion,
+                )
+            else:
+                tissue_function_AI(
+                    analysis_directory,
+                    nifti_directory,
+                    image_directory,
+                    filenames,
+                    parameters,
+                    compute_diffusion=args.diffusion,
+                )
             manual_cli_loop(None, data_directory, analysis_directory, nifti_directory,
                             image_directory, filenames, parameters, pseudo=True)
 

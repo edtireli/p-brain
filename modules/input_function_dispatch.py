@@ -85,12 +85,25 @@ def run_input_function(
 ):
     """Dispatch input-function extraction based on ROI method.
 
+    - ROI_METHOD=manual -> interactive user-drawn ROIs (calls opt02 input_function).
     - ROI_METHOD=file -> load user-provided ROI voxel lists from files.
     - ROI_METHOD=deterministic -> deterministic vessel ROI extraction (no AI model import).
     - ROI_METHOD=ai -> AI model-based input function extraction.
     """
 
     roi_method = (getattr(settings, "ROI_METHOD", "ai") or "ai").strip().lower()
+
+    # Manual ROI mode: skip all automated logic and run the interactive ROI selector.
+    if roi_method == "manual":
+        from modules.opt02_input_functions import input_function as _input_function_interactive
+
+        return _input_function_interactive(
+            analysis_directory,
+            nifti_directory,
+            image_directory,
+            filenames,
+            parameters,
+        )
 
     if _getenv_bool("P_BRAIN_INPUT_FUNCTIONS_PREFER_NEW", default=True):
         # In file-ROI mode the user has already saved ROI voxels to ROI Data;
