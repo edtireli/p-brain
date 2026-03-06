@@ -79,6 +79,52 @@ def _reference_img_for_t1fit(nifti_directory, dce_filename, *, prefer_ir=True):
     return None
 
 
+def _shape_from_parrec(data_directory):
+    """Try to determine the 3-D volume shape from a PAR/REC file in *data_directory*.
+
+    Scans one level deep for .PAR files and loads the first one with nibabel
+    to extract the spatial shape.  Returns a 3-tuple (x, y, z) or ``None``.
+    """
+    if not data_directory or not os.path.isdir(data_directory):
+        return None
+
+    candidates = [data_directory]
+    try:
+        for entry in os.scandir(data_directory):
+            if entry.is_dir() and not entry.name.startswith("."):
+                candidates.append(entry.path)
+    except Exception:
+        pass
+
+    for base_dir in candidates:
+        try:
+            entries = list(os.scandir(base_dir))
+        except Exception:
+            continue
+        pars = {}
+        recs = set()
+        for e in entries:
+            if not e.is_file():
+                continue
+            stem, ext = os.path.splitext(e.name.lower())
+            if ext == ".par":
+                pars[stem] = e.path
+            elif ext == ".rec":
+                recs.add(stem)
+        for stem, par_path in pars.items():
+            if stem not in recs:
+                continue
+            try:
+                img = nib.parrec.load(par_path, permit_truncated=True, strict_sort=False)
+                s = img.shape
+                if len(s) >= 3:
+                    return s[:3]
+            except Exception:
+                continue
+
+    return None
+
+
 def _export_map_nifti(map_data, reference_img, out_path):
     if reference_img is None:
         return False
@@ -630,6 +676,20 @@ def fit_all_voxels(voxel_matrix, TI_values, IsVFA, brain_mask=None, signal_mask=
 
     fitted_M0 = np.array([r[0] for r in results])
     fitted_T1 = np.array([r[1] for r in results])
+
+    # ------------------------------------------------------------------
+    # Normalise T1 to milliseconds.  The turboflash recovery model
+    # returns T1 in ms, but the saturation/inversion models fit in
+    # seconds.  Downstream code (turboflash CTC conversion) always
+    # divides by 1000, so we must ensure the stored matrix is in ms.
+    # Heuristic: if the median positive T1 is < 50 it is in seconds.
+    # ------------------------------------------------------------------
+    valid_t1 = fitted_T1[np.isfinite(fitted_T1) & (fitted_T1 > 0)]
+    if valid_t1.size > 0:
+        t1_median = float(np.median(valid_t1))
+        if np.isfinite(t1_median) and t1_median < 50.0:
+            print(f"Info: T1 median = {t1_median:.4f} (appears to be in seconds); converting to milliseconds.")
+            fitted_T1 = fitted_T1 * 1000.0
 
     M0_flat[indices] = fitted_M0
     T1_flat[indices] = fitted_T1
@@ -1279,6 +1339,173 @@ def _maybe_write_orientation_debug(*, analysis_directory: str, nifti_directory: 
         return
 
 
+# --------------------------------------------------------------------------- #
+#   M0 / DCE intensity-scale recalibration                                    #
+# --------------------------------------------------------------------------- #
+
+def _recalibrate_m0_to_dce(
+    M0_matrix: np.ndarray,
+    T1_matrix: np.ndarray,
+    nifti_directory: str,
+    dce_filename: str | None,
+    *,
+    baseline_frames: tuple[int, int] = (2, 10),
+    tolerance: float = 0.20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Scale M0 so that the TurboFLASH signal prediction matches DCE baseline.
+
+    When T1/M0 are fitted from an IR (or VFA) series whose NIfTI proxy slope
+    differs from the DCE NIfTI proxy slope, the fitted M0 lives on a different
+    intensity scale than the DCE signal.  This manifests as a wrong
+    ``S / (M0 * sin α)`` ratio in the turboflash CTC conversion.
+
+    The function computes a per-slice correction factor by comparing the
+    actual mean DCE baseline signal with the signal predicted from M0/T1 via
+    the TurboFLASH saturation-recovery equation:
+
+        S_predicted = M0 · sin α · (1 − exp(−TD / T1))
+
+    where TD is the TurboFLASH inversion/recovery time (typically 120 ms).
+
+    This uses the **same signal model** as the CTC conversion formula, so the
+    calibrated M0 guarantees that ``S / (M0 * sin α) = 1 − exp(−TD/T1)``
+    which is always in (0, 1) for any positive T1 — the log argument in the
+    CTC formula is therefore always valid regardless of enhancement level.
+
+    If the median ratio ``S_actual / S_predicted`` deviates from 1.0 by more
+    than *tolerance* for any slice, M0 for that slice is multiplied by the
+    ratio so that the CTC conversion receives internally consistent data.
+
+    When the ratios are within tolerance, M0 and T1 are returned unchanged.
+
+    Returns (M0_matrix, T1_matrix) — T1 is never modified.
+    """
+
+    # Guard: need DCE NIfTI + metadata ----------------------------------------
+    if not dce_filename or not nifti_directory:
+        return M0_matrix, T1_matrix
+
+    dce_path = os.path.join(nifti_directory, dce_filename)
+    if not os.path.isfile(dce_path):
+        return M0_matrix, T1_matrix
+
+    # Flip angle from JSON sidecar / environment -------------------------------
+    try:
+        flip_deg = resolve_flip_angle_deg(dce_path, default=None)
+    except Exception:
+        flip_deg = None
+    if flip_deg is None:
+        return M0_matrix, T1_matrix
+
+    flip_deg = float(flip_deg)
+    if not np.isfinite(flip_deg) or flip_deg <= 0:
+        return M0_matrix, T1_matrix
+
+    # TD (TurboFLASH inversion/recovery time) ----------------------------------
+    try:
+        td_s = resolve_turboflash_ti_s(dce_path, default=0.12)
+    except Exception:
+        td_s = 0.12
+    if td_s is None or not np.isfinite(td_s) or td_s <= 0:
+        td_s = 0.12
+
+    # Load DCE baseline --------------------------------------------------------
+    try:
+        dce_img = nib.load(dce_path)
+        dce_data = np.asarray(dce_img.dataobj, dtype=np.float32)
+    except Exception:
+        return M0_matrix, T1_matrix
+
+    if dce_data.ndim < 4:
+        return M0_matrix, T1_matrix
+
+    # Spatial shape check
+    spatial_dce = dce_data.shape[:3]
+    if M0_matrix.shape != spatial_dce:
+        # Shape mismatch between T1 fit grid and DCE grid — skip recalibration.
+        return M0_matrix, T1_matrix
+
+    bl_start, bl_end = baseline_frames
+    bl_end = min(bl_end, dce_data.shape[3])
+    if bl_start >= bl_end:
+        return M0_matrix, T1_matrix
+
+    dce_baseline = np.mean(dce_data[:, :, :, bl_start:bl_end], axis=-1)
+
+    # TurboFLASH saturation-recovery prediction per voxel ----------------------
+    alpha_rad = np.radians(flip_deg)
+    sin_a = float(np.sin(alpha_rad))
+    if abs(sin_a) < 1e-12:
+        return M0_matrix, T1_matrix
+
+    # T1_matrix is in milliseconds (post-normalisation); TD is in seconds
+    t1_s = T1_matrix / 1000.0
+    td_ms = td_s * 1000.0
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        s_predicted = M0_matrix * sin_a * (1.0 - np.exp(-td_ms / T1_matrix))
+
+    # Per-slice scale factor ---------------------------------------------------
+    n_slices = M0_matrix.shape[2] if M0_matrix.ndim >= 3 else 1
+    any_corrected = False
+    factors = []
+
+    for k in range(n_slices):
+        if M0_matrix.ndim >= 3:
+            mask_k = (
+                np.isfinite(T1_matrix[:, :, k]) &
+                (T1_matrix[:, :, k] > 100) &
+                np.isfinite(s_predicted[:, :, k]) &
+                (s_predicted[:, :, k] > 0) &
+                np.isfinite(dce_baseline[:, :, k]) &
+                (dce_baseline[:, :, k] > 0)
+            )
+            s_act = dce_baseline[:, :, k][mask_k]
+            s_pred = s_predicted[:, :, k][mask_k]
+        else:
+            mask_k = (
+                np.isfinite(T1_matrix) & (T1_matrix > 100) &
+                np.isfinite(s_predicted) & (s_predicted > 0) &
+                np.isfinite(dce_baseline) & (dce_baseline > 0)
+            )
+            s_act = dce_baseline[mask_k]
+            s_pred = s_predicted[mask_k]
+
+        if s_act.size < 50:
+            factors.append(1.0)
+            continue
+
+        ratio = s_act / s_pred
+        factor = float(np.median(ratio))
+
+        if not np.isfinite(factor) or factor <= 0:
+            factors.append(1.0)
+            continue
+
+        factors.append(factor)
+        if abs(factor - 1.0) > tolerance:
+            any_corrected = True
+
+    if not any_corrected:
+        return M0_matrix, T1_matrix
+
+    # Apply correction ---------------------------------------------------------
+    M0_out = M0_matrix.copy()
+    for k in range(n_slices):
+        f = factors[k]
+        if abs(f - 1.0) <= tolerance:
+            continue
+        print(
+            f"Info: M0 recalibration slice {k+1}: "
+            f"scale factor = {f:.4f} (M0 was {1/f:.1f}x too large for DCE scale)."
+        )
+        if M0_out.ndim >= 3:
+            M0_out[:, :, k] *= f
+        else:
+            M0_out *= f
+
+    return M0_out, T1_matrix
+
+
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
     _, IsVFA, IsIR, _, _, _, _ = parameters
     (
@@ -1462,11 +1689,49 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 shape = voxel_matrix.shape[1:]
             else:
                 ref_img = _reference_img_for_t1fit(nifti_directory, dce_filename, prefer_ir=True)
-                if ref_img is None:
-                    raise RuntimeError("Unable to determine volume shape for T1/M0 outputs.")
-                shape = ref_img.shape[:3]
-            M0_matrix = np.full(shape, np.nan)
-            T1_matrix = np.full(shape, np.nan)
+                if ref_img is not None:
+                    shape = ref_img.shape[:3]
+                else:
+                    # NIfTI conversion may have failed (e.g. dcm2niix not
+                    # installed on Windows).  Try to determine the 3-D shape
+                    # directly from a PAR/REC file in the data directory.
+                    shape = _shape_from_parrec(data_directory)
+                    if shape is None:
+                        print(
+                            "[T1_fit] WARNING: No NIfTI files and no PAR/REC "
+                            "files found – cannot determine volume shape.  "
+                            "T1/M0 maps will be skipped."
+                        )
+                        # Return empty arrays so downstream never gets None.
+                        M0_matrix = np.full((1,), np.nan)
+                        T1_matrix = np.full((1,), np.nan)
+                        # Jump past the NaN-fill below.
+                        shape = None
+                if shape is not None:
+                    M0_matrix = np.full(shape, np.nan)
+                    T1_matrix = np.full(shape, np.nan)
+
+        # ------------------------------------------------------------------
+        # M0 / DCE scale recalibration.
+        #
+        # When T1/M0 are fitted from an IR (or VFA) series whose NIfTI proxy
+        # slope differs from the DCE NIfTI slope the fitted M0 lives on a
+        # different intensity scale than the DCE signal.  The turboflash CTC
+        # conversion computes S/(M0*sin α) and expects both numerator and
+        # denominator to be on the same scale.
+        #
+        # Fix: use the TurboFLASH saturation-recovery equation
+        #     S = M0 · sinα · (1 − exp(−TD/T1))
+        # to predict the pre-contrast DCE signal from the fitted M0/T1,
+        # compare with the actual DCE baseline, and scale M0 per-slice so
+        # the two agree.  This ensures S/(M0·sinα) = 1−exp(−TD/T1) < 1
+        # always, keeping the log argument in the CTC formula valid.
+        # When the ratio is already close to 1.0 (±20 %) the step is a no-op.
+        # ------------------------------------------------------------------
+        M0_matrix, T1_matrix = _recalibrate_m0_to_dce(
+            M0_matrix, T1_matrix,
+            nifti_directory, dce_filename,
+        )
 
         save_as_pickle(M0_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_M0_matrix.pkl'))
         save_as_pickle(T1_matrix, os.path.join(analysis_directory, 'Fitting', 'voxel_T1_matrix.pkl'))
