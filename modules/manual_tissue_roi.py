@@ -7,7 +7,7 @@ The hand-drawn ROIs replace the automatic tissue masks and feed into the
 same downstream CTC + PK modelling pipeline.
 
 CLI flow (matplotlib):
-    1.  Load the DCE first frame (or T1 in DCE space if available).
+    1.  Load DCE frame 2 (or T1 in DCE space if available).
     2.  Present the ``ROISelector_tissue`` GUI for interactive drawing.
     3.  User draws one or more ROIs, labels each as WM / GM / mixed.
     4.  Voxels inside each ROI become binary masks in DCE voxel space.
@@ -192,18 +192,24 @@ def _interactive_draw_tissue_rois(
     ``compute_and_plot_ctcs_median``.
 
     ``overlay_path`` selects the background volume for interactive drawing.
-    When ``None`` (or the volume cannot be loaded / shape-matched), the
-    first frame of the DCE 4-D is used.
+    When ``None`` (or the volume cannot be loaded / shape-matched),
+    frame 2 (index 1) of the DCE 4-D is used.
     """
     from termcolor import colored
     from .opt04_tissue_function import ROISelector_tissue
     import matplotlib.pyplot as plt
 
-    # Load DCE first frame as the default display volume.
+    # Load DCE frame 2 (index 1) as the default display volume.
+    # Frame 1 is often blurry / has artefacts; frame 2 is the first clean frame.
     dce_4d = nib.load(dce_path).get_fdata()
     dce_shape = dce_4d.shape[:3]
-    display_3d = dce_4d[:, :, :, 0] if dce_4d.ndim == 4 else dce_4d
-    overlay_label = "DCE (frame 0)"
+    if dce_4d.ndim == 4 and dce_4d.shape[3] > 1:
+        display_3d = dce_4d[:, :, :, 1]
+    elif dce_4d.ndim == 4:
+        display_3d = dce_4d[:, :, :, 0]
+    else:
+        display_3d = dce_4d
+    overlay_label = "DCE (frame 2)"
 
     # Try to use a structural overlay instead, if requested.
     if overlay_path and os.path.isfile(overlay_path):
@@ -230,10 +236,10 @@ def _interactive_draw_tissue_rois(
                     overlay_label = f"{os.path.basename(overlay_path)} (resampled)"
                 except Exception as exc:
                     print(f"[manual-tissue-roi] Could not resample overlay to DCE space: {exc}")
-                    print("[manual-tissue-roi] Falling back to DCE first frame.")
+                    print("[manual-tissue-roi] Falling back to DCE frame 2.")
         except Exception as exc:
             print(f"[manual-tissue-roi] Could not load overlay {overlay_path}: {exc}")
-            print("[manual-tissue-roi] Falling back to DCE first frame.")
+            print("[manual-tissue-roi] Falling back to DCE frame 2.")
 
     print(f"[manual-tissue-roi] Overlay: {overlay_label}")
 
@@ -339,7 +345,7 @@ def _run_manual_tissue_analysis(
 
     overlay_path: Optional[str] = None
     if overlay_pref == "dce":
-        overlay_path = None  # will use DCE first frame
+        overlay_path = None  # will use DCE frame 2
     elif overlay_pref in ("t1", "t2", "flair"):
         overlay_path = _struct_candidates.get(overlay_pref)
         if not overlay_path:
@@ -356,7 +362,7 @@ def _run_manual_tissue_analysis(
                 break
         if overlay_path is None:
             print("[manual-tissue-roi] No structural volume found; "
-                  "using DCE first frame as overlay.")
+                  "using DCE frame 2 as overlay.")
 
     flip_angle_deg = resolve_flip_angle_deg(dce_path, default=None)
 
