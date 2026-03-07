@@ -978,6 +978,17 @@ def parse_args():
             "analysis. Useful when the first few acquisitions are unstable."
         ),
     )
+    parser.add_argument(
+        "--pk-model", "--pk-models",
+        dest="pk_model",
+        type=str,
+        default=None,
+        help=(
+            "PK model(s) to run.  Single: patlak | tikhonov | etofts | both | all.  "
+            "Combine with '+': e.g. patlak+etofts, etofts+patlak+tikhonov.  "
+            "Default: both (patlak + tikhonov)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1308,6 +1319,8 @@ def main():
             env["P_BRAIN_TURBO_NPH"] = str(int(args.turbo_nph))
         if getattr(args, "roi_method", None):
             env["P_BRAIN_ROI_METHOD"] = str(args.roi_method)
+        if getattr(args, "pk_model", None):
+            env["P_BRAIN_MODEL"] = str(args.pk_model)
 
         if getattr(args, "num_peaks", None) is not None:
             env["P_BRAIN_NUMBER_OF_PEAKS"] = str(int(args.num_peaks))
