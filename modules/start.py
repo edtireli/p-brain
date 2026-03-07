@@ -1059,6 +1059,14 @@ def parrec2nifti(directory, nifti_directory):
         Used when dcm2niix is unavailable (common on Windows when not
         separately installed).  nibabel's ``parrec`` module can read
         Philips PAR/REC natively.
+
+        Philips PAR/REC files often contain multiple image types per
+        acquisition (magnitude=0, real=1, imaginary=2).  dcm2niix splits
+        these into separate NIfTI files (``<name>.nii``, ``<name>_real.nii``,
+        ``<name>_imaginary.nii``).  We replicate that behaviour here:
+        only the **magnitude** volumes are saved to the main NIfTI so
+        that downstream code (``build_voxel_matrix``, etc.) sees the
+        same shape and content as it would with dcm2niix output.
         """
         try:
             import nibabel as _nib
@@ -1067,7 +1075,11 @@ def parrec2nifti(directory, nifti_directory):
             return False
 
         try:
-            img = _nib.parrec.load(par_path, permit_truncated=True, strict_sort=False)
+            # strict_sort=True makes nibabel group volumes by image type
+            # first (mag → real → imag), then by dynamic within each type.
+            # This lets us slice the first n_dynamics volumes to get
+            # magnitude-only data, matching dcm2niix output.
+            img = _nib.parrec.load(par_path, permit_truncated=True, strict_sort=True)
         except Exception as exc:
             print(f"[parrec2nifti] nibabel failed to load '{par_path}': {exc}")
             return False
@@ -1086,8 +1098,37 @@ def parrec2nifti(directory, nifti_directory):
         out_nii = os.path.join(nifti_directory, out_stem + ".nii")
         out_json = os.path.join(nifti_directory, out_stem + ".json")
 
+        # --- Extract magnitude-only volumes when multiple types exist ------
         try:
-            _nib.save(img, out_nii)
+            import numpy as _np
+            hdr = img.header
+            defs = hdr.image_defs
+            unique_types = _np.unique(defs["image_type_mr"])
+            data = _np.asanyarray(img.dataobj)
+
+            if len(unique_types) > 1 and data.ndim == 4:
+                # Multiple image types present (e.g. mag + real + imag).
+                # With strict_sort=True the 4th dim is ordered:
+                #   [mag_dyn1 … mag_dynN, real_dyn1 … real_dynN, imag_dyn1 … imag_dynN]
+                n_dynamics = max(len(_np.unique(defs["dynamic scan number"])), 1)
+                mag_data = data[:, :, :, :n_dynamics]
+                save_img = _nib.Nifti1Image(mag_data, img.affine, img.header)
+                print(
+                    f"[parrec2nifti] Extracted magnitude volumes "
+                    f"({n_dynamics}/{data.shape[3]}) from "
+                    f"'{os.path.basename(par_path)}'"
+                )
+            else:
+                # Single image type or 3-D volume — save as-is.
+                save_img = img
+        except Exception as exc:
+            # If anything goes wrong with type splitting, fall back to
+            # saving the full image (better than nothing).
+            print(f"[parrec2nifti] Warning: could not split image types: {exc}")
+            save_img = img
+
+        try:
+            _nib.save(save_img, out_nii)
         except Exception as exc:
             print(f"[parrec2nifti] nibabel failed to save NIfTI for '{par_path}': {exc}")
             return False
