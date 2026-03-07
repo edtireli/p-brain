@@ -46,6 +46,15 @@ def load_nifti_scaled_data(path: str, *, dtype=np.float32) -> np.ndarray:
     return np.asarray(img.dataobj, dtype=dtype)
 
 
+def _apply_dce_skip(data: np.ndarray) -> np.ndarray:
+    """Discard leading DCE time frames when ``settings.DCE_SKIP_VOLUMES > 0``."""
+    skip = getattr(settings, "DCE_SKIP_VOLUMES", 0)
+    if skip > 0 and data.ndim >= 4 and data.shape[-1] > skip:
+        print(f"Info: Skipping first {skip} DCE volume(s) (shape {data.shape} -> {data[..., skip:].shape}).")
+        return data[..., skip:]
+    return data
+
+
 def load_dce_4d(
     dce_path: str,
     *,
@@ -71,12 +80,12 @@ def load_dce_4d(
     dce_mag = np.asarray(dce_img.dataobj, dtype=dtype)
 
     if not prefer_complex_mag:
-        return dce_img, dce_mag
+        return dce_img, _apply_dce_skip(dce_mag)
 
     real_path = _nifti_peer_path(dce_path, "_real")
     imag_path = _nifti_peer_path(dce_path, "_imaginary")
     if not (os.path.exists(real_path) and os.path.exists(imag_path)):
-        return dce_img, dce_mag
+        return dce_img, _apply_dce_skip(dce_mag)
 
     try:
         real_img = nib.load(real_path)
@@ -97,17 +106,17 @@ def load_dce_4d(
             or abs(float(real_slope) - float(mag_slope)) > 1e-6
             or abs(float(imag_slope) - float(mag_slope)) > 1e-6
         ):
-            return dce_img, dce_mag
+            return dce_img, _apply_dce_skip(dce_mag)
 
         real = np.asarray(real_img.dataobj, dtype=dtype)
         imag = np.asarray(imag_img.dataobj, dtype=dtype)
         if real.shape != imag.shape or real.shape != dce_mag.shape:
-            return dce_img, dce_mag
+            return dce_img, _apply_dce_skip(dce_mag)
 
         cmag = np.sqrt(real * real + imag * imag, dtype=dtype)
-        return dce_img, cmag
+        return dce_img, _apply_dce_skip(cmag)
     except Exception:
-        return dce_img, dce_mag
+        return dce_img, _apply_dce_skip(dce_mag)
 
 
 def load_roi_voxels_from_mat(mat_path: str):

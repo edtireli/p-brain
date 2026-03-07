@@ -93,15 +93,11 @@ def parse_args():
         '--pk-model', '--pk-models',
         dest='pk_model',
         type=str,
-        choices=[
-            'patlak',
-            'tikhonov',
-            'both',
-            'etofts',
-            'extended_tofts',
-            'all',
-        ],
-        help='Explicit PK model: patlak | tikhonov | both | etofts | all',
+        help=(
+            'PK model(s) to run.  Single: patlak | tikhonov | etofts | both | all.  '
+            'Combo with "+": e.g. patlak+etofts, etofts+patlak+tikhonov.  '
+            'Default (when omitted): patlak + tikhonov.'
+        ),
     )
     parser.add_argument('--tik-fast', '--tikhonov-fast', dest='tik_fast', action='store_true',
                         help='Run only the fast Tikhonov flow (skip Patlak).')
@@ -318,49 +314,15 @@ def _maybe_force_delete_t1m0_outputs(analysis_directory: str) -> None:
 
 
 def _set_pk_model(raw: str) -> None:
-    """Normalise PK model selection and push into env + settings."""
+    """Normalise PK model selection and push into env + settings.
+
+    Accepts ``+``-delimited combos (e.g. ``"patlak+etofts"``).
+    """
 
     val = str(raw).strip().lower()
 
-    # Canonical validated keys: patlak | tikhonov | both | extended_tofts | all
-    if val in {'all'}:
-        canonical = 'all'
-    elif val in {
-        'both',
-        'patlak_then_tikhonov',
-        'patlak-then-tikhonov',
-        'patlak_tikhonov',
-        'patlak_tikhonov_fast',
-        'patlak-then-tikhonov-fast',
-        'patlak_then_tikhonov_fast',
-    }:
-        canonical = 'both'
-    elif val in {
-        'tikhonov',
-        'tikhonov_fast',
-        'tikhonov_only',
-        'tikhonov-only-fast',
-        'tik_fast',
-        'tik-fast',
-        'tikfast',
-        'two_compartment',
-        '2comp',
-        'two-comp',
-        'two-compartment',
-    }:
-        canonical = 'tikhonov'
-    elif val == 'patlak':
-        canonical = 'patlak'
-    elif val in {
-        'extended_tofts',
-        'etofts',
-        'etm',
-        'tofts',
-        'extended-tofts',
-    }:
-        canonical = 'extended_tofts'
-    else:
-        canonical = 'both'
+    # Let normalise_pk_model handle combos + legacy aliases.
+    canonical = normalise_pk_model(val)
 
     os.environ['P_BRAIN_MODEL'] = canonical
     settings.KINETIC_MODEL = canonical

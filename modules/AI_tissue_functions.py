@@ -48,11 +48,16 @@ from modules.kinetic_models import (
     build_spline_lcurve_deconvolution_solver,
     construct_convolution_matrix as km_construct_convolution_matrix,
     tikhonov_regularization as km_tikhonov_regularization,
+    solve_single_voxel_diagnostic,
 )
 
 # Patlak model implementation (new modular location). Some code paths still
 # expect `model_patlak_with_exclusions` to exist at module scope.
 from models.patlak import fit_patlak_tuple as model_patlak_with_exclusions
+from models.patlak import fit_patlak as _fit_patlak_diagnostic
+
+# Extended Tofts model (modular implementation).
+from models.extended_tofts import fit_voxel as _etofts_fit_voxel
 
 
 def load_from_pickle(file_path: str) -> Any:
@@ -813,12 +818,14 @@ def patlak_with_exclusions(C_t, C_a, t, bad_mask=None):
     """
 
     window_start = float(getattr(settings, "PATLAK_WINDOW_START_FRACTION", 1 / 3))
+    _single_bolus = int(getattr(settings, "NUMBER_OF_PEAKS", 2)) == 1
     return model_patlak_with_exclusions(
         C_t,
         C_a,
         t,
         bad_mask,
         window_start_fraction=window_start,
+        single_bolus=_single_bolus,
     )
 
 
@@ -943,7 +950,7 @@ def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
     _find_baseline_point_advanced = find_baseline_point_advanced
     _custom_shifter = custom_shifter
     _patlak_analysis_plotting = patlak_analysis_plotting
-    _kinetic_model = (kinetic_model or settings.KINETIC_MODEL or "patlak").strip().lower()
+    _kinetic_model = (kinetic_model or settings.KINETIC_MODEL or "both").strip().lower()
     _two_compartment_tikhonov = two_compartment_tikhonov
 
 
@@ -2223,17 +2230,39 @@ def patlak_analysis_plotting(c_tissue, c_input, time):
     if len(time) < 2:
         return (np.nan,)*3 + (np.array([]),)*3
 
+    _single_bolus = int(getattr(settings, "NUMBER_OF_PEAKS", 2)) == 1
+
     delta_t = np.diff(time)
+
+    # ── Single-bolus: AIF threshold masking ──
+    bad = np.zeros(len(time), dtype=bool)
+    if _single_bolus:
+        ca = np.asarray(c_input, dtype=float)
+        ca_peak = float(np.nanmax(ca))
+        if ca_peak > 0:
+            bad |= ca < 0.05 * ca_peak
+        peak_idx = int(np.argmax(ca))
+        t_start = time[peak_idx] + 60.0
+        bad |= np.asarray(time, dtype=float) < t_start
+
     y = c_tissue / c_input
     x = np.concatenate(([0], np.cumsum(c_input[:-1]*delta_t))) / c_input
-    good = (~np.isnan(x)) & (~np.isnan(y)) & (c_input != 0)
+    good = (~np.isnan(x)) & (~np.isnan(y)) & (c_input != 0) & (~bad)
 
-    # 1/3–2/3 Patlak window
+    if not good.any():
+        return (np.nan,)*3 + (x, y, good)
+
     x_max = np.nanmax(x[good]) if good.any() else np.nan
-    window_start = settings.PATLAK_WINDOW_START_FRACTION
-    if not (0 < window_start < 1):
-        window_start = 1/3
-    w = (x >= window_start * x_max) & (x <= x_max)
+
+    if _single_bolus:
+        # Time-based windowing already applied via bad mask.
+        w = np.ones(len(time), dtype=bool)
+    else:
+        # 1/3–2/3 Patlak window
+        window_start = settings.PATLAK_WINDOW_START_FRACTION
+        if not (0 < window_start < 1):
+            window_start = 1/3
+        w = (x >= window_start * x_max) & (x <= x_max)
     good &= w
 
     if good.sum() < 2:
@@ -2619,6 +2648,7 @@ def compute_and_plot_ctcs_median(
     wm_cc_mask_t2=None, wm_cc_mask_dce=None,
     flip_angle_deg=None,
     voxelwise_only: bool = False,
+    compute_per_voxel_ETofts: bool = False,
 ):
     """
     Computes median CTCs for different tissue types across slices, performs Patlak analysis,
@@ -2676,12 +2706,20 @@ def compute_and_plot_ctcs_median(
             return
 
         # Resolve p-brain outputs (written earlier in this function).
+        # Check model subfolders first, then fallback to root analysis dir.
+        def _find_nifti(name, *subdirs):
+            for sd in subdirs:
+                p = os.path.join(analysis_directory, sd, name) if sd else os.path.join(analysis_directory, name)
+                if os.path.isfile(p):
+                    return p
+            return os.path.join(analysis_directory, name)
+
         pb_paths = {
-            'CBF': os.path.join(analysis_directory, 'CBF_per_voxel_tikhonov.nii.gz'),
-            'MTT': os.path.join(analysis_directory, 'mtt_map.nii.gz'),
-            'CTH': os.path.join(analysis_directory, 'cth_map.nii.gz'),
-            'Ki': os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz'),
-            'vp': os.path.join(analysis_directory, 'vp_per_voxel.nii.gz'),
+            'CBF': _find_nifti('CBF_per_voxel_tikhonov.nii.gz', 'tikhonov', ''),
+            'MTT': _find_nifti('mtt_map.nii.gz', 'tikhonov', ''),
+            'CTH': _find_nifti('cth_map.nii.gz', 'tikhonov', ''),
+            'Ki': _find_nifti('Ki_per_voxel.nii.gz', 'patlak', ''),
+            'vp': _find_nifti('vp_per_voxel.nii.gz', 'patlak', ''),
         }
 
         # Reference variable -> p-brain key
@@ -2936,6 +2974,11 @@ def compute_and_plot_ctcs_median(
                 and bool(getattr(settings, "WRITE_OFFSET_MAP", True))
                 else None
             )
+        if compute_per_voxel_ETofts:
+            Ktrans_per_voxel = np.full(data_4d.shape[:3], np.nan)
+            ve_per_voxel = np.full(data_4d.shape[:3], np.nan)
+            vp_etofts_per_voxel = np.full(data_4d.shape[:3], np.nan)
+            kep_per_voxel = np.full(data_4d.shape[:3], np.nan)
 
         # Brain mask heuristic (DCE space): finite and non-zero mean signal.
         try:
@@ -3013,6 +3056,11 @@ def compute_and_plot_ctcs_median(
                         if offset_per_voxel is not None
                         else None
                     )
+                if compute_per_voxel_ETofts:
+                    Ktrans_slice = np.full(brain_mask_slice.shape, np.nan)
+                    ve_slice = np.full(brain_mask_slice.shape, np.nan)
+                    vp_etofts_slice = np.full(brain_mask_slice.shape, np.nan)
+                    kep_slice = np.full(brain_mask_slice.shape, np.nan)
 
                 fast_coords = []
                 fast_curves = []
@@ -3045,6 +3093,28 @@ def compute_and_plot_ctcs_median(
                         lam_slice[x, y] = lam_voxel
                         SD_slice[x, y] = SD_voxel
                         Ki_value = Ki_voxel
+
+                    if compute_per_voxel_ETofts:
+                        # Optionally initialise from Patlak Ki / vp estimates.
+                        _init_kt = None
+                        _init_vp = None
+                        if Ki_value is not None and np.isfinite(Ki_value):
+                            _init_kt = max(float(Ki_value) / 6000.0, 1e-8)
+                        if compute_per_voxel_Ki and np.isfinite(lam_slice[x, y]):
+                            _init_vp = np.clip(float(lam_slice[x, y]) / 100.0, 0.0, 0.99)
+                        try:
+                            ef = _etofts_fit_voxel(
+                                C_a_voxel, C_t_voxel, time_points_voxel,
+                                init_ktrans=_init_kt,
+                                init_vp=_init_vp,
+                            )
+                            if ef.success:
+                                Ktrans_slice[x, y] = ef.ktrans_ml_100g
+                                ve_slice[x, y] = ef.ve
+                                vp_etofts_slice[x, y] = ef.vp
+                                kep_slice[x, y] = ef.kep_per_min
+                        except Exception:
+                            pass
 
                     if compute_per_voxel_CBF:
                         # Optional MATLAB-style arrival-time (offset) correction.
@@ -3124,19 +3194,33 @@ def compute_and_plot_ctcs_median(
                         CTH_per_voxel[:, :, i] = CTH_slice
                     if offset_per_voxel is not None and offset_slice is not None:
                         offset_per_voxel[:, :, i] = offset_slice
+                if compute_per_voxel_ETofts:
+                    Ktrans_per_voxel[:, :, i] = Ktrans_slice
+                    ve_per_voxel[:, :, i] = ve_slice
+                    vp_etofts_per_voxel[:, :, i] = vp_etofts_slice
+                    kep_per_voxel[:, :, i] = kep_slice
 
         affine = ref_affine
 
+        # ── Model-specific output subdirectories ──────────────────
+        patlak_analysis_dir = os.path.join(analysis_directory, 'patlak')
+        tikhonov_analysis_dir = os.path.join(analysis_directory, 'tikhonov')
+        etofts_analysis_dir = os.path.join(analysis_directory, 'etofts')
+        patlak_image_dir = os.path.join(image_directory, 'AI', 'patlak')
+        tikhonov_image_dir = os.path.join(image_directory, 'AI', 'tikhonov')
+        etofts_image_dir = os.path.join(image_directory, 'AI', 'etofts')
+
         if compute_per_voxel_Ki:
+            os.makedirs(patlak_analysis_dir, exist_ok=True)
             Ki_per_voxel_nii = nib.Nifti1Image(np.asarray(Ki_per_voxel, dtype=np.float32), affine=affine, header=ref_header.copy())
-            Ki_per_voxel_path = os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz')
+            Ki_per_voxel_path = os.path.join(patlak_analysis_dir, 'Ki_per_voxel.nii.gz')
             nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
             print(f"K_i per voxel saved to {Ki_per_voxel_path}")
 
             vp_data = np.asarray(lambda_per_voxel, dtype=np.float32)
             vp_data = np.where(np.isfinite(vp_data), np.maximum(vp_data, 0.0), vp_data).astype(np.float32)
             vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=affine, header=ref_header.copy())
-            vp_per_voxel_path = os.path.join(analysis_directory, 'vp_per_voxel.nii.gz')
+            vp_per_voxel_path = os.path.join(patlak_analysis_dir, 'vp_per_voxel.nii.gz')
             nib.save(vp_per_voxel_nii, vp_per_voxel_path)
             print(f"v_p per voxel saved to {vp_per_voxel_path}")
 
@@ -3148,7 +3232,7 @@ def compute_and_plot_ctcs_median(
                     Ki_slice = Ki_per_voxel[:, :, i]
                     if np.isnan(Ki_slice).all():
                         continue
-                    save_dir_overlay = os.path.join(image_directory, 'AI', 'Ki Overlays')
+                    save_dir_overlay = os.path.join(patlak_image_dir, 'Ki Overlays')
                     os.makedirs(save_dir_overlay, exist_ok=True)
                     t_idx = min(20, int(data_4d.shape[3]) - 1)
                     save_path_overlay = os.path.join(save_dir_overlay, f"Ki_overlay_slice_{i+1}.png")
@@ -3160,10 +3244,11 @@ def compute_and_plot_ctcs_median(
                 pass
 
         if compute_per_voxel_CBF:
+            os.makedirs(tikhonov_analysis_dir, exist_ok=True)
             CBF_per_voxel_nii = nib.Nifti1Image(np.asarray(CBF_per_voxel, dtype=np.float32),
                                                 affine=affine,
                                                 header=ref_header.copy())
-            CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel_tikhonov.nii.gz')
+            CBF_per_voxel_path = os.path.join(tikhonov_analysis_dir, 'CBF_per_voxel_tikhonov.nii.gz')
             nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
             print(f"CBF per voxel saved to {CBF_per_voxel_path}")
 
@@ -3172,7 +3257,7 @@ def compute_and_plot_ctcs_median(
                                           affine=affine,
                                           header=ref_header.copy())
                 mtt_img = annotate_cth_mtt_header(mtt_img)
-                mtt_path = os.path.join(analysis_directory, 'mtt_map.nii.gz')
+                mtt_path = os.path.join(tikhonov_analysis_dir, 'mtt_map.nii.gz')
                 nib.save(mtt_img, mtt_path)
                 print(f"MTT map saved to {mtt_path} (method={settings.CTH_MTT_METHOD})")
 
@@ -3181,9 +3266,21 @@ def compute_and_plot_ctcs_median(
                                           affine=affine,
                                           header=ref_header.copy())
                 cth_img = annotate_cth_mtt_header(cth_img)
-                cth_path = os.path.join(analysis_directory, 'cth_map.nii.gz')
+                cth_path = os.path.join(tikhonov_analysis_dir, 'cth_map.nii.gz')
                 nib.save(cth_img, cth_path)
                 print(f"CTH map saved to {cth_path} (method={settings.CTH_MTT_METHOD})")
+
+            # CBV = CBF * MTT / 60  (ml/100g)
+            if (
+                settings.WRITE_MTT
+                and MTT_per_voxel is not None
+                and CBF_per_voxel is not None
+            ):
+                cbv_data = np.asarray(CBF_per_voxel, dtype=np.float32) * np.asarray(MTT_per_voxel, dtype=np.float32) / 60.0
+                cbv_img = nib.Nifti1Image(cbv_data, affine=affine, header=ref_header.copy())
+                cbv_path = os.path.join(tikhonov_analysis_dir, 'cbv_map.nii.gz')
+                nib.save(cbv_img, cbv_path)
+                print(f"CBV map saved to {cbv_path}")
 
             if offset_per_voxel is not None:
                 offset_img = nib.Nifti1Image(
@@ -3191,7 +3288,7 @@ def compute_and_plot_ctcs_median(
                     affine=affine,
                     header=ref_header.copy(),
                 )
-                offset_path = os.path.join(analysis_directory, 'offset_map.nii.gz')
+                offset_path = os.path.join(tikhonov_analysis_dir, 'offset_map.nii.gz')
                 nib.save(offset_img, offset_path)
                 print(f"Offset map saved to {offset_path}")
 
@@ -3203,7 +3300,7 @@ def compute_and_plot_ctcs_median(
                     CBF_slice = CBF_per_voxel[:, :, i]
                     if np.isnan(CBF_slice).all():
                         continue
-                    save_dir_overlay = os.path.join(image_directory, 'AI', 'CBF Overlays')
+                    save_dir_overlay = os.path.join(tikhonov_image_dir, 'CBF Overlays')
                     os.makedirs(save_dir_overlay, exist_ok=True)
                     t_idx = min(20, int(data_4d.shape[3]) - 1)
                     save_path_overlay = os.path.join(save_dir_overlay, f"CBF_overlay_slice_{i+1}.png")
@@ -3214,11 +3311,106 @@ def compute_and_plot_ctcs_median(
             except Exception:
                 pass
 
+        # ── Extended Tofts NIfTI outputs ────────────────────────────
+        if compute_per_voxel_ETofts:
+            os.makedirs(etofts_analysis_dir, exist_ok=True)
+            for _name, _arr in [
+                ('Ktrans_per_voxel',  Ktrans_per_voxel),
+                ('ve_per_voxel',      ve_per_voxel),
+                ('vp_etofts_per_voxel', vp_etofts_per_voxel),
+                ('kep_per_voxel',     kep_per_voxel),
+            ]:
+                _nii = nib.Nifti1Image(np.asarray(_arr, dtype=np.float32),
+                                       affine=affine, header=ref_header.copy())
+                _p = os.path.join(etofts_analysis_dir, f'{_name}.nii.gz')
+                nib.save(_nii, _p)
+                print(f"{_name} saved to {_p}")
+
+            # Ktrans overlays (same style as Ki overlays)
+            try:
+                global_Kt_min = np.nanmin(Ktrans_per_voxel)
+                global_Kt_max = np.nanmax(Ktrans_per_voxel)
+                for i in range(n_slices):
+                    Kt_sl = Ktrans_per_voxel[:, :, i]
+                    if np.isnan(Kt_sl).all():
+                        continue
+                    save_dir_overlay = os.path.join(etofts_image_dir, 'Ktrans Overlays')
+                    os.makedirs(save_dir_overlay, exist_ok=True)
+                    t_idx = min(20, int(data_4d.shape[3]) - 1)
+                    save_path_overlay = os.path.join(save_dir_overlay, f"Ktrans_overlay_slice_{i+1}.png")
+                    plot_Ki_overlay(
+                        data_4d[:, :, i, t_idx], Kt_sl, slice_idx=i+1, save_path=save_path_overlay,
+                        vmin=global_Kt_min, vmax=global_Kt_max
+                    )
+            except Exception:
+                pass
+
         # Optional reference comparison of voxelwise maps (best-effort, opt-in).
         try:
             _maybe_write_reference_voxelwise_compare()
         except Exception:
             pass
+
+        # ── PK diagnostic grid (voxelwise-only path) ──────────────
+        try:
+            _generate_pk_diagnostic_grid(
+                CBF_per_voxel=CBF_per_voxel if compute_per_voxel_CBF else None,
+                MTT_per_voxel=MTT_per_voxel if compute_per_voxel_CBF else None,
+                CTH_per_voxel=CTH_per_voxel if compute_per_voxel_CBF else None,
+                Ki_per_voxel=Ki_per_voxel if compute_per_voxel_Ki else None,
+                C_a_full=C_a_full,
+                time_points_s=time_points_s,
+                data_4d=data_4d,
+                T1_matrix=T1_matrix,
+                M0_matrix=M0_matrix,
+                brain_mask_full=brain_mask_full,
+                analysis_directory=tikhonov_analysis_dir if compute_per_voxel_CBF else analysis_directory,
+                compute_CTC_func=_ctc,
+                baseline_func=_baseline,
+                shift_func=_shift,
+            )
+        except Exception as _pk_err:
+            print(f"[pk_diag] Failed to generate PK diagnostic grid: {_pk_err}")
+
+        # ── Extended Tofts diagnostic grid (voxelwise-only path) ──
+        if compute_per_voxel_ETofts:
+            try:
+                _generate_etofts_diagnostic_grid(
+                    Ktrans_per_voxel=Ktrans_per_voxel,
+                    ve_per_voxel=ve_per_voxel,
+                    vp_etofts_per_voxel=vp_etofts_per_voxel,
+                    kep_per_voxel=kep_per_voxel,
+                    Ki_per_voxel=Ki_per_voxel if compute_per_voxel_Ki else None,
+                    C_a_full=C_a_full,
+                    time_points_s=time_points_s,
+                    data_4d=data_4d,
+                    T1_matrix=T1_matrix,
+                    M0_matrix=M0_matrix,
+                    brain_mask_full=brain_mask_full,
+                    analysis_directory=etofts_analysis_dir,
+                    compute_CTC_func=_ctc,
+                    baseline_func=_baseline,
+                    shift_func=_shift,
+                )
+            except Exception as _et_err:
+                print(f"[etofts_diag] Failed to generate ETofts diagnostic grid: {_et_err}")
+
+        # ── Global average Patlak plot (voxelwise-only) ───────────
+        try:
+            _generate_global_average_patlak_plot(
+                data_4d=data_4d,
+                T1_matrix=T1_matrix,
+                M0_matrix=M0_matrix,
+                brain_mask_full=brain_mask_full,
+                C_a_full=C_a_full,
+                time_points_s=time_points_s,
+                analysis_directory=patlak_analysis_dir if compute_per_voxel_Ki else analysis_directory,
+                compute_CTC_func=_ctc,
+                baseline_func=_baseline,
+                shift_func=_shift,
+            )
+        except Exception as _gp_err:
+            print(f"[global_patlak] Failed to generate global average Patlak plot: {_gp_err}")
 
         # Nothing else to do in voxelwise-only mode.
         return
@@ -4097,6 +4289,44 @@ def compute_and_plot_ctcs_median(
             print(f"CTH map saved to {cth_path} (method={settings.CTH_MTT_METHOD})")
             log_median("CTH", CTH_per_voxel)
 
+        # CBV = CBF * MTT / 60  (ml/100g)
+        if (
+            settings.WRITE_MTT
+            and MTT_per_voxel is not None
+            and CBF_per_voxel is not None
+        ):
+            cbv_data = np.asarray(CBF_per_voxel, dtype=np.float32) * np.asarray(MTT_per_voxel, dtype=np.float32) / 60.0
+            cbv_img = nib.Nifti1Image(cbv_data, affine=ref_affine, header=ref_header.copy())
+            cbv_path = os.path.join(analysis_directory, 'cbv_map.nii.gz')
+            nib.save(cbv_img, cbv_path)
+            print(f"CBV map saved to {cbv_path}")
+
+    # ── PK diagnostic grid (full tissue path) ──────────────────────
+    try:
+        _ctc_diag = compute_CTC_meta if "compute_CTC_meta" in dir() else compute_CTC
+        _bl_diag = find_baseline_point_advanced
+        _sh_diag = custom_shifter
+        _generate_pk_diagnostic_grid(
+            CBF_per_voxel=CBF_per_voxel if compute_per_voxel_CBF else None,
+            MTT_per_voxel=MTT_per_voxel if compute_per_voxel_CBF else None,
+            CTH_per_voxel=CTH_per_voxel if compute_per_voxel_CBF else None,
+            Ki_per_voxel=Ki_per_voxel if compute_per_voxel_Ki else None,
+            C_a_full=C_a_full,
+            time_points_s=time_points_s,
+            data_4d=data_4d,
+            T1_matrix=T1_matrix,
+            M0_matrix=M0_matrix,
+            brain_mask_full=brain_mask_full if "brain_mask_full" in dir() else (
+                np.isfinite(np.nanmean(data_4d, axis=3)) & (np.nanmean(data_4d, axis=3) != 0)
+            ),
+            analysis_directory=analysis_directory,
+            compute_CTC_func=_ctc_diag,
+            baseline_func=_bl_diag,
+            shift_func=_sh_diag,
+        )
+    except Exception as _pk_err:
+        print(f"[pk_diag] Failed to generate PK diagnostic grid: {_pk_err}")
+
     # ------------------------------------------------------------------
     # Per-voxel Ki statistics and JSON output
     # ------------------------------------------------------------------
@@ -4558,6 +4788,384 @@ def compute_and_plot_ctcs_median(
             tissue_name= tissue_name.replace('_', ' ').title(),
             save_path  = save_path
         )
+
+
+# ── Global-average Patlak diagnostic plot ────────────────────────────────
+def _generate_global_average_patlak_plot(
+    *,
+    data_4d,
+    T1_matrix,
+    M0_matrix,
+    brain_mask_full,
+    C_a_full,
+    time_points_s,
+    analysis_directory,
+    compute_CTC_func,
+    baseline_func,
+    shift_func,
+):
+    """Compute the brain-averaged CTC and run Patlak analysis on it.
+
+    Produces a 2-panel figure:
+        Top:   brain-average CTC vs. AIF (concentration curves)
+        Bottom: Patlak plot with fitted regression line
+
+    Saved as ``<analysis_directory>/global_average_patlak.png``.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+
+    spatial = data_4d.shape[:3]
+    n_time = int(data_4d.shape[3])
+    common_len = min(n_time, len(C_a_full), len(time_points_s))
+    C_a = np.asarray(C_a_full[:common_len], dtype=float)
+    t = np.asarray(time_points_s[:common_len], dtype=float)
+
+    # Accumulate brain-averaged CTC across all brain voxels.
+    accum = np.zeros(common_len, dtype=float)
+    count = 0
+    for k in range(spatial[2]):
+        mask_slice = brain_mask_full[:, :, k]
+        indices = np.argwhere(mask_slice)
+        if indices.size == 0:
+            continue
+        for (x, y) in indices:
+            voxel = data_4d[x, y, k, :]
+            T1 = T1_matrix[x, y, k]
+            M0 = M0_matrix[x, y, k]
+            C_t_0 = compute_CTC_func(voxel, T1, m0=M0)
+            bp = baseline_func(C_t_0)
+            C_t = shift_func(C_t_0, bp)
+            if np.isnan(C_t).any() or np.all(C_t == 0):
+                continue
+            c_t_clip = np.asarray(C_t[:common_len], dtype=float)
+            if c_t_clip.size < common_len:
+                continue
+            accum += c_t_clip
+            count += 1
+
+    if count < 10:
+        print(f"[global_patlak] Only {count} brain voxels — skipping.")
+        return
+
+    avg_ct = accum / count
+
+    # Patlak analysis on the averaged curve.
+    Ki, lam, SD, x_p, y_p, good = patlak_analysis_plotting(avg_ct, C_a, t)
+
+    # ── Plot ──
+    fig = plt.figure(figsize=(10, 9))
+    gs = GridSpec(2, 1, figure=fig, height_ratios=[1, 1])
+    gs.update(hspace=0.35)
+
+    ax_ctc = fig.add_subplot(gs[0])
+    ax_pat = fig.add_subplot(gs[1])
+
+    # Panel 1: CTC + AIF
+    ax_ctc.set_facecolor("#f7f7f7")
+    ax_ctc.plot(t, C_a, color="purple", lw=2, alpha=0.6, label="AIF  (input function)")
+    ax_ctc.plot(t, avg_ct, color="steelblue", lw=2, label=f"Brain avg CTC  (n={count})")
+    ax_ctc.set_xlabel("Time (s)")
+    ax_ctc.set_ylabel("Concentration (mmol)")
+    ax_ctc.set_title("Global Brain-Averaged CTC")
+    ax_ctc.legend(loc="upper right")
+    ax_ctc.grid(True, alpha=0.4)
+
+    # Panel 2: Patlak plot
+    ax_pat.set_facecolor("#f7f7f7")
+    if x_p is not None and y_p is not None and x_p.size:
+        ax_pat.scatter(x_p[~good], y_p[~good], c="lightgray", s=12, alpha=0.5, label="excluded")
+        ax_pat.scatter(x_p[good], y_p[good], c="steelblue", s=18, alpha=0.8, label="included")
+        if np.isfinite(Ki) and np.isfinite(lam):
+            xg = x_p[good]
+            ax_pat.plot(xg, Ki / 6000.0 * xg + lam / 100.0, color="red", lw=2,
+                        label=f"Ki={Ki:.2f} ml/100g/min\n$v_p$={lam:.2f}%")
+    ax_pat.set_xlabel("∫ Ca(τ)dτ / Ca(t)  (s)")
+    ax_pat.set_ylabel("Ct(t) / Ca(t)")
+    ax_pat.set_title("Global Average Patlak Plot")
+    ax_pat.legend(loc="upper left")
+    ax_pat.grid(True, alpha=0.4)
+
+    save_path = os.path.join(analysis_directory, "global_average_patlak.png")
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[global_patlak] Saved → {save_path}")
+    print(f"[global_patlak] Ki = {Ki:.4f} ml/100g/min, vp = {lam:.4f}%, SD = {SD:.4f}, n_voxels = {count}")
+
+
+def _generate_etofts_diagnostic_grid(
+    *,
+    Ktrans_per_voxel,
+    ve_per_voxel,
+    vp_etofts_per_voxel,
+    kep_per_voxel,
+    Ki_per_voxel,
+    C_a_full,
+    time_points_s,
+    data_4d,
+    T1_matrix,
+    M0_matrix,
+    brain_mask_full,
+    analysis_directory,
+    compute_CTC_func,
+    baseline_func,
+    shift_func,
+):
+    """Generate a diagnostic grid for the Extended Tofts model.
+
+    3×3 layout:
+      Row 1: Ktrans map slice | ve map slice | vp map slice
+      Row 2: Measured vs fitted CTC | Residual plot | kep map slice
+      Row 3: Ktrans histogram | ve histogram | vp histogram
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+    from models.extended_tofts import forward as etofts_forward, fit_voxel as _etofts_fit
+
+    Ktrans_map = np.asarray(Ktrans_per_voxel, dtype=float)
+    if Ktrans_map.ndim != 3 or np.all(~np.isfinite(Ktrans_map)):
+        print("[etofts_diag] Ktrans map empty — skipping.")
+        return
+
+    # Pick a representative voxel: highest Ktrans in the middle slices.
+    n_sl = Ktrans_map.shape[2]
+    mid_start = max(0, n_sl // 4)
+    mid_end = min(n_sl, n_sl - n_sl // 4)
+    sub = Ktrans_map[:, :, mid_start:mid_end].copy()
+    sub[~np.isfinite(sub)] = -np.inf
+    flat_idx = np.argmax(sub)
+    vx, vy, vz_rel = np.unravel_index(flat_idx, sub.shape)
+    vz = vz_rel + mid_start
+
+    print(f"[etofts_diag] Diagnostic voxel: x={vx}, y={vy}, z={vz}  "
+          f"Ktrans={Ktrans_map[vx, vy, vz]:.2f} ml/100g/min")
+
+    # Extract and fit that voxel.
+    voxel_signal = np.asarray(data_4d[vx, vy, vz, :], dtype=float)
+    T1_vox = float(T1_matrix[vx, vy, vz])
+    M0_vox = float(M0_matrix[vx, vy, vz])
+    C_t_raw = compute_CTC_func(voxel_signal, T1_vox, m0=M0_vox)
+    bp = baseline_func(C_t_raw)
+    C_t = shift_func(C_t_raw, bp)
+
+    common_len = min(int(data_4d.shape[3]), len(C_a_full), len(time_points_s))
+    C_t_v = np.asarray(C_t[:common_len], dtype=float)
+    C_a_v = np.asarray(C_a_full[:common_len], dtype=float)
+    t_v = np.asarray(time_points_s[:common_len], dtype=float)
+
+    if C_t_v.size < 10:
+        print("[etofts_diag] Tissue curve too short — skipping.")
+        return
+
+    # Patlak init if available.
+    _init_kt = None
+    _init_vp = None
+    if Ki_per_voxel is not None:
+        ki_val = float(Ki_per_voxel[vx, vy, vz])
+        if np.isfinite(ki_val):
+            _init_kt = max(ki_val / 6000.0, 1e-8)
+
+    ef = _etofts_fit(C_a_v, C_t_v, t_v, init_ktrans=_init_kt, init_vp=_init_vp)
+    if not ef.success:
+        print("[etofts_diag] ETofts fit failed at diagnostic voxel — skipping.")
+        return
+
+    # Forward prediction.
+    C_t_pred = etofts_forward(t_v, ef.ktrans_raw, ef.ve, ef.vp, C_a_v)
+    residual = C_t_v - C_t_pred
+
+    # ── Figure ──
+    fig = plt.figure(figsize=(15, 12))
+    gs = GridSpec(3, 3, figure=fig)
+    gs.update(hspace=0.4, wspace=0.35)
+
+    # Row 1: Map slices
+    maps_info = [
+        (Ktrans_per_voxel, "Ktrans [ml/100g/min]", "hot"),
+        (ve_per_voxel, "ve [fraction]", "viridis"),
+        (vp_etofts_per_voxel, "vp [fraction]", "plasma"),
+    ]
+    for col, (arr, title, cmap) in enumerate(maps_info):
+        ax = fig.add_subplot(gs[0, col])
+        sl = np.asarray(arr[:, :, vz], dtype=float)
+        sl[~np.isfinite(sl)] = np.nan
+        im = ax.imshow(sl.T, origin="lower", cmap=cmap, interpolation="nearest")
+        ax.plot(vx, vy, "r+", ms=12, mew=2)
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig.colorbar(im, ax=ax, shrink=0.7)
+
+    # Row 2, col 0: Measured vs Fitted CTC
+    ax_ctc = fig.add_subplot(gs[1, 0])
+    ax_ctc.set_facecolor("#f7f7f7")
+    ax_ctc.plot(t_v, C_t_v, "k.", ms=3, alpha=0.5, label="Measured")
+    ax_ctc.plot(t_v, C_t_pred, "r-", lw=1.5, label="ETofts fit")
+    ax_ctc.set_xlabel("Time [s]")
+    ax_ctc.set_ylabel("Ct")
+    ax_ctc.set_title("Measured vs ETofts Fit", fontsize=10)
+    ax_ctc.legend(fontsize=8)
+    ax_ctc.grid(True, alpha=0.3)
+
+    # Row 2, col 1: Residual
+    ax_res = fig.add_subplot(gs[1, 1])
+    ax_res.set_facecolor("#f7f7f7")
+    ax_res.plot(t_v, residual, "b-", lw=0.8, alpha=0.7)
+    ax_res.axhline(0, color="gray", ls="--", lw=0.5)
+    ax_res.set_xlabel("Time [s]")
+    ax_res.set_ylabel("Residual")
+    ax_res.set_title("Fit Residual", fontsize=10)
+    ax_res.grid(True, alpha=0.3)
+
+    # Row 2, col 2: kep map slice
+    ax_kep = fig.add_subplot(gs[1, 2])
+    kep_sl = np.asarray(kep_per_voxel[:, :, vz], dtype=float)
+    kep_sl[~np.isfinite(kep_sl)] = np.nan
+    im_kep = ax_kep.imshow(kep_sl.T, origin="lower", cmap="inferno", interpolation="nearest")
+    ax_kep.plot(vx, vy, "r+", ms=12, mew=2)
+    ax_kep.set_title("kep [1/min]", fontsize=10)
+    ax_kep.set_xticks([])
+    ax_kep.set_yticks([])
+    fig.colorbar(im_kep, ax=ax_kep, shrink=0.7)
+
+    # Row 3: Histograms
+    hist_info = [
+        (Ktrans_per_voxel, "Ktrans [ml/100g/min]", "orangered"),
+        (ve_per_voxel, "ve [fraction]", "teal"),
+        (vp_etofts_per_voxel, "vp [fraction]", "purple"),
+    ]
+    for col, (arr, xlabel, color) in enumerate(hist_info):
+        ax_h = fig.add_subplot(gs[2, col])
+        vals = np.asarray(arr, dtype=float).ravel()
+        vals = vals[np.isfinite(vals) & (vals > 0)]
+        if vals.size > 0:
+            p99 = np.percentile(vals, 99)
+            vals_clip = vals[vals <= p99]
+            ax_h.hist(vals_clip, bins=80, color=color, alpha=0.7, edgecolor="none")
+        ax_h.set_xlabel(xlabel, fontsize=9)
+        ax_h.set_ylabel("Count", fontsize=9)
+        ax_h.set_title(f"Distribution (n={vals.size})", fontsize=9)
+        ax_h.grid(True, alpha=0.3)
+
+    # Suptitle with fit parameters.
+    fig.suptitle(
+        f"Extended Tofts Diagnostic  —  voxel ({vx},{vy},{vz})\n"
+        f"Ktrans={ef.ktrans_ml_100g:.2f} ml/100g/min   ve={ef.ve:.3f}   vp={ef.vp:.4f}   "
+        f"kep={ef.kep_per_min:.2f} /min   R²={1 - np.sum(residual**2)/np.sum((C_t_v - np.mean(C_t_v))**2):.4f}",
+        fontsize=11, y=0.99,
+    )
+
+    os.makedirs(analysis_directory, exist_ok=True)
+    save_path = os.path.join(analysis_directory, "etofts_diagnostic_grid.png")
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[etofts_diag] Saved → {save_path}")
+
+
+def _generate_pk_diagnostic_grid(
+    *,
+    CBF_per_voxel,
+    MTT_per_voxel,
+    CTH_per_voxel,
+    Ki_per_voxel,
+    C_a_full,
+    time_points_s,
+    data_4d,
+    T1_matrix,
+    M0_matrix,
+    brain_mask_full,
+    analysis_directory,
+    compute_CTC_func,
+    baseline_func,
+    shift_func,
+):
+    """Generate a per-voxel PK diagnostic grid plot.
+
+    Picks a representative voxel (highest CBF in middle slices), re-solves
+    the Tikhonov deconvolution for that single voxel to capture all
+    intermediate L-curve data, runs a Patlak fit, and renders a 4×3
+    diagnostic panel saved as ``pk_diagnostic_grid.png``.
+    """
+
+    from utils.pk_diagnostics import write_pk_diagnostic_grid, pick_diagnostic_voxel
+
+    # Need at least CBF to pick a voxel.
+    if CBF_per_voxel is None:
+        print("[pk_diag] CBF map unavailable — skipping diagnostic grid.")
+        return
+
+    cbf_map = np.asarray(CBF_per_voxel, dtype=float)
+    if cbf_map.ndim != 3 or np.all(~np.isfinite(cbf_map)):
+        print("[pk_diag] CBF map empty or wrong shape — skipping.")
+        return
+
+    # Pick representative voxel.
+    vx, vy, vz = pick_diagnostic_voxel(
+        cbf_map,
+        mtt_map=np.asarray(MTT_per_voxel, dtype=float) if MTT_per_voxel is not None else None,
+    )
+    print(f"[pk_diag] Diagnostic voxel: x={vx}, y={vy}, z={vz}  "
+          f"CBF={cbf_map[vx, vy, vz]:.2f} ml/100g/min")
+
+    # Extract tissue curve for that voxel.
+    voxel_signal = np.asarray(data_4d[vx, vy, vz, :], dtype=float)
+    T1_vox = float(T1_matrix[vx, vy, vz])
+    M0_vox = float(M0_matrix[vx, vy, vz])
+    C_t_raw = compute_CTC_func(voxel_signal, T1_vox, m0=M0_vox)
+    bp = baseline_func(C_t_raw)
+    C_t = shift_func(C_t_raw, bp)
+
+    common_len = min(int(data_4d.shape[3]), len(C_a_full), len(time_points_s))
+    C_t_voxel = np.asarray(C_t[:common_len], dtype=float)
+    C_a_voxel = np.asarray(C_a_full[:common_len], dtype=float)
+    t_voxel = np.asarray(time_points_s[:common_len], dtype=float)
+
+    if C_t_voxel.size < 10:
+        print("[pk_diag] Tissue curve too short — skipping.")
+        return
+
+    # ── Tikhonov diagnostic solve ──
+    diag = solve_single_voxel_diagnostic(t_voxel, C_a_voxel, C_t_voxel)
+
+    # ── Patlak diagnostic fit ──
+    patlak_data = None
+    _single_bolus = int(getattr(settings, "NUMBER_OF_PEAKS", 2)) == 1
+    try:
+        pfit = _fit_patlak_diagnostic(
+            C_t_voxel, C_a_voxel, t_voxel,
+            single_bolus=_single_bolus,
+        )
+        patlak_data = {
+            "ki": float(pfit.ki_ml_per_100g_min),
+            "vp": float(pfit.vp_ml_per_100g),
+            "sd_ki": float(pfit.sd_ki_ml_per_100g_min),
+            "x_patlak": np.asarray(pfit.x_patlak, dtype=float),
+            "y_patlak": np.asarray(pfit.y_patlak, dtype=float),
+            "good_mask": np.asarray(pfit.good_mask, dtype=bool),
+        }
+    except Exception as _pe:
+        print(f"[pk_diag] Patlak fit failed for diagnostic voxel: {_pe}")
+
+    # ── 2-D map slice for the top-left panel ──
+    map_2d = None
+    if CTH_per_voxel is not None:
+        map_slice = np.asarray(CTH_per_voxel[:, :, vz], dtype=float)
+        if np.any(np.isfinite(map_slice)):
+            map_2d = map_slice
+
+    # ── Write the plot ──
+    save_path = os.path.join(analysis_directory, "pk_diagnostic_grid.png")
+    write_pk_diagnostic_grid(
+        diag,
+        patlak=patlak_data,
+        map_2d=map_2d,
+        voxel_xy=(vx, vy),
+        map_label="CTH [s]",
+        save_path=save_path,
+    )
+
         
 def plot_Ki_overlay(dce_slice, Ki_slice, slice_idx, save_path, vmin, vmax):
     """
@@ -4685,7 +5293,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     seg_dir = os.path.join(nifti_directory, 'segmentation')
     sid = 'segmentation'  # Define the subject ID
     seg_mgz_path = os.path.join(seg_dir, sid, 'mri', 'aparc.DKTatlas+aseg.deep.mgz')
-    t2_path = os.path.join(nifti_directory, axial_t2_2D_filename)
+    t2_path = os.path.join(nifti_directory, axial_t2_2D_filename) if axial_t2_2D_filename else None
     dce_path = os.path.join(nifti_directory, dce_filename) if dce_filename else None
     if not dce_path or not os.path.exists(dce_path):
         raise RuntimeError('Missing DCE NIfTI. Ensure DCE is present and imported.')
@@ -4717,6 +5325,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     force_voxelwise_only = (os.environ.get('PBRAIN_VOXELWISE_ONLY') or '').strip().lower() in {'1', 'true', 'yes'}
     has_struct_t1 = bool(t1_path and os.path.exists(t1_path) and _looks_like_structural_t1(t1_path))
+    has_t2 = bool(t2_path and os.path.exists(t2_path))
     voxelwise_only = force_voxelwise_only or (not has_struct_t1)
 
     # Ensure segmentation directory exists
@@ -4741,7 +5350,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     subcortical_gm_mask_path = os.path.join(mask_dir, 'subcortical_gm.nii.gz')
     wm_mask_path = os.path.join(mask_dir, 'wm.nii.gz')
 
-    if not voxelwise_only:
+    if not voxelwise_only and has_t2:
         print('[!] Coregistering GM/WM masks onto T2 and DCE space')
         (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
          subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
@@ -4793,11 +5402,14 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     # Decide which outputs to compute for this run.
     model_norm = (model or '').strip().lower()
-    compute_ki = model_norm in {'patlak', 'both'}
-    compute_cbf = model_norm in {'tikhonov', 'both'}
+    # Support "+" combos (e.g. "patlak+etofts", "extended_tofts+tikhonov")
+    _model_parts = set(model_norm.split("+")) if "+" in model_norm else {model_norm}
+    compute_ki = bool({"patlak", "both", "all"} & _model_parts)
+    compute_cbf = bool({"tikhonov", "both", "all"} & _model_parts)
+    compute_etofts = bool({"extended_tofts", "etofts", "etm", "tofts", "all"} & _model_parts)
 
     # Run CTC + modelling.
-    if voxelwise_only:
+    if voxelwise_only or not has_t2:
         compute_and_plot_ctcs_median(
             data_4d,
             None,
@@ -4818,6 +5430,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
             boundary=False,
             compute_per_voxel_Ki=compute_ki,
             compute_per_voxel_CBF=compute_cbf,
+            compute_per_voxel_ETofts=compute_etofts,
             flip_angle_deg=flip_angle_deg,
             voxelwise_only=True,
         )
@@ -4830,6 +5443,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
             boundary=boundary,
             compute_per_voxel_Ki=compute_ki,
             compute_per_voxel_CBF=compute_cbf,
+            compute_per_voxel_ETofts=compute_etofts,
             gm_brainstem_mask_t2=gm_brainstem_mask_t2, gm_brainstem_mask_dce=gm_brainstem_mask_dce,
             gm_cerebellum_mask_t2=gm_cerebellum_mask_t2, gm_cerebellum_mask_dce=gm_cerebellum_mask_dce,
             wm_cerebellum_mask_t2=wm_cerebellum_mask_t2, wm_cerebellum_mask_dce=wm_cerebellum_mask_dce,

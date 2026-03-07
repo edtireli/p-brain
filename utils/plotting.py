@@ -57,16 +57,58 @@ def _load_map_in_dce_grid(
         return None
 
     in_dce_path = os.path.join(fitting_dir, f"{base_name}_in_dce.nii.gz")
+    base_path = os.path.join(fitting_dir, f"{base_name}.nii.gz")
+
     if os.path.isfile(in_dce_path):
         try:
-            return np.asarray(nib.load(in_dce_path).get_fdata(), dtype=float)
+            cached_data = np.asarray(nib.load(in_dce_path).get_fdata(), dtype=float)
+            # Sanity-check: if the underlying source map exists on the same
+            # grid as the DCE, a correctly resampled cache should preserve
+            # almost all nonzero voxels.  A large drop indicates the cache was
+            # produced by a buggy resample_from_to pass (oblique boundary
+            # zeroing).  In that case fall through and regenerate.
+            cache_ok = True
+            if os.path.isfile(base_path):
+                try:
+                    src_check = nib.load(base_path)
+                    if (
+                        src_check.shape[:3] == tuple(target_img.shape[:3])
+                        and np.allclose(src_check.affine, target_img.affine, atol=1e-4)
+                    ):
+                        src_nz = np.count_nonzero(np.asarray(src_check.dataobj))
+                        cache_nz = np.count_nonzero(cached_data)
+                        if src_nz > 0 and cache_nz < 0.8 * src_nz:
+                            cache_ok = False
+                except Exception:
+                    pass
+            if cache_ok:
+                return cached_data
         except Exception:
             pass
 
-    base_path = os.path.join(fitting_dir, f"{base_name}.nii.gz")
     if os.path.isfile(base_path):
         try:
             src_img = nib.load(base_path)
+            # When the source map already lives on the same voxel grid as the
+            # DCE (identical shape + affine) resampling is a no-op at best
+            # and destructive at worst (nibabel resample_from_to can zero-out
+            # large regions on oblique volumes due to boundary handling).
+            src_shape_3d = src_img.shape[:3]
+            if (
+                src_shape_3d == tuple(target_img.shape[:3])
+                and np.allclose(src_img.affine, target_img.affine, atol=1e-4)
+            ):
+                data = np.asarray(src_img.get_fdata(), dtype=float)
+                # Cache as _in_dce so the next run finds it directly.
+                try:
+                    nib.save(
+                        nib.Nifti1Image(data.astype(np.float32, copy=False), target_img.affine),
+                        in_dce_path,
+                    )
+                except Exception:
+                    pass
+                return data
+
             resampled = resample_from_to(src_img, (target_img.shape[:3], target_img.affine), order=1)
             try:
                 nib.save(resampled, in_dce_path)

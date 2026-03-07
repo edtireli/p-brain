@@ -173,41 +173,47 @@ if T1_RECOVERY_MODEL not in {"inversion", "saturation", "turboflash"}:
 # - both: run patlak then tikhonov
 # - extended_tofts: Extended Tofts model only
 # - all: run patlak + tikhonov + extended tofts
+# - "+"-delimited combos: e.g. patlak+etofts, etofts+patlak+tikhonov
 _KINETIC_MODEL_RAW = (os.environ.get("P_BRAIN_MODEL", "both") or "both").strip().lower()
-if _KINETIC_MODEL_RAW == "all":
-    KINETIC_MODEL = "all"
-elif _KINETIC_MODEL_RAW in {
-    "both",
-    "patlak_then_tikhonov",
-    "patlak-then-tikhonov",
-    "patlak_tikhonov",
-    "patlak_tikhonov_fast",
-    "patlak-then-tikhonov-fast",
-}:
-    KINETIC_MODEL = "both"
-elif _KINETIC_MODEL_RAW in {
-    "tikhonov",
-    "tikhonov_only",
-    "tikhonov_fast",
-    "tikhonov-only-fast",
-    "two_compartment",
-    "2comp",
-    "two-comp",
-    "two-compartment",
-}:
-    KINETIC_MODEL = "tikhonov"
-elif _KINETIC_MODEL_RAW in {"patlak"}:
-    KINETIC_MODEL = "patlak"
-elif _KINETIC_MODEL_RAW in {
-    "extended_tofts",
-    "etofts",
-    "etm",
-    "tofts",
-    "extended-tofts",
-}:
-    KINETIC_MODEL = "extended_tofts"
-else:
-    KINETIC_MODEL = "both"
+try:
+    from models import normalise_pk_model as _normalise_pk
+    KINETIC_MODEL = _normalise_pk(_KINETIC_MODEL_RAW)
+except Exception:
+    # Fallback when models package is not importable (early bootstrap).
+    if _KINETIC_MODEL_RAW == "all":
+        KINETIC_MODEL = "all"
+    elif _KINETIC_MODEL_RAW in {
+        "both",
+        "patlak_then_tikhonov",
+        "patlak-then-tikhonov",
+        "patlak_tikhonov",
+        "patlak_tikhonov_fast",
+        "patlak-then-tikhonov-fast",
+    }:
+        KINETIC_MODEL = "both"
+    elif _KINETIC_MODEL_RAW in {
+        "tikhonov",
+        "tikhonov_only",
+        "tikhonov_fast",
+        "tikhonov-only-fast",
+        "two_compartment",
+        "2comp",
+        "two-comp",
+        "two-compartment",
+    }:
+        KINETIC_MODEL = "tikhonov"
+    elif _KINETIC_MODEL_RAW in {"patlak"}:
+        KINETIC_MODEL = "patlak"
+    elif _KINETIC_MODEL_RAW in {
+        "extended_tofts",
+        "etofts",
+        "etm",
+        "tofts",
+        "extended-tofts",
+    }:
+        KINETIC_MODEL = "extended_tofts"
+    else:
+        KINETIC_MODEL = "both"
 
 # Optionally use the Patlak permeability (Ki) as the initial guess for
 # Ktrans in the two-compartment optimisation.

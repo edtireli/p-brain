@@ -684,16 +684,21 @@ class MapJob:
 
 
 MAP_JOBS: Sequence[MapJob] = (
-    MapJob("CBF_per_voxel_tikhonov", "cbf_montage"),
-    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage"),
-    MapJob("mtt_map", "mtt_montage", vmin=0.0),
-    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", vmin=0.0),
-    MapJob("cth_map", "cth_montage", vmin=0.0),
-    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", vmin=0.0),
-    MapJob("Ki_per_voxel", "ki_voxel_montage", metric="ki"),
-    MapJob("Ki_map_atlas", "ki_atlas_montage", metric="ki"),
-    MapJob("vp_map_atlas", "vp_atlas_montage"),
-    MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png"),
+    MapJob("CBF_per_voxel_tikhonov", "cbf_montage", search_directories=("", "tikhonov")),
+    MapJob("CBF_tikhonov_map_atlas", "cbf_parcel_montage", search_directories=("", "tikhonov")),
+    MapJob("mtt_map", "mtt_montage", vmin=0.0, search_directories=("", "tikhonov")),
+    MapJob("MTT_tikhonov_map_atlas", "mtt_parcel_montage", vmin=0.0, search_directories=("", "tikhonov")),
+    MapJob("cth_map", "cth_montage", vmin=0.0, search_directories=("", "tikhonov")),
+    MapJob("CTH_tikhonov_map_atlas", "cth_parcel_montage", vmin=0.0, search_directories=("", "tikhonov")),
+    MapJob("cbv_map", "cbv_montage", vmin=0.0, search_directories=("", "tikhonov")),
+    MapJob("Ki_per_voxel", "ki_voxel_montage", metric="ki", search_directories=("", "patlak")),
+    MapJob("Ki_map_atlas", "ki_atlas_montage", metric="ki", search_directories=("", "patlak")),
+    MapJob("vp_map_atlas", "vp_atlas_montage", search_directories=("", "patlak")),
+    MapJob("vp_per_voxel", "vp_per_voxel", mask_zero=True, output_ext=".png", search_directories=("", "patlak")),
+    MapJob("Ktrans_per_voxel", "ktrans_voxel_montage", search_directories=("", "etofts")),
+    MapJob("ve_per_voxel", "ve_voxel_montage", search_directories=("", "etofts")),
+    MapJob("vp_etofts_per_voxel", "vp_etofts_voxel_montage", search_directories=("", "etofts")),
+    MapJob("kep_per_voxel", "kep_voxel_montage", search_directories=("", "etofts")),
     MapJob(
         "fa_map",
         "fa_montage",
@@ -1100,6 +1105,144 @@ def generate_parametric_montages(
 
     if not generated_any:
         print("[montage] No parametric maps found for montage rendering.")
+        return
+
+
+# ---- Validation grid: tile all individual montages into one overview ----
+
+# The order and subset of montages to include in the validation grid.
+_VALIDATION_GRID_ORDER: Sequence[str] = (
+    "t1_montage",
+    "m0_montage",
+    "cbf_montage",
+    "ki_voxel_montage",
+    "vp_per_voxel",
+    "mtt_montage",
+    "cth_montage",
+    "cbv_montage",
+    "t1_montage_in_dce",
+    "m0_montage_in_dce",
+)
+
+# Human-readable labels placed above each tile.
+_VALIDATION_GRID_LABELS: Dict[str, str] = {
+    "t1_montage": "T1",
+    "m0_montage": "M0",
+    "t1_montage_in_dce": "T1 (in DCE)",
+    "m0_montage_in_dce": "M0 (in DCE)",
+    "cbf_montage": "CBF",
+    "ki_voxel_montage": "Ki",
+    "vp_per_voxel": "vp",
+    "mtt_montage": "MTT",
+    "cth_montage": "CTH",
+    "cbv_montage": "CBV",
+    "cbf_parcel_montage": "CBF (parcel)",
+    "mtt_parcel_montage": "MTT (parcel)",
+    "cth_parcel_montage": "CTH (parcel)",
+    "ki_atlas_montage": "Ki (atlas)",
+    "vp_atlas_montage": "vp (atlas)",
+}
+
+
+def _generate_validation_grid(montage_dir: str) -> None:
+    """Tile available individual montage PNGs into one combined overview image.
+
+    The output is saved as ``validation_grid.png`` in *montage_dir*.
+    Only montages that actually exist on disk are included; the grid
+    arranges them row-by-row (max 3 per row by default).
+    """
+
+    if Image is None:
+        # Pillow not available – skip silently.
+        return
+
+    # Collect available montages in preferred order, then append any extras.
+    ordered: list[tuple[str, str]] = []  # (label, path)
+    seen_bases: set[str] = set()
+    for base in _VALIDATION_GRID_ORDER:
+        path = os.path.join(montage_dir, base + ".png")
+        if os.path.isfile(path):
+            label = _VALIDATION_GRID_LABELS.get(base, base)
+            ordered.append((label, path))
+            seen_bases.add(base)
+
+    # Also pick up any montages not in the preferred order list.
+    for fname in sorted(os.listdir(montage_dir)):
+        if not fname.lower().endswith(".png"):
+            continue
+        base = fname[:-4]  # strip .png
+        if base in seen_bases or base == "validation_grid":
+            continue
+        path = os.path.join(montage_dir, fname)
+        if os.path.isfile(path):
+            label = _VALIDATION_GRID_LABELS.get(base, base.replace("_", " ").title())
+            ordered.append((label, path))
+
+    if not ordered:
+        return
+
+    # Load all images.
+    tiles: list[tuple[str, "Image.Image"]] = []
+    for label, path in ordered:
+        try:
+            img = Image.open(path).convert("RGBA")
+            tiles.append((label, img))
+        except Exception:
+            continue
+
+    if not tiles:
+        return
+
+    cols = min(3, len(tiles))
+    rows_needed = (len(tiles) + cols - 1) // cols
+
+    # Determine uniform tile size (scale all to match the first tile width).
+    target_w = tiles[0][1].width
+    label_h = 40  # pixels reserved for the text label above each tile
+    gap = 12       # pixels between tiles
+
+    def _scale(img: "Image.Image", w: int) -> "Image.Image":
+        if img.width == w:
+            return img
+        ratio = w / img.width
+        new_h = max(1, int(img.height * ratio))
+        return img.resize((w, new_h), Image.LANCZOS)
+
+    scaled: list[tuple[str, "Image.Image"]] = []
+    max_tile_h = 0
+    for label, img in tiles:
+        s = _scale(img, target_w)
+        max_tile_h = max(max_tile_h, s.height)
+        scaled.append((label, s))
+
+    cell_w = target_w + gap
+    cell_h = max_tile_h + label_h + gap
+
+    canvas_w = cols * cell_w + gap
+    canvas_h = rows_needed * cell_h + gap
+
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    font = _load_pillow_font(max(16, label_h // 2))
+
+    for idx, (label, img) in enumerate(scaled):
+        r = idx // cols
+        c = idx % cols
+        x = gap + c * cell_w
+        y = gap + r * cell_h
+
+        # Draw label.
+        try:
+            draw.text((x + 4, y + 2), label, fill=(0, 0, 0, 255), font=font)
+        except Exception:
+            pass
+
+        # Paste tile below label.
+        canvas.alpha_composite(img, (x, y + label_h))
+
+    out_path = os.path.join(montage_dir, "validation_grid.png")
+    canvas.save(out_path, "PNG")
+    print(f"[montage] Saved {os.path.relpath(out_path, start=os.path.dirname(os.path.dirname(montage_dir)))}")
 
 
 def _export_per_slice_diagnostics(

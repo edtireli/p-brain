@@ -1005,3 +1005,165 @@ def two_compartment_tikhonov_fit(c_input, c_tissue, time_array,
     CBF = residue_to_cbf(residue[0])
 
     return Ki, lam, vp_fitted, CBF, fitted_curve, residue
+
+
+# ---------------------------------------------------------------------------
+#  Single-voxel diagnostic solver – re-solves one voxel and exposes the full
+#  L-curve / residue / h(t) data needed for the 3×3 diagnostic grid plot.
+# ---------------------------------------------------------------------------
+
+def solve_single_voxel_diagnostic(
+    time_s: np.ndarray,
+    ca: np.ndarray,
+    ct: np.ndarray,
+    *,
+    lambda_candidates: np.ndarray | None = None,
+    bspline_order: int = 4,
+    knot_step_frames: float | None = None,
+    knot_end_mode: str = "n_time",
+    offset_s: float = 0.0,
+) -> dict:
+    """Solve a single tissue curve and return all intermediate data.
+
+    Returns a dict with keys:
+      time_s, ct, ct_fit, lambdas, log_res, log_reg, kappa,
+      lambda_opt, rf, residue, h, mtt, cth, cbf, cbv, offset_s,
+      res_norms, reg_norms
+    """
+
+    time_s = np.asarray(time_s, dtype=float).reshape(-1)
+    ca = np.asarray(ca, dtype=float).reshape(-1)
+    ct = np.asarray(ct, dtype=float).reshape(-1)
+    n_time = int(min(time_s.size, ca.size, ct.size))
+    time_s = time_s[:n_time]
+    ca = ca[:n_time]
+    ct = ct[:n_time]
+
+    dt = float(time_s[1] - time_s[0])
+
+    # Optionally micro-shift the AIF.
+    if abs(float(offset_s)) > 1e-12:
+        ca = _shift_curve_like_inputshift2(time_s, ca, float(offset_s))
+
+    if lambda_candidates is None:
+        lambdas = np.linspace(
+            settings.TIKHONOV_LAMBDA_MIN,
+            settings.TIKHONOV_LAMBDA_MAX,
+            settings.TIKHONOV_LAMBDA_STEPS,
+            dtype=float,
+        )
+    else:
+        lambdas = np.asarray(lambda_candidates, dtype=float).reshape(-1)
+
+    # B-spline basis and penalty.
+    if knot_step_frames is None:
+        knot_step = 5.0 * dt
+    else:
+        knot_step = float(knot_step_frames)
+    knot_end_mode_norm = str(knot_end_mode).lower()
+    if knot_end_mode_norm in {"n", "n_time", "frames", "frame_no"}:
+        knot_end = float(n_time)
+    elif knot_end_mode_norm in {"n_time_dt", "n_dt", "frame_no_dt"}:
+        knot_end = float(n_time) * float(dt)
+    elif knot_end_mode_norm in {"time_end", "time", "seconds", "t_end"}:
+        knot_end = float(time_s[-1])
+    else:
+        knot_end = float(n_time)
+
+    K = np.arange(0.0, knot_end + 1e-12, knot_step, dtype=float)
+    if K.size < 3:
+        K = np.array([0.0, knot_step, 2.0 * knot_step], dtype=float)
+    M = int(bspline_order)
+    length_K = int(K.size - 2)
+    n_basis = int(length_K + M)
+
+    B = np.zeros((n_basis, n_time), dtype=float)
+    for i in range(n_time):
+        B[:, i] = _bspline_basis(M, K, length_K, float(time_s[i]))
+    Lreg = _get_l_diff(n_basis, 1)
+
+    Ca_mat = _toeplitz_ca_matrix(ca)
+    D = Ca_mat @ B.T
+    Dt = D.T
+    G = Dt @ D
+    H = (Lreg.T @ Lreg) if Lreg.size else np.zeros_like(G)
+
+    rhs = Dt @ ct.reshape(-1, 1)
+
+    eps = 1e-30
+    log_reg_arr = np.zeros(lambdas.size, dtype=float)
+    log_res_arr = np.zeros(lambdas.size, dtype=float)
+    res_norms = np.zeros(lambdas.size, dtype=float)
+    reg_norms = np.zeros(lambdas.size, dtype=float)
+    all_coeff = np.zeros((lambdas.size, n_basis), dtype=float)
+
+    for li, lam in enumerate(lambdas):
+        Mlam = G + (float(lam) ** 2) * H
+        cfact = cho_factor(Mlam, lower=True, check_finite=False)
+        coeff = cho_solve(cfact, rhs, check_finite=False).reshape(-1)
+        all_coeff[li] = coeff
+        reg = Lreg @ coeff
+        reg_norm = float(np.dot(reg, reg))
+        resid = (D @ coeff) - ct
+        res_norm = float(np.dot(resid, resid))
+        reg_norms[li] = reg_norm
+        res_norms[li] = res_norm
+        log_reg_arr[li] = np.log(max(reg_norm, eps))
+        log_res_arr[li] = np.log(max(res_norm, eps))
+
+    # L-curve curvature.
+    lambda_unit = float(lambdas[1] - lambdas[0]) if lambdas.size > 1 else 1.0
+    d_x = np.diff(log_res_arr) / lambda_unit
+    d_y = np.diff(log_reg_arr) / lambda_unit
+    dd_x = np.diff(d_x) / lambda_unit
+    dd_y = np.diff(d_y) / lambda_unit
+    num = d_x[:-1] * dd_y - dd_x * d_y[:-1]
+    den = (d_x[:-1] ** 2 + d_y[:-1] ** 2) ** 1.5
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kappa = np.where(den > 0.0, num / den, -np.inf)
+
+    best_idx = int(np.nanargmax(kappa))
+    lambda_opt = float(lambdas[best_idx])
+
+    # Solve at optimal lambda.
+    coeff_best = all_coeff[best_idx]
+    rf = (B.T @ coeff_best) / dt
+    ct_fit = D @ coeff_best
+
+    # CBF scaling.
+    rho = float(settings.TISSUE_DENSITY) if np.isfinite(getattr(settings, "TISSUE_DENSITY", np.nan)) else 1.04
+    hct = float(settings.HEMATOCRIT) if np.isfinite(getattr(settings, "HEMATOCRIT", np.nan)) else 0.42
+    plasma_scale = (1.0 - hct) if getattr(settings, "PLASMA_DERIVED_AIF", False) else 1.0
+    cbf_scale = 6000.0 * plasma_scale / max(rho, 1e-6)
+
+    fwin = min(10, n_time)
+    f_internal = float(np.max(rf[:fwin]))
+    f_internal = max(f_internal, 0.0) if np.isfinite(f_internal) else np.nan
+    cbf = f_internal * cbf_scale
+
+    residue = rf / f_internal if (np.isfinite(f_internal) and f_internal > 0) else np.full_like(rf, np.nan)
+    mtt_val, cth_val, h, _ = residue_metrics(residue, dt)
+    cbv = cbf * mtt_val / 60.0 if (np.isfinite(cbf) and np.isfinite(mtt_val)) else np.nan
+
+    return {
+        "time_s": time_s,
+        "ct": ct,
+        "ct_fit": ct_fit,
+        "lambdas": lambdas,
+        "log_res": log_res_arr,
+        "log_reg": log_reg_arr,
+        "kappa": kappa,
+        "lambda_opt": lambda_opt,
+        "best_idx": best_idx,
+        "rf": rf,
+        "residue": residue,
+        "h": h,
+        "mtt": float(mtt_val),
+        "cth": float(cth_val),
+        "cbf": float(cbf),
+        "cbv": float(cbv),
+        "offset_s": float(offset_s),
+        "dt": float(dt),
+        "res_norms": res_norms,
+        "reg_norms": reg_norms,
+    }

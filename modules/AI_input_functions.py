@@ -336,6 +336,10 @@ def preprocess_data(filename, *, projection: str = "mean"):
       (useful for ICA slice classification on raw frames).
     """
     mri_data = nib.load(filename).get_fdata()
+    # Discard leading unstable DCE volumes when requested.
+    _skip = getattr(settings, "DCE_SKIP_VOLUMES", 0)
+    if _skip > 0 and mri_data.ndim >= 4 and mri_data.shape[-1] > _skip:
+        mri_data = mri_data[..., _skip:]
     # Model training/labeling was performed in a fixed orientation. Historically we
     # used a single rot90 here; keep that as the default but allow override.
     try:

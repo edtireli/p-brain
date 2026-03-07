@@ -39,6 +39,9 @@ def fit_patlak(
     *,
     bad_mask: np.ndarray | None = None,
     window_start_fraction: float = 1 / 3,
+    single_bolus: bool = False,
+    aif_min_fraction: float = 0.05,
+    single_bolus_start_s: float = 60.0,
 ) -> PatlakFit:
     """Fit the Patlak model on one tissue curve.
 
@@ -50,7 +53,22 @@ def fit_patlak(
     bad_mask
         Optional boolean mask marking samples to exclude.
     window_start_fraction
-        Fraction of `x_max` to start the linear regression window.
+        Fraction of ``x_max`` to start the linear regression window.
+        Used in the **two-bolus** protocol (default).
+    single_bolus
+        When *True*, switch to a time-based windowing strategy suitable
+        for single-injection protocols.  The fit starts at
+        ``single_bolus_start_s`` seconds after the AIF peak and excludes
+        time-points where the AIF falls below ``aif_min_fraction`` of
+        its peak value.
+    aif_min_fraction
+        Minimum AIF amplitude (as a fraction of ``max(AIF)``) for a
+        time-point to be included.  Only active when *single_bolus* is
+        True.  Default 0.05 (5 %).
+    single_bolus_start_s
+        Seconds after AIF peak to begin the Patlak fit window when
+        *single_bolus* is True.  Default 60 s (skip first-pass
+        recirculation).
 
     Returns
     -------
@@ -92,6 +110,19 @@ def fit_patlak(
             np.zeros(n, dtype=bool),
         )
 
+    # ── Single-bolus AIF threshold masking ──
+    # When Ca(t) → 0 after the bolus washes out, the Patlak ratios
+    # x = ∫Ca / Ca(t) and y = Ct / Ca(t) diverge, producing unreliable
+    # fits.  Mask those time-points before computing the coordinates.
+    if single_bolus:
+        ca_peak = float(np.nanmax(c_a))
+        if ca_peak > 0:
+            bad = bad | (c_a < aif_min_fraction * ca_peak)
+        # Also exclude pre-arrival and impose time-based start.
+        peak_idx = int(np.argmax(c_a))
+        t_start = t[peak_idx] + float(single_bolus_start_s)
+        bad = bad | (t < t_start)
+
     # Patlak coordinates (legacy convention).
     # x[i] = integral_0^t Ca / Ca[i]
     # y[i] = Ct[i] / Ca[i]
@@ -112,10 +143,17 @@ def fit_patlak(
         return PatlakFit(float("nan"), float("nan"), float("nan"), x, y, good)
 
     x_max = float(np.nanmax(x[good]))
-    w0 = float(window_start_fraction)
-    if not (0.0 < w0 < 1.0):
-        w0 = 1 / 3
-    window = (x >= w0 * x_max) & (x <= x_max)
+
+    if single_bolus:
+        # Time-based windowing already applied via bad mask above;
+        # no additional x-fraction clipping needed.
+        window = np.ones(n, dtype=bool)
+    else:
+        w0 = float(window_start_fraction)
+        if not (0.0 < w0 < 1.0):
+            w0 = 1 / 3
+        window = (x >= w0 * x_max) & (x <= x_max)
+
     good = good & window
 
     if int(good.sum()) < 2:
@@ -159,6 +197,9 @@ def fit_patlak_tuple(
     bad_mask: np.ndarray | None = None,
     *,
     window_start_fraction: float = 1 / 3,
+    single_bolus: bool = False,
+    aif_min_fraction: float = 0.05,
+    single_bolus_start_s: float = 60.0,
 ):
     """Compatibility wrapper returning the historical tuple shape."""
 
@@ -168,6 +209,9 @@ def fit_patlak_tuple(
         t_s,
         bad_mask=bad_mask,
         window_start_fraction=window_start_fraction,
+        single_bolus=single_bolus,
+        aif_min_fraction=aif_min_fraction,
+        single_bolus_start_s=single_bolus_start_s,
     )
     return (
         res.ki_ml_per_100g_min,

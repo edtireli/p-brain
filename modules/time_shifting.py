@@ -241,13 +241,12 @@ def _fit_tscc_pchip_fit(
     # In this formulation, `tscc = ve_shift / scale`.
     # - scale < 1  => TSCC (VIF) scales UP (allowed)
     # - scale > 1  => TSCC (VIF) scales DOWN (disallowed)
-    # When a down-scale would be applied, we instead reset the shift to the
-    # start (deltaT=0) and keep scale=1.
+    # When a down-scale would be applied, we keep the time shift but
+    # reset scale=1 so the VIF amplitude is preserved.
     if rescale:
         if not np.isfinite(deltaT):
             deltaT = 0.0
         if float(scale) > 1.0:
-            deltaT = 0.0
             scale = 1.0
 
     ve_shift = _shift_pchip_padded(time, ve0, deltaT)
@@ -420,11 +419,8 @@ def align_first_peaks(
             scaling_factor = float(np.median(np.asarray(ratios, dtype=float)))
             if np.isfinite(scaling_factor) and scaling_factor > 0:
                 # Policy: never scale VIF down. If VIF would be downscaled
-                # (scaling_factor < 1), reset to no-shift and no-rescale.
+                # (scaling_factor < 1), keep the time shift but skip rescaling.
                 if float(scaling_factor) < 1.0:
-                    shift = 0
-                    aligned_vein_curve = _shift_with_zeros(vein_zero, shift, target_len=target_len)
-                    aligned_peaks = [int(p) for p in vein_top_peaks if 0 <= int(p) < target_len]
                     rescaled = 1.0
                 else:
                     aligned_vein_curve = aligned_vein_curve * scaling_factor
@@ -447,11 +443,8 @@ def align_first_peaks(
             scaling_factor = float(a_auc / v_auc)
             if np.isfinite(scaling_factor) and scaling_factor > 0:
                 # Policy: never scale VIF down. If VIF would be downscaled
-                # (scaling_factor < 1), reset to no-shift and no-rescale.
+                # (scaling_factor < 1), keep the time shift but skip rescaling.
                 if float(scaling_factor) < 1.0:
-                    shift = 0
-                    aligned_vein_curve = _shift_with_zeros(vein_zero, shift, target_len=target_len)
-                    aligned_peaks = [int(p) for p in vein_top_peaks if 0 <= int(p) < target_len]
                     rescaled = 1.0
                 else:
                     aligned_vein_curve = aligned_vein_curve * scaling_factor

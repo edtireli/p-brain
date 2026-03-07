@@ -194,7 +194,7 @@ def _exists(path: str) -> bool:
 
 def _glob(pattern: str) -> List[str]:
     try:
-        return sorted(glob.glob(pattern))
+        return sorted(glob.glob(pattern, recursive=True))
     except Exception:
         return []
 
@@ -271,12 +271,27 @@ def run_stage_qc(
             )
 
     if stage in {"input_functions", "aif", "vif"}:
+        # Determine ROI method from settings snapshot to tailor checks.
+        _roi_method = ""
+        if settings_snapshot:
+            _roi_method = str(settings_snapshot.get("ROI_METHOD") or "").strip().lower()
+
         roi_dir = os.path.join(analysis_directory, "ROI NIfTI")
         masks = _glob(os.path.join(roi_dir, "*.nii*"))
-        if not masks:
-            _add(checks, id="roi_masks_present", status="fail", message="No ROI masks found", roi_dir=roi_dir)
-        else:
-            # Count non-empty masks.
+
+        # AI pipeline does not produce ROI NIfTI masks; it produces ROI Data
+        # voxel arrays, CTC Data, and ITC Data instead.  Check those when the
+        # ROI method is "ai" (or when ROI NIfTI is absent but AI outputs exist).
+        ai_roi_dir = os.path.join(analysis_directory, "ROI Data")
+        ai_ctc_dir = os.path.join(analysis_directory, "CTC Data")
+        ai_itc_dir = os.path.join(analysis_directory, "ITC Data")
+        ai_roi_files = _glob(os.path.join(ai_roi_dir, "**", "*.npy"))
+        ai_ctc_files = _glob(os.path.join(ai_ctc_dir, "**", "*.npy"))
+        ai_itc_files = _glob(os.path.join(ai_itc_dir, "**", "*.npy"))
+        has_ai_outputs = bool(ai_roi_files or ai_ctc_files or ai_itc_files)
+
+        if masks:
+            # Geometry / deterministic path — check mask quality.
             nonempty = 0
             failures: List[Dict[str, Any]] = []
             for p in masks:
@@ -294,6 +309,19 @@ def run_stage_qc(
                 _add(checks, id="roi_masks_nonempty", status="warn", message="Few non-empty ROI masks", count=nonempty, total=len(masks))
             else:
                 _add(checks, id="roi_masks_nonempty", status="fail", message="All ROI masks appear empty", total=len(masks))
+        elif has_ai_outputs:
+            # AI pipeline — validate that ROI, CTC, and ITC outputs exist.
+            _add(
+                checks,
+                id="roi_masks_present",
+                status="pass",
+                message="AI ROI outputs present (ROI Data / CTC Data / ITC Data)",
+                roi_files=len(ai_roi_files),
+                ctc_files=len(ai_ctc_files),
+                itc_files=len(ai_itc_files),
+            )
+        else:
+            _add(checks, id="roi_masks_present", status="fail", message="No ROI masks found", roi_dir=roi_dir)
 
     if stage in {"time_shift", "timeshift", "tscc"}:
         max_info = os.path.join(analysis_directory, "max_info.json")

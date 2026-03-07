@@ -949,6 +949,35 @@ def parse_args():
             "Skips the rest of the main pipeline and any montage/tracks work."
         ),
     )
+    parser.add_argument(
+        "--single-bolus",
+        dest="single_bolus",
+        action="store_true",
+        help=(
+            "Single contrast injection protocol. Sets NUMBER_OF_PEAKS=1 so "
+            "time-shifting and tissue-function stages look for one peak only."
+        ),
+    )
+    parser.add_argument(
+        "--num-peaks",
+        dest="num_peaks",
+        type=int,
+        default=None,
+        help=(
+            "Explicit number of bolus peaks expected in the DCE signal. "
+            "Overrides --single-bolus. Default is 2 (dual injection)."
+        ),
+    )
+    parser.add_argument(
+        "--dce-skip-volumes",
+        dest="dce_skip_volumes",
+        type=int,
+        default=None,
+        help=(
+            "Number of leading DCE volumes (time frames) to discard before "
+            "analysis. Useful when the first few acquisitions are unstable."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1280,6 +1309,12 @@ def main():
         if getattr(args, "roi_method", None):
             env["P_BRAIN_ROI_METHOD"] = str(args.roi_method)
 
+        if getattr(args, "num_peaks", None) is not None:
+            env["P_BRAIN_NUMBER_OF_PEAKS"] = str(int(args.num_peaks))
+        elif getattr(args, "single_bolus", False):
+            env["P_BRAIN_NUMBER_OF_PEAKS"] = "1"
+        if getattr(args, "dce_skip_volumes", None) is not None:
+            env["P_BRAIN_DCE_SKIP_VOLUMES"] = str(int(args.dce_skip_volumes))
         if getattr(args, "roi_aif_mat", None):
             env["P_BRAIN_ROI_AIF_MAT"] = str(args.roi_aif_mat)
         if getattr(args, "roi_aif_conc_mat", None):
