@@ -1394,6 +1394,27 @@ def plot_predictions_with_masks(image, wm_mask, cortical_gm_mask, subcortical_gm
     else:
         plt.close(fig)
 
+
+def _clean_dot_underscore(root_dir: str) -> None:
+    """Remove macOS AppleDouble ``._*`` resource-fork files under *root_dir*.
+
+    On external drives (ExFAT / HFS+) macOS silently creates ``._`` companion
+    files.  FreeSurfer's internal ``rm`` calls then prompt for confirmation on
+    these hidden files, which stalls unattended pipeline runs.  Calling this
+    after every subprocess that touches the segmentation tree prevents the
+    prompt from ever appearing.
+    """
+    if not os.path.isdir(root_dir):
+        return
+    for dirpath, _dirnames, filenames in os.walk(root_dir):
+        for fn in filenames:
+            if fn.startswith("._"):
+                try:
+                    os.remove(os.path.join(dirpath, fn))
+                except OSError:
+                    pass
+
+
 def segmentation(
     fastsurfer_path,
     seg_mgz_path,
@@ -1448,7 +1469,10 @@ def segmentation(
                 print("Segmentation output not found, running FastSurfer...")
             # Build env-export preamble so that FSL and FreeSurfer vars survive
             # the shell=True subprocess even when launched from a GUI host.
-            _env_exports = ""
+            # COPYFILE_DISABLE stops macOS from creating ._ resource-fork files
+            # on external drives, which would otherwise cause FreeSurfer's
+            # internal rm calls to prompt for confirmation and stall the run.
+            _env_exports = "export COPYFILE_DISABLE=1 && "
             _fsldir = os.environ.get("FSLDIR", "").strip()
             _fslout = os.environ.get("FSLOUTPUTTYPE", "NIFTI_GZ")
             if _fsldir:
@@ -1476,6 +1500,7 @@ def segmentation(
                     f"--sd {output_dir}"
                 )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            _clean_dot_underscore(output_dir)
             if result.returncode != 0 or not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
                 print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
                 if apple_metal:
@@ -1502,6 +1527,7 @@ def segmentation(
                         f"--no_cereb"
                     )
                 subprocess.run(command, shell=True)
+                _clean_dot_underscore(output_dir)
                 if not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
                     raise RuntimeError("FastSurfer segmentation failed even with vox_size 1")
         else:
@@ -1547,6 +1573,7 @@ def segmentation(
                 f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
             )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            _clean_dot_underscore(output_dir)
             if result.returncode != 0:
                 err = (result.stderr or result.stdout or "").strip()
                 raise RuntimeError(
@@ -1603,6 +1630,7 @@ def segmentation(
                 f"-all"
             )
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            _clean_dot_underscore(output_dir)
             if result.returncode != 0 and not _recon_output_exists():
                 err = (result.stderr or result.stdout or "").strip()
                 raise RuntimeError(
@@ -1645,6 +1673,7 @@ def segmentation(
     if not os.path.exists(aseg_nii_path):
         print(f"Converting {aseg_mgz_path} to {aseg_nii_path}...")
         subprocess.run(['mri_convert', aseg_mgz_path, aseg_nii_path])
+        _clean_dot_underscore(output_dir)
     else:
         print(f"{aseg_nii_path} already exists, skipping conversion.")
 
@@ -1739,6 +1768,9 @@ def segmentation(
         os.remove(temp_subcortical_gm_mask_path)
     if os.path.exists(gm_mask_path):
         os.remove(gm_mask_path)
+
+    # Final sweep: remove any ._ files left by macOS on external drives.
+    _clean_dot_underscore(output_dir)
 
 def plot_total_ct_and_patlak(time_points, C_t_total, C_a,
                              Ki, lam, SD_Ki, tissue_name,
