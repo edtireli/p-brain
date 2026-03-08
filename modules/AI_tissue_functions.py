@@ -1401,8 +1401,8 @@ def _clean_dot_underscore(root_dir: str) -> None:
     On external drives (ExFAT / HFS+) macOS silently creates ``._`` companion
     files.  FreeSurfer's internal ``rm`` calls then prompt for confirmation on
     these hidden files, which stalls unattended pipeline runs.  Calling this
-    after every subprocess that touches the segmentation tree prevents the
-    prompt from ever appearing.
+    before **and** after every subprocess that touches the segmentation tree
+    prevents the prompt from ever appearing.
     """
     if not os.path.isdir(root_dir):
         return
@@ -1413,6 +1413,33 @@ def _clean_dot_underscore(root_dir: str) -> None:
                     os.remove(os.path.join(dirpath, fn))
                 except OSError:
                     pass
+
+
+def _fs_shell_preamble() -> str:
+    """Return a shell preamble string for FreeSurfer / FastSurfer subprocesses.
+
+    Includes:
+    - ``COPYFILE_DISABLE=1`` – prevents macOS ``cp`` from creating ``._`` files.
+    - A shell function ``rm() { command rm -f "$@"; }`` – so that any ``rm``
+      invoked by FreeSurfer scripts silently removes files without prompting
+      for confirmation on macOS resource-fork ``._`` artefacts.
+    - Re-exports of ``FSLDIR``, ``FSLOUTPUTTYPE``, and ``FREESURFER_HOME`` so
+      they survive a ``shell=True`` subprocess even when launched from a GUI.
+    """
+    parts = [
+        'export COPYFILE_DISABLE=1',
+        # Override rm for the whole subprocess tree so FreeSurfer's internal
+        # cleanup never stalls on ._* files with restrictive permissions.
+        'rm() { command rm -f "$@"; }',
+    ]
+    _fsldir = os.environ.get("FSLDIR", "").strip()
+    _fslout = os.environ.get("FSLOUTPUTTYPE", "NIFTI_GZ")
+    if _fsldir:
+        parts.append(f"export FSLDIR={_fsldir} FSLOUTPUTTYPE={_fslout}")
+    _fs_home = os.environ.get("FREESURFER_HOME", "").strip()
+    if _fs_home:
+        parts.append(f"export FREESURFER_HOME={_fs_home}")
+    return " && ".join(parts) + " && "
 
 
 def segmentation(
@@ -1467,19 +1494,11 @@ def segmentation(
                 print("Rerunning FastSurfer segmentation...")
             else:
                 print("Segmentation output not found, running FastSurfer...")
-            # Build env-export preamble so that FSL and FreeSurfer vars survive
-            # the shell=True subprocess even when launched from a GUI host.
-            # COPYFILE_DISABLE stops macOS from creating ._ resource-fork files
-            # on external drives, which would otherwise cause FreeSurfer's
-            # internal rm calls to prompt for confirmation and stall the run.
-            _env_exports = "export COPYFILE_DISABLE=1 && "
-            _fsldir = os.environ.get("FSLDIR", "").strip()
-            _fslout = os.environ.get("FSLOUTPUTTYPE", "NIFTI_GZ")
-            if _fsldir:
-                _env_exports += f"export FSLDIR={_fsldir} FSLOUTPUTTYPE={_fslout} && "
-            if _fs_home:
-                _env_exports += f"export FREESURFER_HOME={_fs_home} && "
+            # Shell preamble: exports env vars, disables ._ creation,
+            # and overrides rm with rm -f so FreeSurfer never stalls.
+            _env_exports = _fs_shell_preamble()
             _lic_flag = f"--fs_license {_fs_license} " if _fs_license else ""
+            _clean_dot_underscore(output_dir)  # pre-clean before launch
             if apple_metal:
                 command = (
                     f"{_env_exports}"
@@ -1503,6 +1522,7 @@ def segmentation(
             _clean_dot_underscore(output_dir)
             if result.returncode != 0 or not (os.path.exists(seg_mgz_path) and seg_stats_exists()):
                 print("FastSurfer segmentation failed, attempting run with vox_size 1 ...")
+                _clean_dot_underscore(output_dir)  # pre-clean before retry
                 if apple_metal:
                     command = (
                         f"{_env_exports}"
@@ -1564,7 +1584,9 @@ def segmentation(
             else:
                 print("Segmentation output not found, running SynthSeg...")
 
+            _preamble = _fs_shell_preamble()
             command = (
+                f"{_preamble} "
                 f"{synthseg_bin} "
                 f"--i {t1_path} "
                 f"--o {seg_mgz_path} "
@@ -1572,6 +1594,7 @@ def segmentation(
                 f"--vol {os.path.join(mri_dir, 'synthseg_volumes.csv')} "
                 f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
             )
+            _clean_dot_underscore(output_dir)  # pre-clean before launch
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             _clean_dot_underscore(output_dir)
             if result.returncode != 0:
@@ -1622,13 +1645,16 @@ def segmentation(
             else:
                 print("Segmentation output not found, running recon-all...")
 
+            _preamble = _fs_shell_preamble()
             command = (
+                f"{_preamble} "
                 f"{recon_bin} "
                 f"-i {t1_path} "
                 f"-s {sid} "
                 f"-sd {subjects_dir} "
                 f"-all"
             )
+            _clean_dot_underscore(output_dir)  # pre-clean before launch
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             _clean_dot_underscore(output_dir)
             if result.returncode != 0 and not _recon_output_exists():
