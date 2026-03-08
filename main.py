@@ -722,27 +722,43 @@ def main():
     # ── No-T1 auto-detection ──
     # When T1 data is absent (T1_FIT_MODE == "none") the pipeline MUST run
     # voxelwise-only (no segmentation atlas possible without a structural T1).
-    # Additionally, if the user has not explicitly chosen a tissue-ROI method we
-    # auto-switch to manual so the operator can interactively draw ROIs, and if
-    # the user has not explicitly chosen an input-ROI method we also switch to
-    # manual so the operator draws AIF/VIF ROIs interactively.
+    # If the user has not explicitly chosen ROI methods we auto-select:
+    #   - auto / pseudo mode → "ai" (non-interactive, keeps pipeline unattended)
+    #   - manual mode         → "manual" (interactive GUI is fine)
     _no_t1 = getattr(settings, "T1_FIT_MODE", "auto") == "none"
     if _no_t1:
         # Always force voxelwise when there is no T1.
         os.environ['PBRAIN_VOXELWISE_ONLY'] = '1'
         log_auto_safe("No T1 data detected → forcing voxelwise-only mode.", level="info")
 
-        # Auto-switch tissue ROI to manual when user didn't explicitly choose.
-        if getattr(args, 'tissue_roi', None) is None:
-            settings.TISSUE_ROI_METHOD = "manual"
-            os.environ['P_BRAIN_TISSUE_ROI_METHOD'] = "manual"
-            log_auto_safe("No T1 data → tissue ROI auto-set to manual.", level="info")
+        # Determine the effective mode early so we know whether interactive
+        # fallbacks are acceptable.  In auto / pseudo modes we must never
+        # drop to "manual" because that opens an interactive GUI and stalls
+        # the unattended pipeline.
+        _effective_mode = args.mode  # may be None if user hasn't chosen yet
 
-        # Auto-switch input ROI to manual when user didn't explicitly choose.
+        # Choose the non-interactive fallback for auto/pseudo pipelines.
+        _auto_fallback = "ai"  # keeps the pipeline fully unattended
+
+        # Auto-switch tissue ROI when user didn't explicitly choose.
+        if getattr(args, 'tissue_roi', None) is None:
+            if _effective_mode in ("auto", "pseudo"):
+                settings.TISSUE_ROI_METHOD = _auto_fallback
+                log_auto_safe(f"No T1 data + auto mode → tissue ROI set to {_auto_fallback}.", level="info")
+            else:
+                settings.TISSUE_ROI_METHOD = "manual"
+                os.environ['P_BRAIN_TISSUE_ROI_METHOD'] = "manual"
+                log_auto_safe("No T1 data → tissue ROI auto-set to manual.", level="info")
+
+        # Auto-switch input ROI when user didn't explicitly choose.
         if getattr(args, 'roi_method', None) is None:
-            settings.ROI_METHOD = "manual"
-            os.environ['P_BRAIN_ROI_METHOD'] = "manual"
-            log_auto_safe("No T1 data → input ROI auto-set to manual.", level="info")
+            if _effective_mode in ("auto", "pseudo"):
+                settings.ROI_METHOD = _auto_fallback
+                log_auto_safe(f"No T1 data + auto mode → input ROI set to {_auto_fallback}.", level="info")
+            else:
+                settings.ROI_METHOD = "manual"
+                os.environ['P_BRAIN_ROI_METHOD'] = "manual"
+                log_auto_safe("No T1 data → input ROI auto-set to manual.", level="info")
 
     mode = args.mode
     if mode is None and args.option is None:
