@@ -1558,7 +1558,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             use_ir = False
         else:
             # auto: prefer complete IR series, otherwise fall back to VFA.
-            ir_paths = discover_ir_series(nifti_directory)
+            ir_paths, ir_ti_values = discover_ir_series_with_ti(nifti_directory)
             if ir_paths:
                 use_ir = True
             else:
@@ -1573,7 +1573,7 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
                 use_ir = False
             elif IsIR:
                 # Only keep IR if it is complete; otherwise let VFA/none handle it.
-                if discover_ir_series(nifti_directory):
+                if discover_ir_series_with_ti(nifti_directory)[0]:
                     use_ir = True
                     use_vfa = False
 
@@ -1596,15 +1596,17 @@ def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory,
             # (default [0.12 0.3 0.6 1 2 4 10]). Our IR filenames encode ms.
             TI_ms = [120, 300, 600, 1000, 2000, 4000, 10000]
             TI_values = [v * 1e-3 for v in TI_ms]  # seconds
-            ir_paths = discover_ir_series(nifti_directory)
+            ir_paths, ir_ti_values = discover_ir_series_with_ti(nifti_directory)
             if not ir_paths:
                 patterns = ['WIPTI_', 'WIPDelRec-TI_']
                 TI_codes = [f"{v:05d}" for v in TI_ms]
                 raise FileNotFoundError(
                     "Missing inversion-recovery NIfTI files for TI "
                     f"{TI_codes} in {nifti_directory}. Expected filenames like "
-                    f"{patterns[0]}<TI>.nii(.gz) or {patterns[1]}<TI>.nii(.gz)."
+                    f"{patterns[0]}<TI>.nii(.gz), {patterns[1]}<TI>.nii(.gz), or Look-Locker style WIPIR_LL_t####.nii(.gz)."
                 )
+            if ir_ti_values:
+                TI_values = ir_ti_values
             if voxel_matrix is None:
                 # MATLAB case-3 uses dynamic=2 (1-based) from the PAR/REC.
                 voxel_matrix = build_voxel_matrix(ir_paths, volume_index=1)

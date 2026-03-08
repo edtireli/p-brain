@@ -800,11 +800,25 @@ def discover_vfa_series(
     return series
 
 
-def discover_ir_series(nifti_directory: str):
-    """Discover inversion-recovery NIfTIs expected by the released pipeline.
+def _parse_wipir_ll_ti_ms(name: str) -> Optional[int]:
+    if not name:
+        return None
+    m = re.search(r"WIPIR_LL(?:_real|_imaginary)?_t(\d+)", str(name), flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
 
-    Returns a list of 7 NIfTI paths (one per TI) when complete; otherwise []
-    so callers can fall back to VFA or "none".
+
+def discover_ir_series_with_ti(nifti_directory: str):
+    """Discover inversion-recovery NIfTIs and their TI values in seconds.
+
+    Returns (paths, TI_values_s). On failure returns ([], []).
+
+    Standard IR series expects 7 files (TI in ms encoded as 00120..10000).
+    Also supports Look-Locker style series named like WIPIR_LL_t####.nii(.gz).
 
     Overrides:
     - ``P_BRAIN_IR_TI``: comma-separated TI values (e.g. "00120,00300,...").
@@ -812,7 +826,7 @@ def discover_ir_series(nifti_directory: str):
     """
 
     if not nifti_directory or not os.path.isdir(nifti_directory):
-        return []
+        return [], []
 
     raw_ti = (os.environ.get("P_BRAIN_IR_TI") or "").strip()
     if raw_ti:
@@ -826,18 +840,59 @@ def discover_ir_series(nifti_directory: str):
     else:
         patterns = ["WIPTI_", "WIPDelRec-TI_"]
 
-    if not TI or not patterns:
-        return []
-    paths = []
-    for ti in TI:
-        hit = None
-        for suf in (".nii", ".nii.gz"):
-            hit = first_existing_file(nifti_directory, patterns, ti, suf)
-            if hit:
+    if TI and patterns:
+        paths = []
+        for ti in TI:
+            hit = None
+            for suf in (".nii", ".nii.gz"):
+                hit = first_existing_file(nifti_directory, patterns, ti, suf)
+                if hit:
+                    break
+            if not hit:
+                paths = []
                 break
-        if not hit:
-            return []
-        paths.append(hit)
+            paths.append(hit)
+        if paths:
+            try:
+                ti_s = [float(int(ti)) * 1e-3 for ti in TI]
+            except Exception:
+                ti_s = [0.12, 0.3, 0.6, 1.0, 2.0, 4.0, 10.0]
+            return paths, ti_s
+
+    # Look-Locker: WIPIR_LL_t####.nii(.gz)
+    candidates = glob.glob(os.path.join(nifti_directory, "WIPIR_LL*_t*.nii*"))
+    if not candidates:
+        return [], []
+
+    by_ti: Dict[int, str] = {}
+    for path in candidates:
+        ti_ms = _parse_wipir_ll_ti_ms(os.path.basename(path))
+        if ti_ms is None:
+            continue
+        name = os.path.basename(path).lower()
+        if ti_ms in by_ti:
+            # Prefer magnitude over real/imaginary when both exist.
+            if "_real_" in name or "_imaginary_" in name:
+                continue
+        by_ti[ti_ms] = path
+
+    if len(by_ti) < 4:
+        return [], []
+
+    items = sorted(by_ti.items(), key=lambda kv: kv[0])
+    paths = [p for _, p in items]
+    ti_s = [float(ms) * 1e-3 for ms, _ in items]
+    return paths, ti_s
+
+
+def discover_ir_series(nifti_directory: str):
+    """Discover inversion-recovery NIfTIs expected by the released pipeline.
+
+    Returns a list of NIfTI paths when complete; otherwise [] so callers can
+    fall back to VFA or "none".
+    """
+
+    paths, _ = discover_ir_series_with_ti(nifti_directory)
     return paths
 
 
