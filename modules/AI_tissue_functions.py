@@ -2959,7 +2959,12 @@ def compute_and_plot_ctcs_median(
     skip_top = settings.GLOBAL_KI_SKIP_TOP
 
     # Load C_a once according to the configured input function source
-    C_a_full, input_metadata = get_input_function_curve(analysis_directory)
+    try:
+        C_a_full, input_metadata = get_input_function_curve(analysis_directory)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f'[!] No valid input function available — skipping PK modelling: {exc}')
+        C_a_full = None
+        input_metadata = {}
 
     if ref_affine is None or ref_header is None:
         ref_img = nib.load(dce_path)
@@ -3013,6 +3018,11 @@ def compute_and_plot_ctcs_median(
     if voxelwise_only:
         # In voxelwise-only mode, boundary and tissue medians are not computed.
         boundary = False
+
+        if C_a_full is None:
+            # No valid AIF → cannot do PK fitting; concentration map already
+            # exported above so just return.
+            return
 
         # If caller forgot to request voxelwise outputs, default to Ki maps.
         if not compute_per_voxel_Ki and not compute_per_voxel_CBF:
@@ -3705,6 +3715,9 @@ def compute_and_plot_ctcs_median(
                 np.save(os.path.join(save_dir_ctc, f'boundary_AI_Tissue_slice_{i+1}_segmented_median.npy'), avg_boundary_ctc)
 
             # Ensure the CTCs and C_a_full have the same length
+            if C_a_full is None:
+                # No valid AIF → skip per-slice PK fitting but CTCs are saved.
+                continue
             min_length = len(C_a_full)
             ctc_list = [
                 avg_wm_ctc, avg_cortical_gm_ctc, avg_subcortical_gm_ctc,
@@ -5519,7 +5532,14 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
             'aparc.DKTatlas+aseg.deep_in_DCE.nii.gz'
         )
 
-        C_a_full, input_metadata = get_input_function_curve(analysis_directory)
+        try:
+            C_a_full, input_metadata = get_input_function_curve(analysis_directory)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f'[!] No valid input function for atlas Ki — skipping: {exc}')
+            C_a_full = None
+
+        if C_a_full is None:
+            return
 
         output_dir = analysis_directory
 
