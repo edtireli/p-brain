@@ -497,8 +497,16 @@ def two_compartment_tikhonov(aif, tissue_curve, *, time_array,
 
 def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
                                auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
-                               lambd_default=settings.TIKHONOV_LAMBDA):
-    """Replicate the legacy Tikhonov-based MTT/CTH computation."""
+                               lambd_default=settings.TIKHONOV_LAMBDA,
+                               _solver=None):
+    """Replicate the legacy Tikhonov-based MTT/CTH computation.
+
+    Parameters
+    ----------
+    _solver : callable, optional
+        Pre-built Tikhonov solver.  When provided the expensive solver
+        construction (121 Cholesky factorisations) is skipped.
+    """
 
     if C_t.size == 0:
         return {
@@ -587,16 +595,19 @@ def _existing_tikhonov_metrics(C_t, C_a, t, *, auto_lambda=settings.AUTO_LAMBDA,
             C_a_use = _shift_with_zeros(C_a_use, shift_applied)
 
     try:
-        solver = build_tikhonov_validated_slow_solver(
-            t_use,
-            C_a_use,
-            auto_lambda=bool(auto_lambda),
-            auto_lambda_value=auto_lambda_value,
-            lambd_default=lambd_default,
-            tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
-            hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
-            plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
-        )
+        if _solver is not None and not shift_applied:
+            solver = _solver
+        else:
+            solver = build_tikhonov_validated_slow_solver(
+                t_use,
+                C_a_use,
+                auto_lambda=bool(auto_lambda),
+                auto_lambda_value=auto_lambda_value,
+                lambd_default=lambd_default,
+                tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
+                hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
+                plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
+            )
         sol = solver(C_t_use.reshape(-1, 1))
     except Exception:
         return {
@@ -663,8 +674,15 @@ def compute_mtt_cth(method, C_t, C_a, t, *, Ki=None, allow_gamma=True,
                     logger=None,
                     auto_lambda=settings.AUTO_LAMBDA,
                     auto_lambda_value=settings.AUTO_LAMBDA_VALUE,
-                    lambd_default=settings.TIKHONOV_LAMBDA):
-    """Dispatch between Tikhonov, gamma, and hybrid MTT/CTH computations."""
+                    lambd_default=settings.TIKHONOV_LAMBDA,
+                    _solver=None):
+    """Dispatch between Tikhonov, gamma, and hybrid MTT/CTH computations.
+
+    Parameters
+    ----------
+    _solver : callable, optional
+        Pre-built Tikhonov solver.  Forwarded to _existing_tikhonov_metrics.
+    """
 
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -679,6 +697,7 @@ def compute_mtt_cth(method, C_t, C_a, t, *, Ki=None, allow_gamma=True,
         auto_lambda=auto_lambda,
         auto_lambda_value=auto_lambda_value,
         lambd_default=lambd_default,
+        _solver=_solver,
     )
 
     extras = {
@@ -939,6 +958,7 @@ def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
     global _C_a_full, _compute_CTC, _find_baseline_point_advanced
     global _custom_shifter, _patlak_analysis_plotting
     global _kinetic_model, _two_compartment_tikhonov
+    global _atlas_solver
 
     _atlas_data = atlas_data
     _data_4d = data_4d
@@ -952,6 +972,20 @@ def _init_compute_Ki(atlas_data, data_4d, T1_matrix, M0_matrix, time_points_s,
     _patlak_analysis_plotting = patlak_analysis_plotting
     _kinetic_model = (kinetic_model or settings.KINETIC_MODEL or "both").strip().lower()
     _two_compartment_tikhonov = two_compartment_tikhonov
+
+    # Pre-build the Tikhonov solver once so all atlas labels share it.
+    _atlas_solver = None
+    if not settings.ALIGN_AIF_BY_XCORR and len(time_points_s) >= 2:
+        try:
+            _atlas_solver = build_tikhonov_validated_slow_solver(
+                time_points_s,
+                C_a_full,
+                tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
+                hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
+                plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
+            )
+        except Exception:
+            _atlas_solver = None
 
 
 def _process_label(lbl):
@@ -1034,6 +1068,7 @@ def _process_label(lbl):
             Ki=(Ki if np.isfinite(Ki) else None),
             allow_gamma=True,
             logger=logger,
+            _solver=_atlas_solver,
         )
 
     return (lbl, Ki, SD_Ki, lam, cbf, mtt, cth, len(indices), extras)
@@ -3792,6 +3827,23 @@ def compute_and_plot_ctcs_median(
                 curve_boundary = None
                 included_boundary = np.array([], dtype=bool)
 
+            # ── Build Tikhonov solver ONCE per slice ──────────────────
+            # The solver only depends on (time_points, C_a_slice), identical
+            # for all 8 tissue types.  Building once avoids 7 redundant
+            # sets of 121 Cholesky factorisations (~8x speed-up).
+            _slice_solver = None
+            if not settings.ALIGN_AIF_BY_XCORR and len(time_points) >= 2:
+                try:
+                    _slice_solver = build_tikhonov_validated_slow_solver(
+                        time_points,
+                        C_a_slice,
+                        tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
+                        hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
+                        plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
+                    )
+                except Exception:
+                    _slice_solver = None
+
             def run_mtt_cth(C_t, Ki_value):
                 return compute_mtt_cth(
                     settings.CTH_MTT_METHOD,
@@ -3801,6 +3853,7 @@ def compute_and_plot_ctcs_median(
                     Ki=Ki_value,
                     allow_gamma=True,
                     logger=logger,
+                    _solver=_slice_solver,
                 )
 
             CBF_wm, MTT_wm, CTH_wm, extras_wm = run_mtt_cth(C_t_wm, Ki_wm)
@@ -4597,6 +4650,20 @@ def compute_and_plot_ctcs_median(
         Ki, lam, SD, *_ = patlak_with_exclusions(C_t, C_a_total, time_points_total, bad_mask=bad)
         return Ki, lam, SD, None
 
+    # ── Build Tikhonov solver ONCE for global-total tissue curves ────
+    _total_solver = None
+    if not settings.ALIGN_AIF_BY_XCORR and len(time_points_total) >= 2:
+        try:
+            _total_solver = build_tikhonov_validated_slow_solver(
+                time_points_total,
+                C_a_total,
+                tissue_density=float(getattr(settings, "TISSUE_DENSITY", 1.04)),
+                hematocrit=float(getattr(settings, "HEMATOCRIT", 0.42)),
+                plasma_derived_aif=bool(getattr(settings, "PLASMA_DERIVED_AIF", False)),
+            )
+        except Exception:
+            _total_solver = None
+
     def tikhonov_total(C_t, Ki_value):
         cbf, mtt, cth, extras = compute_mtt_cth(
             settings.CTH_MTT_METHOD,
@@ -4606,6 +4673,7 @@ def compute_and_plot_ctcs_median(
             Ki=Ki_value,
             allow_gamma=True,
             logger=logger,
+            _solver=_total_solver,
         )
         return cbf, mtt, cth, extras
 
@@ -5402,8 +5470,28 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     # Ensure segmentation directory exists
     os.makedirs(seg_dir, exist_ok=True)
 
-    if not voxelwise_only:
-        # Run segmentation and create masks
+    if not voxelwise_only and SEGMENTATION_METHOD == 'pbrain':
+        # ---- pbrain lightweight tissue model path ----
+        from modules.pbrain_segmentation import run_pbrain_segmentation
+        print('[!] Running pbrain tissue segmentation (no FreeSurfer needed)')
+        (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
+         subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
+         gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
+         wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce) = run_pbrain_segmentation(
+            t1_path=t1_path,
+            dce_path=dce_path,
+            t2_path=t2_path,
+            seg_dir=seg_dir,
+        )
+        # pbrain handles registration internally — skip segmentation() + coregistration()
+
+        if has_t2:
+            t2_img = nib.load(t2_path).get_fdata()
+            plot_predictions_with_masks(t2_img, wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
+                                        gm_brainstem_mask_t2, gm_cerebellum_mask_t2, wm_cerebellum_mask_t2,
+                                        wm_cc_mask_t2, image_directory)
+    elif not voxelwise_only:
+        # ---- FastSurfer / SynthSeg / recon-all path ----
         segmentation(
             fastsurfer_path,
             seg_mgz_path,
@@ -5421,7 +5509,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
     subcortical_gm_mask_path = os.path.join(mask_dir, 'subcortical_gm.nii.gz')
     wm_mask_path = os.path.join(mask_dir, 'wm.nii.gz')
 
-    if not voxelwise_only and has_t2:
+    if not voxelwise_only and SEGMENTATION_METHOD != 'pbrain' and has_t2:
         print('[!] Coregistering GM/WM masks onto T2 and DCE space')
         (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
          subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
@@ -5522,8 +5610,10 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
             flip_angle_deg=flip_angle_deg,
         )
 
-    if not voxelwise_only and (compute_ki or compute_cbf):
+    if not voxelwise_only and (compute_ki or compute_cbf) and SEGMENTATION_METHOD != 'pbrain':
         # The atlas is the segmentation in DCE space
+        # (pbrain produces 7 tissue classes, not a full parcellation atlas,
+        #  so per-parcel Ki/CBF is skipped for the pbrain method.)
         atlas_path = os.path.join(
             nifti_directory,
             'segmentation',

@@ -194,6 +194,10 @@ def _resolve_segmentation_method(explicit: Optional[str] = None,
     """
     method = (explicit or "fastsurfer").strip().lower()
 
+    # pbrain uses its own lightweight model – pass through directly.
+    if method == "pbrain":
+        return method
+
     if method == "freesurfer":
         ver = get_freesurfer_version(fs_home)
         if ver:

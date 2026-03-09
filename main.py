@@ -142,10 +142,11 @@ def parse_args():
         '--segmentation',
         dest='segmentation',
         type=str,
-        choices=['fastsurfer', 'freesurfer', 'synthseg', 'recon-all'],
+        choices=['fastsurfer', 'freesurfer', 'synthseg', 'recon-all', 'pbrain'],
         default=None,
         help='Segmentation method: fastsurfer (default), freesurfer (auto-selects '
-             'synthseg for FS>=8 or recon-all for FS<8), synthseg, recon-all.',
+             'synthseg for FS>=8 or recon-all for FS<8), synthseg, recon-all, '
+             'pbrain (lightweight 7-class tissue model, no FreeSurfer needed).',
     )
     parser.add_argument('--vfa-glob', dest='vfa_glob', type=str, default=None,
                         help='Comma-separated glob(s) for VFA NIfTI discovery in NIfTI dir (default: *VFA*.nii*)')
