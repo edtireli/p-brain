@@ -1127,6 +1127,32 @@ def parrec2nifti(directory, nifti_directory):
             print(f"[parrec2nifti] Warning: could not split image types: {exc}")
             save_img = img
 
+        # --- Reorient to LAS+ to match dcm2niix output orientation ---------
+        # nibabel's parrec.load() keeps voxels in raw acquisition order.
+        # dcm2niix (and nibabel's own parrec2nii CLI) reorient to LAS+.
+        # Without this step images appear flipped/upside-down and XML ROI
+        # coordinates (which assume dcm2niix orientation) land incorrectly.
+        try:
+            import numpy as _np
+            from nibabel.orientations import io_orientation, apply_orientation, inv_ornt_aff
+
+            _sv_data = _np.asanyarray(save_img.dataobj)
+            _sv_aff = save_img.affine.copy()
+
+            # Target LAS+: the np.diag([-1,1,1,1]) trick negates the R axis
+            # so that io_orientation considers L (not R) as the "positive"
+            # direction for axis-0 -- exactly what parrec2nii does.
+            _ornt = io_orientation(_np.diag([-1, 1, 1, 1]).dot(_sv_aff))
+            _las_identity = _np.array([[0, 1], [1, 1], [2, 1]])
+            if not _np.array_equal(_ornt, _las_identity):
+                _t_aff = inv_ornt_aff(_ornt, _sv_data.shape)
+                _sv_aff = _np.dot(_sv_aff, _t_aff)
+                _sv_data = apply_orientation(_sv_data, _ornt)
+                save_img = _nib.Nifti1Image(_sv_data, _sv_aff)
+        except Exception as exc:
+            # Non-fatal: save with original orientation rather than crashing.
+            print(f"[parrec2nifti] Warning: LAS+ reorientation failed: {exc}")
+
         try:
             _nib.save(save_img, out_nii)
         except Exception as exc:

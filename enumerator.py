@@ -1085,6 +1085,13 @@ def main():
     ids = args.ids
     start_id = args.start_id
 
+    # Common mistake: ``python enumerator.py --all /path/to/data`` puts the
+    # path into ``ids`` instead of ``--data-dir``.  Detect and fix.
+    if use_all and ids and len(ids) == 1 and os.path.isdir(ids[0]):
+        print(f"Hint: treating positional argument as --data-dir {ids[0]}")
+        data_directory = os.path.abspath(ids[0])
+        ids = []
+
     # If user gave no ids and no --all, default to all
     if not ids and not use_all:
         use_all = True
