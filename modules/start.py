@@ -1079,7 +1079,7 @@ def parrec2nifti(directory, nifti_directory):
             # first (mag → real → imag), then by dynamic within each type.
             # This lets us slice the first n_dynamics volumes to get
             # magnitude-only data, matching dcm2niix output.
-            img = _nib.parrec.load(par_path, permit_truncated=True, strict_sort=True)
+            img = _nib.parrec.load(par_path, permit_truncated=True, strict_sort=True, scaling="fp")
         except Exception as exc:
             print(f"[parrec2nifti] nibabel failed to load '{par_path}': {exc}")
             return False
