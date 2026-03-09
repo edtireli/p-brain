@@ -345,14 +345,11 @@ def build_spline_lcurve_deconvolution_solver(
             f_internal = np.where(np.isfinite(f_internal), np.maximum(f_internal, 0.0), np.nan)
             cbf = f_internal * cbf_scale
             residue = rf / np.where(f_internal > 0.0, f_internal, np.nan)
-            # Capillary stats from residue moments.
-            mtt = np.full(n_vox, np.nan, dtype=float)
-            cth = np.full(n_vox, np.nan, dtype=float)
-            for k in range(n_vox):
-                if np.isfinite(f_internal[k]) and f_internal[k] > 0.0:
-                    mtt_k, cth_k, _, _ = residue_metrics(residue[:, k], dt)
-                    mtt[k] = float(mtt_k)
-                    cth[k] = float(cth_k)
+            # Capillary stats from residue moments (batched).
+            valid_f = np.isfinite(f_internal) & (f_internal > 0.0)
+            mtt, cth = residue_metrics_batch(residue, dt)
+            mtt = np.where(valid_f, mtt, np.nan)
+            cth = np.where(valid_f, cth, np.nan)
             resid = (D @ coeff) - Ct_mat
             res_norm_best = np.sum(resid * resid, axis=0)
             return {
@@ -411,13 +408,10 @@ def build_spline_lcurve_deconvolution_solver(
         cbf = f_internal * cbf_scale
 
         residue = rf / np.where(f_internal > 0.0, f_internal, np.nan)
-        mtt = np.full(n_vox, np.nan, dtype=float)
-        cth = np.full(n_vox, np.nan, dtype=float)
-        for k in range(n_vox):
-            if np.isfinite(f_internal[k]) and f_internal[k] > 0.0:
-                mtt_k, cth_k, _, _ = residue_metrics(residue[:, k], dt)
-                mtt[k] = float(mtt_k)
-                cth[k] = float(cth_k)
+        valid_f = np.isfinite(f_internal) & (f_internal > 0.0)
+        mtt, cth = residue_metrics_batch(residue, dt)
+        mtt = np.where(valid_f, mtt, np.nan)
+        cth = np.where(valid_f, cth, np.nan)
 
         resid = (D @ coeff_best) - Ct_mat
         res_norm_best = np.sum(resid * resid, axis=0)
@@ -641,6 +635,66 @@ def residue_metrics(residue, dt, *, enforce_nonneg=True, enforce_monotone=True):
     cth = float(np.sqrt(max(variance, 0.0)))
 
     return mtt, cth, h, mu
+
+
+def residue_metrics_batch(residue_mat, dt, *, enforce_nonneg=True, enforce_monotone=True):
+    r"""Vectorised MTT/CTH for a batch of residue functions.
+
+    Parameters
+    ----------
+    residue_mat : ndarray, shape (n_time, n_vox)
+        Each column is a unit-normalised residue function.
+    dt : float
+        Uniform time step.
+    enforce_nonneg, enforce_monotone : bool
+        Same semantics as :func:`residue_metrics`.
+
+    Returns
+    -------
+    mtt : ndarray, shape (n_vox,)
+    cth : ndarray, shape (n_vox,)
+    """
+
+    R = np.asarray(residue_mat, dtype=float)
+    if R.ndim == 1:
+        R = R.reshape(-1, 1)
+    n_time, n_vox = R.shape
+    nan_vox = np.full(n_vox, np.nan, dtype=float)
+    if n_time < 5 or not np.isfinite(dt) or dt <= 0:
+        return nan_vox.copy(), nan_vox.copy()
+
+    working = R.copy()
+    if enforce_nonneg:
+        np.clip(working, 0.0, None, out=working)
+    if enforce_monotone:
+        np.minimum.accumulate(working, axis=0, out=working)
+
+    # MTT = integral of residue  (trapezoidal rule, axis=0)
+    mtt = _trapezoid(working, dx=dt, axis=0)
+
+    # h(t) = max(0, -dR/dt)  — gradient along time axis
+    # 2nd-order accurate finite differences matching np.gradient(edge_order=2)
+    h = np.empty_like(working)
+    h[1:-1] = -(working[2:] - working[:-2]) / (2.0 * dt)
+    h[0] = (3.0 * working[0] - 4.0 * working[1] + working[2]) / (2.0 * dt)
+    h[-1] = (-working[-3] + 4.0 * working[-2] - 3.0 * working[-1]) / (2.0 * dt)
+    np.clip(h, 0.0, None, out=h)
+
+    s = _trapezoid(h, dx=dt, axis=0)  # (n_vox,)
+    bad = (~np.isfinite(s)) | (s <= 1e-12)
+
+    # Normalise h so it integrates to 1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        h /= s  # broadcasts (n_time, n_vox) / (n_vox,)
+
+    time_col = (np.arange(n_time, dtype=float) * dt).reshape(-1, 1)  # (n_time, 1)
+    mu = _trapezoid(time_col * h, dx=dt, axis=0)  # (n_vox,)
+    variance = _trapezoid((time_col - mu) ** 2 * h, dx=dt, axis=0)
+    cth = np.sqrt(np.clip(variance, 0.0, None))
+
+    mtt = np.where(bad, np.nan, mtt)
+    cth = np.where(bad, np.nan, cth)
+    return mtt, cth
 
 
 def _gamma_density(t, a, b, t0):

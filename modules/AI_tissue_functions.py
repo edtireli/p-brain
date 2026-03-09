@@ -3271,19 +3271,17 @@ def compute_and_plot_ctcs_median(
                         mtt_vals = np.asarray(sol.mtt_s, dtype=float).reshape(-1)
                         cth_vals = np.asarray(sol.cth_s, dtype=float).reshape(-1)
 
-                        for k in range(end - start):
-                            x, y = fast_coords[start + k]
-                            cbf_k = float(cbf_vals[k]) if k < cbf_vals.size else float("nan")
-                            if np.isfinite(cbf_k):
-                                CBF_slice[x, y] = cbf_k
-                            if settings.WRITE_MTT and MTT_slice is not None:
-                                mtt_k = float(mtt_vals[k]) if k < mtt_vals.size else float("nan")
-                                if np.isfinite(mtt_k):
-                                    MTT_slice[x, y] = mtt_k
-                            if settings.WRITE_CTH and CTH_slice is not None:
-                                cth_k = float(cth_vals[k]) if k < cth_vals.size else float("nan")
-                                if np.isfinite(cth_k):
-                                    CTH_slice[x, y] = cth_k
+                        coords_chunk = fast_coords[start:end]
+                        xs = np.array([c[0] for c in coords_chunk], dtype=int)
+                        ys = np.array([c[1] for c in coords_chunk], dtype=int)
+                        cbf_fin = np.isfinite(cbf_vals[:len(xs)])
+                        CBF_slice[xs[cbf_fin], ys[cbf_fin]] = cbf_vals[:len(xs)][cbf_fin]
+                        if settings.WRITE_MTT and MTT_slice is not None:
+                            mtt_fin = np.isfinite(mtt_vals[:len(xs)])
+                            MTT_slice[xs[mtt_fin], ys[mtt_fin]] = mtt_vals[:len(xs)][mtt_fin]
+                        if settings.WRITE_CTH and CTH_slice is not None:
+                            cth_fin = np.isfinite(cth_vals[:len(xs)])
+                            CTH_slice[xs[cth_fin], ys[cth_fin]] = cth_vals[:len(xs)][cth_fin]
 
                 if compute_per_voxel_Ki:
                     Ki_per_voxel[:, :, i] = Ki_slice
@@ -4260,19 +4258,17 @@ def compute_and_plot_ctcs_median(
                         mtt_vals = np.asarray(sol.mtt_s, dtype=float).reshape(-1)
                         cth_vals = np.asarray(sol.cth_s, dtype=float).reshape(-1)
 
-                        for k in range(end - start):
-                            x, y = fast_coords[start + k]
-                            cbf_k = float(cbf_vals[k]) if k < cbf_vals.size else float("nan")
-                            if np.isfinite(cbf_k):
-                                CBF_slice[x, y] = cbf_k
-                            if settings.WRITE_MTT and MTT_slice is not None:
-                                mtt_k = float(mtt_vals[k]) if k < mtt_vals.size else float("nan")
-                                if np.isfinite(mtt_k):
-                                    MTT_slice[x, y] = mtt_k
-                            if settings.WRITE_CTH and CTH_slice is not None:
-                                cth_k = float(cth_vals[k]) if k < cth_vals.size else float("nan")
-                                if np.isfinite(cth_k):
-                                    CTH_slice[x, y] = cth_k
+                        coords_chunk = fast_coords[start:end]
+                        xs = np.array([c[0] for c in coords_chunk], dtype=int)
+                        ys = np.array([c[1] for c in coords_chunk], dtype=int)
+                        cbf_fin = np.isfinite(cbf_vals[:len(xs)])
+                        CBF_slice[xs[cbf_fin], ys[cbf_fin]] = cbf_vals[:len(xs)][cbf_fin]
+                        if settings.WRITE_MTT and MTT_slice is not None:
+                            mtt_fin = np.isfinite(mtt_vals[:len(xs)])
+                            MTT_slice[xs[mtt_fin], ys[mtt_fin]] = mtt_vals[:len(xs)][mtt_fin]
+                        if settings.WRITE_CTH and CTH_slice is not None:
+                            cth_fin = np.isfinite(cth_vals[:len(xs)])
+                            CTH_slice[xs[cth_fin], ys[cth_fin]] = cth_vals[:len(xs)][cth_fin]
 
                 # Store the K_i and/or CBF slice in the 3D arrays
                 if compute_per_voxel_Ki:
