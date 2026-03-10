@@ -474,7 +474,7 @@ def _run_manual_tissue_analysis(
     compute_ki = model in {"patlak", "both"}
     compute_cbf = model in {"tikhonov", "both"}
 
-    _, _, _, boundary, _, _, _ = parameters
+    _, _, _, boundary, *_ = parameters
 
     # Use the T2 volume for visualisation if available.
     t2_img = None

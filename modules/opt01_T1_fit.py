@@ -1507,7 +1507,7 @@ def _recalibrate_m0_to_dce(
 
 
 def T1_fit(data_directory, analysis_directory, nifti_directory, image_directory, filenames, parameters):
-    _, IsVFA, IsIR, _, _, _, _ = parameters
+    _, IsVFA, IsIR, _, _, _, _, _ = parameters
     (
         t1_3D_filename,
         axial_t1_3D_filename,

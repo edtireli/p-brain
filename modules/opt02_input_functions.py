@@ -260,7 +260,7 @@ def input_function(analysis_directory, nifti_directory, image_directory, filenam
     ) = filenames
     refresh_nifti_directory(nifti_directory)
     
-    IsVFA, IsIR, _, _, _, _, _ = parameters
+    IsVFA, IsIR, *_ = parameters
     filename = os.path.join(nifti_directory, dce_filename)
     nifti_img = nib.load(filename)
     num_volumes = nifti_img.shape[-1]
