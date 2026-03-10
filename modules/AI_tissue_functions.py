@@ -16,6 +16,7 @@ import functools
 import logging
 import multiprocessing
 import os
+import pathlib
 import pickle
 import shutil
 import subprocess
@@ -1615,13 +1616,30 @@ def segmentation(
             candidate = os.path.join(fs_home, "bin", "mri_synthseg")
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 synthseg_bin = candidate
+        # Scan /Applications/freesurfer/ for newest version with mri_synthseg
+        # (handles cases where FREESURFER_HOME is unset or stale).
+        if not synthseg_bin:
+            _fs_base = pathlib.Path("/Applications/freesurfer")
+            if _fs_base.is_dir():
+                # Sort version dirs descending so newest wins
+                for _ver_dir in sorted(_fs_base.iterdir(), reverse=True):
+                    _cand = _ver_dir / "bin" / "mri_synthseg"
+                    if _cand.is_file() and os.access(_cand, os.X_OK):
+                        synthseg_bin = str(_cand)
+                        # Also fix FREESURFER_HOME for downstream commands
+                        fs_home = str(_ver_dir)
+                        os.environ["FREESURFER_HOME"] = fs_home
+                        print(f"Auto-detected FreeSurfer at {fs_home}")
+                        break
         if not synthseg_bin:
             synthseg_bin = _shutil.which("mri_synthseg")
         if not synthseg_bin:
             raise FileNotFoundError(
-                "mri_synthseg not found under FREESURFER_HOME or on PATH. "
+                "mri_synthseg not found under FREESURFER_HOME, "
+                "/Applications/freesurfer/, or on PATH. "
                 "SynthSeg requires FreeSurfer 7.4 or later."
             )
+        print(f"Using mri_synthseg: {synthseg_bin}")
 
         # SynthSeg writes directly to a NIfTI / mgz output file.
         # We place it so it matches the path the rest of the pipeline expects.
