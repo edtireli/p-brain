@@ -1404,11 +1404,33 @@ def _parrec_header_fields(par_path: str) -> dict:
     if nib is None:
         return {}
 
+    # Guard against extremely slow nibabel PAR parsing on large dynamic scans.
+    import signal as _signal
+
+    class _PARTimeout(Exception):
+        pass
+
+    def _alarm_handler(signum, frame):
+        raise _PARTimeout("PAR header parse timed out")
+
+    _prev_handler = None
+    _use_alarm = hasattr(_signal, "SIGALRM")  # Unix only
     try:
+        if _use_alarm:
+            _prev_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
+            _signal.alarm(30)  # 30 s timeout
         img = nib.parrec.load(par_path)
         hdr = img.header
+    except _PARTimeout:
+        print(f"[parrec] Skipping slow PAR parse for {os.path.basename(par_path)}")
+        return {}
     except Exception:
         return {}
+    finally:
+        if _use_alarm:
+            _signal.alarm(0)  # cancel alarm
+            if _prev_handler is not None:
+                _signal.signal(_signal.SIGALRM, _prev_handler)
 
     out: dict = {}
 
@@ -1520,6 +1542,16 @@ def inject_parrec_metadata_into_sidecar_json(nifti_path: str, par_path: str) -> 
         return False
     if not isinstance(data, dict):
         return False
+
+    # Quick pre-check: if the sidecar already has all the keys we would
+    # inject, skip the expensive PAR header parse entirely.
+    _ALL_PAR_KEYS = {
+        "ProtocolNamePAR", "PixelSpacing", "SliceThickness",
+        "SpacingBetweenSlices", "RepetitionTimeExcitation",
+        "FrameTimesStart", "FlipAngle", "TurboFactor", "InversionTime",
+    }
+    if _ALL_PAR_KEYS.issubset(data):
+        return False  # nothing new to add
 
     fields = _parrec_header_fields(par_path)
     if not fields:
