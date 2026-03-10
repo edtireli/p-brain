@@ -563,15 +563,45 @@ def resolve_turboflash_nph(nifti_path: str, default=None):
         return 1
 
 
+def _dt_from_frame_times(frame_times):
+    """Derive median dt from a ``FrameTimesStart``-style list/array.
+
+    Returns positive float dt in seconds, or *None* if the input is
+    unsuitable (too few entries, non-finite, etc.).
+    """
+    try:
+        arr = np.asarray(frame_times, dtype=float)
+    except Exception:
+        return None
+    if arr.ndim != 1 or arr.size < 2:
+        return None
+    diffs = np.diff(arr)
+    finite = diffs[np.isfinite(diffs)]
+    if finite.size == 0:
+        return None
+    dt = float(np.median(finite))
+    return dt if dt > 0 else None
+
+
 def resolve_dce_time_step_s(nifti_path: str, default=None):
     """Resolve DCE sampling interval (seconds per volume).
 
     Compatibility shim for older modules that import this from utils.loading.
 
-    Resolution order:
-    1) `P_BRAIN_DCE_TIME_STEP_S` / `settings.DCE_TIME_STEP_S` override.
-    2) NIfTI JSON sidecar fields (common dcm2niix keys).
-    3) NIfTI header pixdim[4] with unit conversion.
+    Resolution order
+    ----------------
+    1) ``P_BRAIN_DCE_TIME_STEP_S`` / ``settings.DCE_TIME_STEP_S`` override.
+    2) ``FrameTimesStart`` in the JSON sidecar -- the most reliable source
+       because it contains per-volume acquisition times regardless of
+       converter (dcm2niix **and** nibabel PAR/REC).  Requires >= 2 entries
+       so that a median dt can be computed.
+    3) Scalar sidecar fields: ``RepetitionTime``, ``TemporalResolution``,
+       ``VolumeTiming``, etc.  A cross-check is performed: if
+       ``FrameTimesStart`` is also present and yields a dt that disagrees
+       with the scalar by more than 10x, the ``FrameTimesStart`` value is
+       preferred (guards against nibabel PAR/REC sidecars where
+       ``RepetitionTime`` is the excitation TR, not the dynamic interval).
+    4) NIfTI header ``pixdim[4]`` with unit conversion.
     """
 
     override = getattr(settings, "DCE_TIME_STEP_S", None)
@@ -585,6 +615,15 @@ def resolve_dce_time_step_s(nifti_path: str, default=None):
 
     data = read_nifti_sidecar_json(nifti_path)
     if isinstance(data, dict):
+        # -- Priority 1: FrameTimesStart (per-volume acquisition times) ---
+        dt_fts = None
+        fts_raw = data.get("FrameTimesStart")
+        if isinstance(fts_raw, (list, tuple)) and len(fts_raw) >= 2:
+            dt_fts = _dt_from_frame_times(fts_raw)
+            if dt_fts is not None and dt_fts > 0:
+                return dt_fts
+
+        # -- Priority 2: scalar / list sidecar keys ----------------------
         for key in (
             "RepetitionTime",
             "RepetitionTime_s",
@@ -599,7 +638,6 @@ def resolve_dce_time_step_s(nifti_path: str, default=None):
             try:
                 raw = data[key]
                 if isinstance(raw, (list, tuple)) and raw:
-                    # Some tools store per-volume timings; infer dt as median diff.
                     arr = np.asarray(raw, dtype=float)
                     if arr.size >= 2:
                         diffs = np.diff(arr)
@@ -610,8 +648,25 @@ def resolve_dce_time_step_s(nifti_path: str, default=None):
                     dt = float(raw)
             except Exception:
                 continue
-            if dt > 0:
-                return dt
+            if dt <= 0:
+                continue
+
+            # Cross-check against FrameTimesStart when both are present.
+            # nibabel PAR/REC sidecars set RepetitionTime = excitation TR
+            # (e.g. 0.004 s) which is far smaller than the real dynamic
+            # interval (~1-3 s).  If they disagree by > 10x, trust FTS.
+            if dt_fts is not None and dt_fts > 0:
+                ratio = dt_fts / dt
+                if ratio > 10 or ratio < 0.1:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "resolve_dce_time_step_s: sidecar '%s'=%.6g s "
+                        "disagrees with FrameTimesStart-derived dt=%.6g s "
+                        "(ratio %.1fx) -- using FrameTimesStart value.",
+                        key, dt, dt_fts, ratio,
+                    )
+                    return dt_fts
+            return dt
 
     # Header fallback.
     try:
@@ -634,6 +689,48 @@ def resolve_dce_time_step_s(nifti_path: str, default=None):
         pass
 
     return default
+
+
+def resolve_dce_time_points_s(nifti_path: str, n_volumes: int = 0):
+    """Return the per-volume time axis (seconds) for a DCE series.
+
+    If the JSON sidecar contains ``FrameTimesStart`` with the right number
+    of entries, the actual (possibly non-uniform) acquisition times are
+    returned as a float32 array.  Otherwise a uniform grid built from
+    :func:`resolve_dce_time_step_s` x :func:`build_time_points_s` is
+    returned.
+
+    Parameters
+    ----------
+    nifti_path : str
+        Path to the 4-D DCE NIfTI file.
+    n_volumes : int, optional
+        Number of time-frames.  When 0 the value is read from the NIfTI
+        header.
+
+    Returns
+    -------
+    np.ndarray -- shape ``(n_volumes,)``, dtype ``float32``.
+    """
+    if n_volumes <= 0:
+        try:
+            import nibabel as nib
+            n_volumes = int(nib.load(nifti_path).shape[-1])
+        except Exception:
+            n_volumes = 0
+
+    data = read_nifti_sidecar_json(nifti_path)
+    if isinstance(data, dict):
+        fts_raw = data.get("FrameTimesStart")
+        if isinstance(fts_raw, (list, tuple)):
+            arr = np.asarray(fts_raw, dtype=np.float32)
+            if arr.ndim == 1 and arr.size >= 2:
+                if n_volumes <= 0 or arr.size == n_volumes:
+                    return arr
+
+    # Fallback: uniform grid
+    dt_s = resolve_dce_time_step_s(nifti_path, default=None)
+    return build_time_points_s(max(n_volumes, 0), dt_s)
 
 
 def _load_matlab_mat_dict(mat_path: str) -> dict:
