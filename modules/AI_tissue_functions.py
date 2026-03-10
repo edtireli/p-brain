@@ -4634,6 +4634,12 @@ def compute_and_plot_ctcs_median(
     # ----------------------------------------------------------------------------- 
     # 1) Build overall-median CTCs (already trimmed to the common min_length)
     # -----------------------------------------------------------------------------
+    if C_a_full is None:
+        # No valid AIF -> per-slice CTCs were saved but global PK analysis
+        # cannot proceed.  Exit gracefully.
+        print("[!] No valid input function available -- skipping global PK summary.")
+        return
+
     avg_wm_ctc_total             = _aggregate_roi_curves(wm_ctcs_total, axis=0) if wm_ctcs_total else np.array([])
     avg_cortical_gm_ctc_total    = _aggregate_roi_curves(cortical_gm_ctcs_total, axis=0) if cortical_gm_ctcs_total else np.array([])
     avg_subcortical_gm_ctc_total = _aggregate_roi_curves(subcortical_gm_ctcs_total, axis=0) if subcortical_gm_ctcs_total else np.array([])
