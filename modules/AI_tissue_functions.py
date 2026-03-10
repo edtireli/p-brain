@@ -1485,9 +1485,10 @@ def segmentation(
     sid,
     apple_metal=True,
     rerun=False,
-    method="fastsurfer",
+    method="synthseg",
+    synthseg_robust=False,
 ):
-    method = (method or "fastsurfer").lower()
+    method = (method or "synthseg").lower()
 
     # Resolve FreeSurfer license path once for all methods that need it.
     _fs_license = os.environ.get("FS_LICENSE", "").strip()
@@ -1592,8 +1593,15 @@ def segmentation(
         # ------------------------------------------------------------------ #
         #  SynthSeg  (FreeSurfer >= 8.0)
         #  ``mri_synthseg`` produces a whole-brain parcellation from a single
-        #  T1w input without atlas registration.  The output is a standard
-        #  FreeSurfer-compatible aseg volume.
+        #  T1w input without atlas registration.  With ``--parc`` it also
+        #  produces DKT-atlas cortical parcellation labels comparable to
+        #  FastSurfer / recon-all ``aparc.DKTatlas+aseg``.
+        #
+        #  Preprocessing: Philips (and some other vendor) NIfTIs carry
+        #  non-standard ``scl_slope`` values that confuse SynthSeg's internal
+        #  intensity handling.  We first run ``mri_convert --conform`` to
+        #  produce a clean 256x256x256 1 mm isotropic uchar volume that
+        #  SynthSeg handles reliably.
         # ------------------------------------------------------------------ #
         import shutil as _shutil
         synthseg_bin = _shutil.which("mri_synthseg")
@@ -1620,12 +1628,47 @@ def segmentation(
                 print("Segmentation output not found, running SynthSeg...")
 
             _preamble = _fs_shell_preamble()
+
+            # -------------------------------------------------------------- #
+            #  Step 1: Conform T1 to 256^3 1 mm iso uchar (handles bad
+            #          scl_slope from Philips PAR/REC -> NIfTI conversion).
+            # -------------------------------------------------------------- #
+            conformed_t1 = os.path.join(mri_dir, "t1_conformed.mgz")
+            if not os.path.exists(conformed_t1) or rerun:
+                conform_cmd = (
+                    f"{_preamble} mri_convert --conform "
+                    f"{t1_path} {conformed_t1}"
+                )
+                print("Conforming T1 to 256^3 1 mm iso for SynthSeg...")
+                conform_result = subprocess.run(
+                    conform_cmd, shell=True, capture_output=True, text=True,
+                )
+                _clean_dot_underscore(output_dir)
+                if conform_result.returncode != 0 or not os.path.exists(conformed_t1):
+                    err = (conform_result.stderr or conform_result.stdout or "").strip()
+                    raise RuntimeError(
+                        f"mri_convert --conform failed "
+                        f"(exit {conform_result.returncode}): {err[-800:]}"
+                    )
+                print("T1 conform completed.")
+
+            # -------------------------------------------------------------- #
+            #  Step 2: Run SynthSeg with --parc on the conformed volume.
+            #  Default is --fast (single forward pass, ~2 min).
+            #  --robust uses 15 passes for higher accuracy (~10-15 min).
+            #  --threads uses 80% of available CPU cores.
+            # -------------------------------------------------------------- #
+            _ncpu = os.cpu_count() or 1
+            _threads = max(1, int(_ncpu * 0.8))
+            _mode_flag = "--robust" if synthseg_robust else "--fast"
             command = (
                 f"{_preamble} "
                 f"{synthseg_bin} "
-                f"--i {t1_path} "
+                f"--i {conformed_t1} "
                 f"--o {seg_mgz_path} "
-                f"--robust "
+                f"{_mode_flag} "
+                f"--parc "
+                f"--threads {_threads} "
                 f"--vol {os.path.join(mri_dir, 'synthseg_volumes.csv')} "
                 f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
             )
@@ -1643,7 +1686,9 @@ def segmentation(
                     "SynthSeg completed but the output file was not created: "
                     f"{seg_mgz_path}"
                 )
-            print("SynthSeg segmentation completed.")
+            _mode_label = "robust" if synthseg_robust else "fast"
+            print(f"SynthSeg segmentation completed ({_mode_label} mode, "
+                  f"{_threads} threads, with cortical parcellation).")
         else:
             print("Segmentation file already exists, skipping SynthSeg.")
 
@@ -5408,7 +5453,8 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         dce_filename,
     ) = filenames
 
-    IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION, SEGMENTATION_METHOD, _ = parameters
+    (IsVFA, IsIR, apple_metal, boundary, RERUN_SEGMENTATION,
+     SEGMENTATION_METHOD, SYNTHSEG_ROBUST, _) = parameters
 
     # Automatically enable jump correction when requested via a JSON file
     global correct_signal_jumps
@@ -5497,6 +5543,7 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
             apple_metal,
             RERUN_SEGMENTATION,
             SEGMENTATION_METHOD,
+            synthseg_robust=SYNTHSEG_ROBUST,
         )
 
     # Paths to masks in the same directory as aparc.DKTatlas+aseg.deep.mgz

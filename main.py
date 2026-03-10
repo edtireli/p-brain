@@ -142,11 +142,20 @@ def parse_args():
         '--segmentation',
         dest='segmentation',
         type=str,
-        choices=['fastsurfer', 'freesurfer', 'synthseg', 'recon-all', 'pbrain'],
+        choices=['synthseg', 'fastsurfer', 'freesurfer', 'recon-all', 'pbrain'],
         default=None,
-        help='Segmentation method: fastsurfer (default), freesurfer (auto-selects '
-             'synthseg for FS>=8 or recon-all for FS<8), synthseg, recon-all, '
+        help='Segmentation method: synthseg (default, requires FreeSurfer >= 7.4), '
+             'fastsurfer, freesurfer (auto-selects synthseg for FS>=8 or '
+             'recon-all for FS<8), recon-all, '
              'pbrain (lightweight 7-class tissue model, no FreeSurfer needed).',
+    )
+    parser.add_argument(
+        '--synthseg-robust',
+        dest='synthseg_robust',
+        action='store_true',
+        default=False,
+        help='Use SynthSeg robust mode (15 forward passes, slower but more '
+             'accurate). Default is fast mode (single pass, ~2 min).',
     )
     parser.add_argument('--vfa-glob', dest='vfa_glob', type=str, default=None,
                         help='Comma-separated glob(s) for VFA NIfTI discovery in NIfTI dir (default: *VFA*.nii*)')
@@ -506,6 +515,8 @@ def main():
         settings.T1_FIT_MODE = str(args.t1_fit).strip().lower() or "auto"
     if getattr(args, 'segmentation', None) is not None:
         settings.SEGMENTATION_METHOD = str(args.segmentation).strip().lower()
+    if getattr(args, 'synthseg_robust', False):
+        settings.SYNTHSEG_ROBUST = True
     if getattr(args, 'tissue_roi', None) is not None:
         raw_tr = str(args.tissue_roi).strip().lower()
         if raw_tr == 'voxel':

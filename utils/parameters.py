@@ -185,14 +185,14 @@ def _resolve_segmentation_method(explicit: Optional[str] = None,
 
     Priority:
     1. If *explicit* is set (user override via settings) use that directly.
-    2. Default is ``"fastsurfer"``.
+    2. Default is ``"synthseg"`` (requires FreeSurfer >= 7.4 with SynthSeg).
 
     When the caller passes ``"freesurfer"`` the function auto-selects the
     concrete FreeSurfer tool:
     - FreeSurfer >= 8.0 → ``"synthseg"``  (mri_synthseg)
     - FreeSurfer <  8.0 → ``"recon-all"``
     """
-    method = (explicit or "fastsurfer").strip().lower()
+    method = (explicit or "synthseg").strip().lower()
 
     # pbrain uses its own lightweight model – pass through directly.
     if method == "pbrain":
@@ -225,14 +225,16 @@ def global_parameters():
         IsIR = False
     apple_metal = True # Enable if running on apple M1/M2/M3...
     boundary = True #compute boundary mask from GM/WM masks and plot/compute patlak values alongside wm/gm
-    RERUN_SEGMENTATION = False  # Force rerun of FastSurfer segmentation
+    RERUN_SEGMENTATION = False  # Force rerun of segmentation
 
     # Resolve segmentation method.  An explicit override stored in settings
-    # takes priority; otherwise default to fastsurfer.  When the value is
-    # "freesurfer" it is further resolved to "synthseg" (FS >= 8) or
-    # "recon-all" (FS < 8) by _resolve_segmentation_method.
-    raw_method = getattr(settings, "SEGMENTATION_METHOD", "fastsurfer")
+    # takes priority; otherwise default to synthseg (FreeSurfer >= 7.4).
+    # When the value is "freesurfer" it is further resolved to "synthseg"
+    # (FS >= 8) or "recon-all" (FS < 8) by _resolve_segmentation_method.
+    raw_method = getattr(settings, "SEGMENTATION_METHOD", "synthseg")
     SEGMENTATION_METHOD = _resolve_segmentation_method(raw_method)
+
+    SYNTHSEG_ROBUST = bool(getattr(settings, "SYNTHSEG_ROBUST", False))
 
     COMPUTE_FA = False  # Compute fractional anisotropy from DWI
     return (
@@ -242,6 +244,7 @@ def global_parameters():
         boundary,
         RERUN_SEGMENTATION,
         SEGMENTATION_METHOD,
+        SYNTHSEG_ROBUST,
         COMPUTE_FA,
     )
 
