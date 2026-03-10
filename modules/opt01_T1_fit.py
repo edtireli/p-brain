@@ -41,7 +41,7 @@ def _resolve_t1_recovery_model(explicit: str | None = None) -> str:
         return env
 
     model = getattr(settings, 'T1_RECOVERY_MODEL', '')
-    return (str(model).strip().lower() or 'inversion')
+    return (str(model).strip().lower() or 'turboflash')
 
 
 def _reference_img_for_t1fit(nifti_directory, dce_filename, *, prefer_ir=True):

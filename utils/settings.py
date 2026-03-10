@@ -161,12 +161,12 @@ TSCC_FORKED_PEAK_MIN_DIP_FRAC = float(os.environ.get("P_BRAIN_TSCC_FORKED_PEAK_M
 
 # Select the recovery equation to use when fitting T1/M0 from inversion or
 # saturation recovery acquisitions.
+# - turboflash: TurboFLASH readout-train model (matches legacy MATLAB turbof_* fit) [default]
 # - inversion:  A - B*exp(-TI/T1)
 # - saturation: M0*(1-exp(-TI/T1))
-# - turboflash: TurboFLASH readout-train model (matches legacy MATLAB turbof_* fit)
-T1_RECOVERY_MODEL = os.environ.get("P_BRAIN_T1_RECOVERY_MODEL", "inversion").strip().lower()
+T1_RECOVERY_MODEL = os.environ.get("P_BRAIN_T1_RECOVERY_MODEL", "turboflash").strip().lower()
 if T1_RECOVERY_MODEL not in {"inversion", "saturation", "turboflash"}:
-    T1_RECOVERY_MODEL = "inversion"
+    T1_RECOVERY_MODEL = "turboflash"
 
 # Select kinetic modelling strategy.
 # Consolidated options:
