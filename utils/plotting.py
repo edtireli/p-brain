@@ -67,17 +67,24 @@ def _load_map_in_dce_grid(
             # almost all nonzero voxels.  A large drop indicates the cache was
             # produced by a buggy resample_from_to pass (oblique boundary
             # zeroing).  In that case fall through and regenerate.
+            #
+            # Also reject caches that contain no finite values at all (e.g.
+            # all-NaN from a previous failed T1 fitting run).  NaN values are
+            # considered nonzero by np.count_nonzero, so we must check
+            # finiteness explicitly.
             cache_ok = True
-            if os.path.isfile(base_path):
+            cache_finite = int(np.isfinite(cached_data).sum())
+            if cache_finite == 0:
+                cache_ok = False
+            elif os.path.isfile(base_path):
                 try:
                     src_check = nib.load(base_path)
                     if (
                         src_check.shape[:3] == tuple(target_img.shape[:3])
                         and np.allclose(src_check.affine, target_img.affine, atol=1e-4)
                     ):
-                        src_nz = np.count_nonzero(np.asarray(src_check.dataobj))
-                        cache_nz = np.count_nonzero(cached_data)
-                        if src_nz > 0 and cache_nz < 0.8 * src_nz:
+                        src_finite = int(np.isfinite(np.asarray(src_check.dataobj)).sum())
+                        if src_finite > 0 and cache_finite < 0.8 * src_finite:
                             cache_ok = False
                 except Exception:
                     pass
