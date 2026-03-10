@@ -1474,6 +1474,9 @@ def _fs_shell_preamble() -> str:
     _fs_home = os.environ.get("FREESURFER_HOME", "").strip()
     if _fs_home:
         parts.append(f"export FREESURFER_HOME={_fs_home}")
+        # Prepend FREESURFER_HOME/bin to PATH so that mri_convert, etc.
+        # come from the intended FS installation (e.g. 8.1 ARM64).
+        parts.append(f'export PATH="{_fs_home}/bin:$PATH"')
     return " && ".join(parts) + " && "
 
 
@@ -1603,17 +1606,21 @@ def segmentation(
         #  produce a clean 256x256x256 1 mm isotropic uchar volume that
         #  SynthSeg handles reliably.
         # ------------------------------------------------------------------ #
+        # Prefer FREESURFER_HOME/bin over PATH to ensure the correct FS
+        # version is used (e.g. 8.1 ARM64 vs 7.4 x86_64).
         import shutil as _shutil
-        synthseg_bin = _shutil.which("mri_synthseg")
-        if not synthseg_bin:
-            fs_home = os.environ.get("FREESURFER_HOME", "")
-            candidate = os.path.join(fs_home, "bin", "mri_synthseg") if fs_home else ""
-            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        synthseg_bin = None
+        fs_home = os.environ.get("FREESURFER_HOME", "")
+        if fs_home:
+            candidate = os.path.join(fs_home, "bin", "mri_synthseg")
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 synthseg_bin = candidate
         if not synthseg_bin:
+            synthseg_bin = _shutil.which("mri_synthseg")
+        if not synthseg_bin:
             raise FileNotFoundError(
-                "mri_synthseg not found on PATH or under FREESURFER_HOME. "
-                "SynthSeg requires FreeSurfer 8.0 or later."
+                "mri_synthseg not found under FREESURFER_HOME or on PATH. "
+                "SynthSeg requires FreeSurfer 7.4 or later."
             )
 
         # SynthSeg writes directly to a NIfTI / mgz output file.
