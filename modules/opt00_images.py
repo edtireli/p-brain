@@ -9,6 +9,7 @@ if _MPL_ENV_BACKEND:
     matplotlib.use(_MPL_ENV_BACKEND)
 else:
     try:
+        import _tkinter  # noqa: F401 — test C extension before committing to TkAgg
         matplotlib.use("TkAgg")
     except Exception:
         matplotlib.use("Agg")

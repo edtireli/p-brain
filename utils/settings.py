@@ -16,7 +16,9 @@ _MPL_ENV_BACKEND = os.environ.get("P_BRAIN_MPL_BACKEND") or os.environ.get("MPLB
 if _MPL_ENV_BACKEND:
     matplotlib.use(_MPL_ENV_BACKEND)
 else:
+    # Use Agg (non-interactive) unless tkinter is actually available.
     try:
+        import _tkinter  # noqa: F401 — test C extension before committing to TkAgg
         matplotlib.use("TkAgg")
     except Exception:
         matplotlib.use("Agg")
