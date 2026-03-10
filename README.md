@@ -22,14 +22,16 @@ _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic c
 3. [p-brain (Standalone pipeline)](#p-brain-standalone-pipeline)
 4. [Data layout and repository structure](#data-layout-and-repository-structure)
 5. [Installation](#installation)
-6. [Running the script](#running-the-script)
-7. [Workflow details](#workflow-details)
-8. [Outputs and deliverables](#outputs-and-deliverables)
-9. [Automation features](#automation-features)
-10. [Configuration and environment variables](#configuration-and-environment-variables)
-11. [Addons](#addons)
-12. [Contributing & support](#contributing--support)
-13. [License & acknowledgments](#license--acknowledgments)
+6. [Segmentation methods](#segmentation-methods)
+7. [Running the script](#running-the-script)
+8. [Workflow details](#workflow-details)
+9. [Outputs and deliverables](#outputs-and-deliverables)
+10. [Automation features](#automation-features)
+11. [Configuration and environment variables](#configuration-and-environment-variables)
+12. [Addons](#addons)
+13. [Recent changes](#recent-changes-20252026-highlights)
+14. [Contributing & support](#contributing--support)
+15. [License & acknowledgments](#license--acknowledgments)
 
 ---
 
@@ -37,7 +39,7 @@ _p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic c
 Traditional DCE-MRI analysis requires hand-drawn ROIs for arterial/venous input functions, manual tissue masking, and bespoke scripts for each pharmacokinetic model. _p_-Brain removes these bottlenecks:
 
 - **Single script, full pipeline** – From T1/M0 fitting to Patlak, extended Tofts, and deconvolution-based residue analysis.
-- **CNN-driven automation** – Neural networks detect the right internal carotid artery (rICA) and superior sagittal sinus (SSS); FastSurfer-based anatomical segmentations define tissue ROIs.
+- **CNN-driven automation** – Neural networks detect the right internal carotid artery (rICA) and superior sagittal sinus (SSS); SynthSeg-based anatomical segmentations (FreeSurfer 8+) define tissue ROIs.
 - **Multi-scale reporting** – Every run produces voxel mosaics, parcel tables, slice-wise distributions, and whole-brain medians for Ki, vp, CBF, MTT, and CTH.
 - **Reproducible QC** – Time-shifted concentration curves, Patlak fits, reference comparisons, and cohort projections are generated automatically so every decision is traceable.
 - **Batch-ready** – `enumerator.py` runs the pipeline over entire cohorts with optional control handling and environment-based overrides.
@@ -139,12 +141,43 @@ Key filenames (configured in `utils/parameters.py`) include the axial 2D referen
    ```bash
    pip install -r requirements.txt
    ```
-3. *(Optional)* **Fetch addon submodules**
+3. **FreeSurfer 8.0+** *(required for default SynthSeg segmentation)*
+   ```bash
+   # macOS ARM64 example — download from https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall
+   # Install to /Applications/freesurfer/8.1.0
+   export FREESURFER_HOME=/Applications/freesurfer/8.1.0
+   source $FREESURFER_HOME/SetUpFreeSurfer.sh
+   ```
+   SynthSeg requires `mri_synthseg` on PATH. Alternative segmentation methods
+   (`--segmentation fastsurfer`, `recon-all`, or `pbrain`) do not require
+   FreeSurfer 8.
+
+4. *(Optional)* **Fetch addon submodules**
    ```bash
    git submodule update --init -- addons/<addon_name>
    ```
 
 Version strings are derived automatically from `git describe --tags` inside `modules/__init__.py`, so releases always match the tag checked out locally.
+
+---
+
+## Segmentation methods
+
+p-Brain supports multiple brain segmentation backends. The default is
+**SynthSeg** (FreeSurfer 8+). Select a method with `--segmentation <method>`:
+
+| Method | Requirements | Description |
+|--------|-------------|-------------|
+| `synthseg` *(default)* | FreeSurfer ≥ 8.0 | `mri_synthseg --parc --fast` — DKT cortical parcellation (~98 labels). T1 is automatically conformed via `mri_convert --conform` for robust Philips/vendor NIfTI handling. Uses 80% of available CPU threads. |
+| `fastsurfer` | [FastSurfer](https://github.com/deep-mi/FastSurfer) | Deep-learning cortical parcellation (~95 DKT labels). Requires a local FastSurfer install. |
+| `freesurfer` | FreeSurfer | Auto-selects `synthseg` (FS ≥ 8) or `recon-all` (FS < 8). |
+| `recon-all` | FreeSurfer | Classic `recon-all -all` pipeline (~6–12 hours). |
+| `pbrain` | None | Lightweight UNet3D trained on p-brain data (6-class tissue model). No FreeSurfer or FastSurfer needed. |
+
+### SynthSeg options
+- **Fast mode** *(default)*: single forward pass, ~2 min, good quality.
+- **Robust mode** (`--synthseg-robust`): 15 forward passes, ~10–15 min, highest accuracy.
+- T1 preprocessing: `mri_convert --conform` (256³, 1 mm iso, uchar) is always applied before SynthSeg to handle non-standard `scl_slope` values in Philips PAR/REC → NIfTI conversions.
 
 ---
 
@@ -156,7 +189,7 @@ python3 main.py
 1. A small GUI lists available dataset folders under the configured data directory. Select one and click **Accept**.
 2. The terminal menu appears and offers three modes:
    - **Manual mode** – Step-by-step execution with GUI ROI drawing.
-   - **Automatic mode** – Fully automated pipeline (CNN inputs, FastSurfer segmentation, Patlak/Tofts/deconvolution, reporting).
+   - **Automatic mode** – Fully automated pipeline (CNN inputs, SynthSeg segmentation, Patlak/Tofts/deconvolution, reporting).
    - **Pseudo-automatic mode** – Hybrid workflow where the user can review intermediate ROIs before modeling.
 
 ### Manual menu overview
@@ -193,14 +226,40 @@ Use `--data-dir` or `P_BRAIN_DATA_DIR` to point to an alternate root. The script
 
 ---
 
+#### Additional CLI flags (main.py)
+| Flag | Description |
+|------|-------------|
+| `--segmentation <method>` | Segmentation backend: `synthseg` (default), `fastsurfer`, `freesurfer`, `recon-all`, `pbrain`. |
+| `--synthseg-robust` | Use SynthSeg robust mode (15 passes) instead of fast (1 pass). |
+| `--tissue-roi <mode>` | Tissue ROI strategy: `automatic` (default, atlas-based), `manual` (interactive drawing), `voxel` (voxelwise-only, skips segmentation). |
+| `--overlay <vol>` | Background volume for manual ROI drawing: `auto`, `dce`, `t1`, `t2`, `flair`. |
+| `--single-bolus` | Single contrast injection (sets peaks=1, skips second-peak search). |
+| `--num-peaks <n>` | Number of bolus peaks expected (default: 2). |
+| `--dce-skip-volumes <n>` | Discard leading DCE time frames before analysis (e.g. blurry first frames). |
+| `--roi-method <method>` | Input-function ROI method: `ai` (default), `deterministic`, `file`, `manual`. |
+| `--roi-aif-mat <path>` | Import arterial ROI mask from a MATLAB `.mat` file. |
+| `--roi-sss-mat <path>` | Import SSS ROI mask from a MATLAB `.mat` file. |
+| `--roi-tscc-mat <path>` | Import TSCC input function from a MATLAB `.mat` file. |
+| `--compare-reference` | Write QA comparison montages against reference `.mat` outputs. |
+| `--compare-matlab` | Compare T1/M0 outputs against a MATLAB reference `.mat`. |
+| `--t1m0-only` | Run only T1/M0 fitting and exit. |
+| `--t1m0-force` | Delete cached T1/M0 outputs before re-fitting (with `--t1m0-only`). |
+| `--flip-angle <deg>` | Override flip angle (degrees) for CTC conversion. Default: auto from metadata. |
+| `--t1-fit <mode>` | T1/M0 fitting source: `auto`, `ir`, `vfa`, `none`. |
+| `--ctc-model turboflash` | Use TurboFLASH signal model for concentration conversion. |
+| `--init-ktrans-from-patlak` | Initialise extended Tofts Ktrans from Patlak Ki. |
+
+
+---
+
 ## Workflow details
 The automated workflow mirrors the structure shown below. Gray boxes are completely unsupervised; white boxes correspond to manual overrides when running in manual or pseudo-automatic mode.
 
-1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume, inversion recovery series (for T1/M0), and a 4D DCE time series. Optional diffusion data enables automated FA reporting.
+1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume, inversion recovery series (for T1/M0), and a 4D DCE time series. PAR/REC conversion uses `dcm2niix` when available; a built-in `nibabel` fallback handles conversion when `dcm2niix` is not installed. Look-Locker inversion recovery series with dynamic TI values are also supported. Optional diffusion data enables automated FA reporting.
 2. **Preprocessing** – Optional PAR/REC conversion via `dcm2niix`, rigid alignment of structural volumes to DCE space, and consistency checks on slice timing.
 3. **T1/M0 fitting** – Trust-region reflective solver fits the inversion recovery signal model with configurable inversion delays and relaxivity (default r1 = 4 s-1 mM-1).
 4. **Input-function extraction** – CNN slice classifier + ROI segmentation detect rICA and SSS. Venous curves are cross-correlated and rescaled to the arterial peak, compensating for transit delays and dispersion.
-5. **Tissue ROIs** – FastSurfer-based parcellations (with optional FSL anatomical priors) define cortical GM, subcortical GM, WM, cerebellar lobes, brainstem, and GM/WM boundary masks. Affine transforms propagate labels to DCE geometry.
+5. **Tissue ROIs** – SynthSeg-based parcellations (FreeSurfer 8+, with `--parc` for full DKT cortical labels) define cortical GM, subcortical GM, WM, cerebellar lobes, brainstem, and GM/WM boundary masks. FastSurfer, recon-all, and the lightweight `pbrain` UNet are also available via `--segmentation`. Affine transforms propagate labels to DCE geometry.
 6. **Signal-to-concentration conversion** – Spoiled-GRE equation transforms signal intensity into gadolinium concentration using fitted T1, M0, flip angle, and TR. Guards prevent invalid logarithms or unstable tails.
 7. **Modeling**  
    - **Patlak graphical analysis** for Ki and vp with user-configurable linear windows and residual-based uncertainty estimates.
@@ -215,7 +274,7 @@ The automated workflow mirrors the structure shown below. Gray boxes are complet
 Every automatic run produces the following without additional scripting:
 
 - **Voxel-wise maps** – Ki, vp, CBF, CTH, and MTT stored as NIfTI volumes plus pre-rendered mosaics.
-- **Parcellated summaries** – FastSurfer atlas statistics for each parameter, exported as tables and overlay images.
+- **Parcellated summaries** – DKT atlas statistics (from SynthSeg or FastSurfer parcellation) for each parameter, exported as tables and overlay images.
 - **Slice-wise distributions** – Boxplots showing superior–inferior trends for Ki, vp, and perfusion metrics; useful for QC and cohort comparisons.
 - **Whole-brain medians** – GM, WM, cerebellar, and boundary medians saved in JSON for rapid reporting or EHR integration.
 - **Cohort projections** – When multiple datasets exist, the script averages parcel values across subjects and projects them onto a reference segmentation to create cohort fingerprints.
@@ -253,7 +312,7 @@ Voxelwise maps quantify physiological parameters at native spatial resolution so
   ![Voxelwise MTT map](src/img/mtt_montage.png)
 
 ### Regional and parcellated organization
-FastSurfer anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages, see e.g. the parcelwise CBF map. 
+SynthSeg (or FastSurfer) anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages, see e.g. the parcelwise CBF map. 
 
 - ![Parcel-level CBF](src/img/cbf_parcel_montage_tikhonov.png)
 
@@ -585,6 +644,29 @@ Initialize individual addons with:
 ```bash
 git submodule update --init -- addons/<addon_name>
 ```
+
+---
+
+## Recent changes (2025–2026 highlights)
+
+- **SynthSeg default segmentation** — SynthSeg (`mri_synthseg --parc --fast`) replaces FastSurfer as the default. Automatic `mri_convert --conform` preprocessing handles Philips NIfTI `scl_slope` issues. Full DKT cortical parcellation (98 labels). `--synthseg-robust` flag for 15-pass mode. Multi-threaded (80% CPU cores).
+- **FreeSurfer 8.1.0 support** — Native ARM64 (Apple Silicon) binary, no Rosetta needed.
+- **pbrain segmentation** — Lightweight UNet3D tissue model (6 classes) that runs without FreeSurfer or FastSurfer (`--segmentation pbrain`).
+- **FrameTimesStart fix** — DCE time-step resolution now checks `FrameTimesStart` before `RepetitionTime`, preventing nibabel PAR/REC from using the excitation TR (~4 ms) instead of the dynamic interval (~1.2 s).
+- **Tikhonov performance** — Voxelwise Tikhonov vectorised with batch residue metrics. Solver caching eliminates ~150 redundant Cholesky decompositions per run.
+- **nibabel PAR/REC fallback** — Full PAR/REC → NIfTI conversion without `dcm2niix` (magnitude-only extraction, LAS+ orientation matching).
+- **Philips intensity scaling** — nibabel converter applies floating-point rescale slope/intercept to match `dcm2niix` output values.
+- **Look-Locker IR support** — T1 fitting handles Look-Locker inversion recovery series with dynamic TI values.
+- **Manual ROI mode** — `--tissue-roi manual` lets users draw tissue ROIs interactively; `--overlay` selects the background volume.
+- **Voxelwise-only mode** — `--tissue-roi voxel` skips segmentation entirely for fast voxelwise maps.
+- **MATLAB `.mat` import** — `--roi-aif-mat`, `--roi-sss-mat`, `--roi-tscc-mat` load pre-existing ROI masks and input functions from MATLAB.
+- **Single-bolus support** — `--single-bolus` / `--num-peaks` for single-injection protocols.
+- **DCE frame trimming** — `--dce-skip-volumes` discards leading artefact frames.
+- **Flexible PK model combos** — `+` syntax for model selection (e.g. `patlak+tofts`).
+- **Reference QA comparisons** — `--compare-reference` and `--compare-matlab` write side-by-side montages against MATLAB/Perffit2 outputs.
+- **T1/M0 isolated runs** — `--t1m0-only` / `--t1m0-force` for standalone fitting.
+- **Signal jump correction** — Drop `apply_jumpfix.json` next to a dataset to auto-correct sudden signal jumps.
+- **macOS `._ file` cleanup** — Automatic removal of macOS `._` resource fork files that stall FreeSurfer `rm` calls on external drives.
 
 ---
 
