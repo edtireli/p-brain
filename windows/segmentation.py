@@ -368,13 +368,25 @@ def _ensure_keras2_compat() -> None:
 
     try:
         import tf_keras  # Keras 2 compatibility package
-        sys.modules['keras'] = tf_keras
-        sys.modules['keras.layers'] = tf_keras.layers
-        sys.modules['keras.backend'] = tf_keras.backend
-        sys.modules['keras.models'] = tf_keras.models
-        os.environ['TF_USE_LEGACY_KERAS'] = '1'
     except ImportError:
-        pass  # tf_keras not installed — hope for the best
+        # tf_keras not installed yet — install it now
+        import subprocess
+        print("[compat] Installing tf_keras (Keras 2 compatibility) ...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "tf_keras"],
+                capture_output=True, text=True, timeout=300,
+            )
+            import tf_keras
+        except Exception:
+            print("[compat] WARNING: Could not install tf_keras. SynthSeg may fail.")
+            return
+
+    sys.modules['keras'] = tf_keras
+    sys.modules['keras.layers'] = tf_keras.layers
+    sys.modules['keras.backend'] = tf_keras.backend
+    sys.modules['keras.models'] = tf_keras.models
+    os.environ['TF_USE_LEGACY_KERAS'] = '1'
 
 
 def _ensure_synthseg_importable(synthseg_home: str) -> None:
