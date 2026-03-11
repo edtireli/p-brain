@@ -145,13 +145,67 @@ _SYNTHSEG_MODEL_FILES = [
     "synthseg_qc_2.0.h5",       #  48 MB — QC scores
 ]
 
+_SYNTHSEG_RELEASE_BASE = (
+    "https://github.com/edtireli/p-brain/releases/download/synthseg-models-v2.0"
+)
+
+
+def _download_synthseg_models(model_dir: str) -> bool:
+    """Download SynthSeg 2.0 model weights from the p-brain GitHub release.
+
+    Returns ``True`` if at least the robust model was downloaded.
+    """
+    import urllib.request
+    import urllib.error
+
+    os.makedirs(model_dir, exist_ok=True)
+    ok = False
+    for fname in _SYNTHSEG_MODEL_FILES:
+        dst = os.path.join(model_dir, fname)
+        if os.path.isfile(dst):
+            continue
+        url = f"{_SYNTHSEG_RELEASE_BASE}/{fname}"
+        print(f"[install] Downloading {fname} …")
+        try:
+            urllib.request.urlretrieve(url, dst, reporthook=_dl_progress)
+            print()  # newline after progress
+            if os.path.isfile(dst) and os.path.getsize(dst) > 1_000_000:
+                print(f"[install]   ✓ {fname}  ({os.path.getsize(dst) // 1048576} MB)")
+                if fname == "synthseg_robust_2.0.h5":
+                    ok = True
+            else:
+                print(f"[install]   ✗ {fname} — file too small, removing")
+                os.remove(dst)
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"\n[install]   ✗ {fname} — download failed: {exc}")
+            if os.path.isfile(dst):
+                os.remove(dst)
+    return ok
+
+
+def _dl_progress(block_num: int, block_size: int, total_size: int) -> None:
+    """Progress callback for ``urllib.request.urlretrieve``."""
+    downloaded = block_num * block_size
+    if total_size > 0:
+        pct = min(100, downloaded * 100 // total_size)
+        mb_done = downloaded // 1048576
+        mb_total = total_size // 1048576
+        print(f"\r[install]   {pct:3d}%  ({mb_done}/{mb_total} MB)", end="", flush=True)
+    else:
+        print(f"\r[install]   {downloaded // 1048576} MB downloaded", end="", flush=True)
+
 
 def _provision_synthseg_models(model_dir: str) -> bool:
     """Copy SynthSeg 2.0 model weights into *model_dir*.
 
-    Searches for an existing FreeSurfer installation (macOS / Linux)
-    and copies the ``.h5`` files from there.  Returns ``True`` if at
-    least the robust model was provisioned.
+    Search order:
+      1. Already present in *model_dir*
+      2. ``SYNTHSEG_MODELS`` environment variable
+      3. FreeSurfer installations (macOS / Linux / Windows)
+      4. Sibling ``synthseg_models`` directory next to p-brain
+      5. **Download from GitHub Release** (no auth required, ~355 MB)
+
+    Returns ``True`` if at least the robust model was provisioned.
     """
     import shutil
     import pathlib
@@ -224,20 +278,19 @@ def _provision_synthseg_models(model_dir: str) -> bool:
             print("[install] SynthSeg 2.0 model weights provisioned.")
             return True
 
-    print("[install] ⚠ Could not find SynthSeg 2.0 model weights.")
-    print("[install]   The SynthSeg git repo only ships the 1.0 model.")
-    print("[install]   The 2.0 weights (~355 MB) ship with FreeSurfer 7.4+.")
+    # ── No local source found — download from GitHub Release ──
+    print("[install] No local SynthSeg 2.0 models found — downloading from GitHub …")
+    print("[install] (Total ~355 MB, this is a one-time download)")
+    if _download_synthseg_models(model_dir):
+        print("[install] SynthSeg 2.0 model weights downloaded successfully.")
+        return True
+
+    print("[install] ⚠ Automatic download failed.")
+    print("[install]   You can download the models manually from:")
+    print(f"[install]   {_SYNTHSEG_RELEASE_BASE}")
+    print(f"[install]   and place them in: {model_dir}")
     print("[install]")
-    print("[install]   Options:")
-    print("[install]     1) Install FreeSurfer (7.4+) and re-run.")
-    print("[install]     2) Copy the .h5 files from another machine's FreeSurfer")
-    print(f"[install]        into: {model_dir}")
-    print("[install]     3) Set the SYNTHSEG_MODELS environment variable to a")
-    print("[install]        directory containing the .h5 files, then re-run.")
-    print("[install]")
-    print("[install]   Required files:")
-    for f in _SYNTHSEG_MODEL_FILES:
-        print(f"[install]     • {f}")
+    print("[install]   Or set SYNTHSEG_MODELS=/path/to/folder/with/h5/files")
     return False
 
 
