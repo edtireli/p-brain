@@ -1751,6 +1751,39 @@ def segmentation(
                     fs_home = _installed_fs
                     os.environ["FREESURFER_HOME"] = fs_home
                     print(f"FreeSurfer installed at {fs_home}")
+
+        # ── Windows / non-macOS fallback: Python SynthSeg package ──
+        # On Windows (or any system where mri_synthseg is unavailable),
+        # use the Python SynthSeg package via windows/segmentation.py.
+        import platform as _platform
+        if not synthseg_bin and _platform.system() != "Darwin":
+            print("[segmentation] mri_synthseg not found — "
+                  "falling back to Python SynthSeg package.")
+            mri_dir = os.path.dirname(seg_mgz_path)
+            os.makedirs(mri_dir, exist_ok=True)
+            # Python SynthSeg outputs NIfTI directly
+            _seg_nii_path = os.path.join(mri_dir, "aparc.DKTatlas+aseg.deep.nii.gz")
+            if rerun or not (os.path.exists(seg_mgz_path) or os.path.exists(_seg_nii_path)):
+                from windows.segmentation import run_synthseg as _run_synthseg_py
+                _run_synthseg_py(
+                    input_path=t1_path,
+                    output_path=_seg_nii_path,
+                    robust=True,
+                    cpu=False,
+                    vol_csv=os.path.join(mri_dir, "synthseg_volumes.csv"),
+                    qc_csv=os.path.join(mri_dir, "synthseg_qc.csv"),
+                )
+                # Convert NIfTI → MGZ so downstream code finds seg_mgz_path
+                if os.path.isfile(_seg_nii_path) and not os.path.isfile(seg_mgz_path):
+                    import nibabel as _nib
+                    _seg_img = _nib.load(_seg_nii_path)
+                    _nib.save(_seg_img, seg_mgz_path)
+                    print(f"[segmentation] Converted {_seg_nii_path} → {seg_mgz_path}")
+            else:
+                print("Segmentation file already exists, skipping SynthSeg.")
+            # Skip the mri_synthseg CLI path below
+            synthseg_bin = "__python_synthseg_done__"
+
         if not synthseg_bin:
             raise FileNotFoundError(
                 "mri_synthseg not found under FREESURFER_HOME, "
@@ -1758,83 +1791,86 @@ def segmentation(
                 "SynthSeg requires FreeSurfer 7.4 or later.\n"
                 "Install FreeSurfer from https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall"
             )
-        print(f"Using mri_synthseg: {synthseg_bin}")
 
-        # SynthSeg writes directly to a NIfTI / mgz output file.
-        # We place it so it matches the path the rest of the pipeline expects.
-        mri_dir = os.path.dirname(seg_mgz_path)
-        os.makedirs(mri_dir, exist_ok=True)
+        # ── mri_synthseg CLI path (macOS / Linux with FreeSurfer) ──
+        if synthseg_bin != "__python_synthseg_done__":
+            print(f"Using mri_synthseg: {synthseg_bin}")
 
-        if rerun or not os.path.exists(seg_mgz_path):
-            if os.path.exists(seg_mgz_path):
-                print("Rerunning SynthSeg segmentation...")
-            else:
-                print("Segmentation output not found, running SynthSeg...")
+            # SynthSeg writes directly to a NIfTI / mgz output file.
+            # We place it so it matches the path the rest of the pipeline expects.
+            mri_dir = os.path.dirname(seg_mgz_path)
+            os.makedirs(mri_dir, exist_ok=True)
 
-            _preamble = _fs_shell_preamble()
+            if rerun or not os.path.exists(seg_mgz_path):
+                if os.path.exists(seg_mgz_path):
+                    print("Rerunning SynthSeg segmentation...")
+                else:
+                    print("Segmentation output not found, running SynthSeg...")
 
-            # -------------------------------------------------------------- #
-            #  Step 1: Conform T1 to 256^3 1 mm iso uchar (handles bad
-            #          scl_slope from Philips PAR/REC -> NIfTI conversion).
-            # -------------------------------------------------------------- #
-            conformed_t1 = os.path.join(mri_dir, "t1_conformed.mgz")
-            if not os.path.exists(conformed_t1) or rerun:
-                conform_cmd = (
-                    f"{_preamble} mri_convert --conform "
-                    f"{t1_path} {conformed_t1}"
-                )
-                print("Conforming T1 to 256^3 1 mm iso for SynthSeg...")
-                conform_result = subprocess.run(
-                    conform_cmd, shell=True, capture_output=True, text=True,
-                )
-                _clean_dot_underscore(output_dir)
-                if conform_result.returncode != 0 or not os.path.exists(conformed_t1):
-                    err = (conform_result.stderr or conform_result.stdout or "").strip()
-                    raise RuntimeError(
-                        f"mri_convert --conform failed "
-                        f"(exit {conform_result.returncode}): {err[-800:]}"
+                _preamble = _fs_shell_preamble()
+
+                # ---------------------------------------------------------- #
+                #  Step 1: Conform T1 to 256^3 1 mm iso uchar (handles bad
+                #          scl_slope from Philips PAR/REC -> NIfTI conversion).
+                # ---------------------------------------------------------- #
+                conformed_t1 = os.path.join(mri_dir, "t1_conformed.mgz")
+                if not os.path.exists(conformed_t1) or rerun:
+                    conform_cmd = (
+                        f"{_preamble} mri_convert --conform "
+                        f"{t1_path} {conformed_t1}"
                     )
-                print("T1 conform completed.")
+                    print("Conforming T1 to 256^3 1 mm iso for SynthSeg...")
+                    conform_result = subprocess.run(
+                        conform_cmd, shell=True, capture_output=True, text=True,
+                    )
+                    _clean_dot_underscore(output_dir)
+                    if conform_result.returncode != 0 or not os.path.exists(conformed_t1):
+                        err = (conform_result.stderr or conform_result.stdout or "").strip()
+                        raise RuntimeError(
+                            f"mri_convert --conform failed "
+                            f"(exit {conform_result.returncode}): {err[-800:]}"
+                        )
+                    print("T1 conform completed.")
 
-            # -------------------------------------------------------------- #
-            #  Step 2: Run SynthSeg with --parc on the conformed volume.
-            #  Default is --fast (single forward pass, ~2 min).
-            #  --robust uses 15 passes for higher accuracy (~10-15 min).
-            #  --threads uses 80% of available CPU cores.
-            # -------------------------------------------------------------- #
-            _ncpu = os.cpu_count() or 1
-            _threads = max(1, int(_ncpu * 0.8))
-            _mode_flag = "--robust" if synthseg_robust else "--fast"
-            command = (
-                f"{_preamble} "
-                f"{synthseg_bin} "
-                f"--i {conformed_t1} "
-                f"--o {seg_mgz_path} "
-                f"{_mode_flag} "
-                f"--parc "
-                f"--threads {_threads} "
-                f"--vol {os.path.join(mri_dir, 'synthseg_volumes.csv')} "
-                f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
-            )
-            _clean_dot_underscore(output_dir)  # pre-clean before launch
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            _clean_dot_underscore(output_dir)
-            if result.returncode != 0:
-                err = (result.stderr or result.stdout or "").strip()
-                raise RuntimeError(
-                    f"SynthSeg segmentation failed (exit {result.returncode}): "
-                    f"{err[-800:]}"
+                # ---------------------------------------------------------- #
+                #  Step 2: Run SynthSeg with --parc on the conformed volume.
+                #  Default is --fast (single forward pass, ~2 min).
+                #  --robust uses 15 passes for higher accuracy (~10-15 min).
+                #  --threads uses 80% of available CPU cores.
+                # ---------------------------------------------------------- #
+                _ncpu = os.cpu_count() or 1
+                _threads = max(1, int(_ncpu * 0.8))
+                _mode_flag = "--robust" if synthseg_robust else "--fast"
+                command = (
+                    f"{_preamble} "
+                    f"{synthseg_bin} "
+                    f"--i {conformed_t1} "
+                    f"--o {seg_mgz_path} "
+                    f"{_mode_flag} "
+                    f"--parc "
+                    f"--threads {_threads} "
+                    f"--vol {os.path.join(mri_dir, 'synthseg_volumes.csv')} "
+                    f"--qc {os.path.join(mri_dir, 'synthseg_qc.csv')}"
                 )
-            if not os.path.exists(seg_mgz_path):
-                raise RuntimeError(
-                    "SynthSeg completed but the output file was not created: "
-                    f"{seg_mgz_path}"
-                )
-            _mode_label = "robust" if synthseg_robust else "fast"
-            print(f"SynthSeg segmentation completed ({_mode_label} mode, "
-                  f"{_threads} threads, with cortical parcellation).")
-        else:
-            print("Segmentation file already exists, skipping SynthSeg.")
+                _clean_dot_underscore(output_dir)  # pre-clean before launch
+                result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                _clean_dot_underscore(output_dir)
+                if result.returncode != 0:
+                    err = (result.stderr or result.stdout or "").strip()
+                    raise RuntimeError(
+                        f"SynthSeg segmentation failed (exit {result.returncode}): "
+                        f"{err[-800:]}"
+                    )
+                if not os.path.exists(seg_mgz_path):
+                    raise RuntimeError(
+                        "SynthSeg completed but the output file was not created: "
+                        f"{seg_mgz_path}"
+                    )
+                _mode_label = "robust" if synthseg_robust else "fast"
+                print(f"SynthSeg segmentation completed ({_mode_label} mode, "
+                      f"{_threads} threads, with cortical parcellation).")
+            else:
+                print("Segmentation file already exists, skipping SynthSeg.")
 
     elif method == "recon-all":
         # ------------------------------------------------------------------ #
@@ -5784,15 +5820,66 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
 
     if not voxelwise_only and SEGMENTATION_METHOD != 'pbrain' and has_t2:
         print('[!] Coregistering GM/WM masks onto T2 and DCE space')
-        (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
-         subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
-         gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
-         wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce,
-         wmh_mask_t2, wmh_mask_dce) = coregistration(
-            seg_mgz_path=seg_mgz_path,
-            dce_path=dce_path,
-            t2_path=t2_path
-        )
+
+        # On Windows (no FreeSurfer/FSL CLI), use pure-Python coregistration
+        import platform as _platform
+        _use_python_coreg = _platform.system() == "Windows"
+        if not _use_python_coreg:
+            # Also fall back to Python path if flirt is missing
+            import shutil as _shutil_coreg
+            if not _shutil_coreg.which("flirt"):
+                _use_python_coreg = True
+
+        if _use_python_coreg:
+            from windows.neuroimaging import (
+                mgz_to_nifti as _mgz2nii,
+                create_all_masks as _create_masks,
+                create_coregistered_masks as _create_coreg_masks,
+            )
+            # Ensure we have a NIfTI version of the segmentation
+            _seg_nii = seg_mgz_path.replace('.mgz', '.nii.gz')
+            if not os.path.isfile(_seg_nii):
+                _mgz2nii(seg_mgz_path, _seg_nii)
+            # Create T1-space masks
+            _create_masks(_seg_nii, mask_dir, force=False)
+            # Coregister to DCE
+            dce_masks = _create_coreg_masks(_seg_nii, dce_path, "DCE", force=False)
+            # Coregister to T2
+            t2_masks = _create_coreg_masks(_seg_nii, t2_path, "T2", force=False)
+
+            # Load the mask arrays so the rest of the pipeline works
+            def _load_mask(path):
+                if path and os.path.isfile(path):
+                    return nib.load(path).get_fdata().astype(np.float32)
+                return None
+
+            wm_mask_dce = _load_mask(dce_masks.get("wm"))
+            cortical_gm_mask_dce = _load_mask(dce_masks.get("cortical_gm"))
+            subcortical_gm_mask_dce = _load_mask(dce_masks.get("subcortical_gm"))
+            gm_brainstem_mask_dce = _load_mask(dce_masks.get("gm_brainstem"))
+            gm_cerebellum_mask_dce = _load_mask(dce_masks.get("gm_cerebellum"))
+            wm_cerebellum_mask_dce = _load_mask(dce_masks.get("wm_cerebellum"))
+            wm_cc_mask_dce = _load_mask(dce_masks.get("wm_cc"))
+            wmh_mask_dce = _load_mask(dce_masks.get("wmh"))
+
+            wm_mask_t2 = _load_mask(t2_masks.get("wm"))
+            cortical_gm_mask_t2 = _load_mask(t2_masks.get("cortical_gm"))
+            subcortical_gm_mask_t2 = _load_mask(t2_masks.get("subcortical_gm"))
+            gm_brainstem_mask_t2 = _load_mask(t2_masks.get("gm_brainstem"))
+            gm_cerebellum_mask_t2 = _load_mask(t2_masks.get("gm_cerebellum"))
+            wm_cerebellum_mask_t2 = _load_mask(t2_masks.get("wm_cerebellum"))
+            wm_cc_mask_t2 = _load_mask(t2_masks.get("wm_cc"))
+            wmh_mask_t2 = _load_mask(t2_masks.get("wmh"))
+        else:
+            (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
+             subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
+             gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
+             wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce,
+             wmh_mask_t2, wmh_mask_dce) = coregistration(
+                seg_mgz_path=seg_mgz_path,
+                dce_path=dce_path,
+                t2_path=t2_path
+            )
 
         if wmh_mask_dce is not None:
             n_wmh = int(np.sum(wmh_mask_dce))
