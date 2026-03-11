@@ -402,6 +402,12 @@ def run_synthseg(
         Path to the generated segmentation file.
     """
     synthseg_home = _resolve_synthseg_home(synthseg_home)
+
+    # Always re-patch for NumPy compat — covers the case where a previous
+    # (older) patcher left behind np.int_ / np.float_ which are still broken
+    # on NumPy 2.0.  This is cheap (skips files that are already clean).
+    _patch_synthseg_numpy_compat(synthseg_home)
+
     _ensure_synthseg_importable(synthseg_home)
 
     # Force CPU if requested (must be set before TF import)
