@@ -164,7 +164,7 @@ def _auto_install_synthseg() -> Optional[str]:
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "install",
-             "tensorflow", "nibabel", "numpy", "matplotlib"],
+             "tensorflow", "tf_keras", "nibabel", "numpy", "matplotlib"],
             capture_output=True, text=True, timeout=600,
         )
     except Exception as exc:
@@ -347,6 +347,36 @@ def _provision_synthseg_models(model_dir: str) -> bool:
     return False
 
 
+def _ensure_keras2_compat() -> None:
+    """Redirect ``import keras`` to ``tf_keras`` (Keras 2 API).
+
+    SynthSeg was written for Keras 2.  TensorFlow >= 2.16 ships Keras 3
+    whose API is incompatible (``model.output`` returns a list, no
+    ``_keras_shape``, ``shape.as_list()`` breaks, etc.).
+
+    The ``tf_keras`` package provides the Keras 2 API on top of modern
+    TF.  Installing it and injecting it into ``sys.modules`` before any
+    SynthSeg import keeps everything working.
+    """
+    try:
+        import keras
+        _major = int(getattr(keras, '__version__', '0').split('.')[0])
+        if _major < 3:
+            return  # Already Keras 2 — nothing to do
+    except ImportError:
+        pass
+
+    try:
+        import tf_keras  # Keras 2 compatibility package
+        sys.modules['keras'] = tf_keras
+        sys.modules['keras.layers'] = tf_keras.layers
+        sys.modules['keras.backend'] = tf_keras.backend
+        sys.modules['keras.models'] = tf_keras.models
+        os.environ['TF_USE_LEGACY_KERAS'] = '1'
+    except ImportError:
+        pass  # tf_keras not installed — hope for the best
+
+
 def _ensure_synthseg_importable(synthseg_home: str) -> None:
     """Add SynthSeg's root to ``sys.path`` so we can import it."""
     if synthseg_home not in sys.path:
@@ -408,6 +438,7 @@ def run_synthseg(
     # on NumPy 2.0.  This is cheap (skips files that are already clean).
     _patch_synthseg_numpy_compat(synthseg_home)
 
+    _ensure_keras2_compat()
     _ensure_synthseg_importable(synthseg_home)
 
     # Force CPU if requested (must be set before TF import)
