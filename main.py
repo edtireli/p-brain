@@ -2,6 +2,21 @@ import argparse
 import os
 import sys
 
+# ── Keras 2 compatibility shim ──────────────────────────────────────
+# SynthSeg requires Keras 2.  TF >= 2.16 ships Keras 3 which is
+# incompatible.  Redirect ``import keras`` → ``tf_keras`` BEFORE any
+# module has a chance to import tensorflow or keras.
+try:
+    import tf_keras as _tf_keras                   # Keras 2 compat layer
+    sys.modules['keras'] = _tf_keras
+    sys.modules['keras.layers'] = _tf_keras.layers
+    sys.modules['keras.backend'] = _tf_keras.backend
+    sys.modules['keras.models'] = _tf_keras.models
+    os.environ['TF_USE_LEGACY_KERAS'] = '1'
+except ImportError:
+    pass  # tf_keras will be auto-installed later by windows/segmentation.py
+# ────────────────────────────────────────────────────────────────────
+
 # When running in batch/headless mode, ensure matplotlib uses a non-GUI backend.
 # This must be set before any modules import matplotlib.pyplot.
 if os.environ.get("PBRAIN_TURBO") == "1":
