@@ -23,11 +23,19 @@ from scipy import ndimage
 # ---------------------------------------------------------------------------
 
 # --all-wm:  Left/Right Cerebral WM + Left/Right Cerebellar WM + CC segments
+#  NOTE: WM-hypointensities (77, 78, 79) are excluded from the WM mask and
+#  tracked separately via WMH_LABELS so they get their own segmentation category.
 ALL_WM_LABELS: set[int] = {
     2, 41,           # Left / Right Cerebral WM
     7, 46,           # Left / Right Cerebellar WM
-    77, 78, 79,      # WM-hypointensities, old labels kept for compat
     251, 252, 253, 254, 255,  # Corpus Callosum (Posterior → Anterior)
+}
+
+# WM-hypointensities (T1-dark lesions within white matter).
+# Separated from WM so they can be analysed independently.
+WMH_LABELS: set[int] = {
+    77,              # WM-hypointensities
+    78, 79,          # Old WM-hypointensity labels kept for compatibility
 }
 
 # --gm:  All grey-matter labels (cortex + subcortical + cerebellum + brainstem)
@@ -92,6 +100,7 @@ def binarize_labels(
     all_wm: bool = False,
     gm: bool = False,
     subcort_gm: bool = False,
+    wmh: bool = False,
 ) -> str:
     """Create a binary mask from a label volume, mirroring ``mri_binarize``.
 
@@ -100,6 +109,7 @@ def binarize_labels(
       - ``all_wm=True``         →  ``--all-wm``
       - ``gm=True``             →  ``--gm``
       - ``subcort_gm=True``     →  ``--subcort-gm``
+      - ``wmh=True``            →  WM-hypointensity labels (77, 78, 79)
     """
     img = nib.load(input_path)
     data = np.asarray(img.dataobj)
@@ -112,8 +122,10 @@ def binarize_labels(
         labels = GM_LABELS
     elif subcort_gm:
         labels = SUBCORT_GM_LABELS
+    elif wmh:
+        labels = WMH_LABELS
     else:
-        raise ValueError("Specify match_labels, all_wm, gm, or subcort_gm")
+        raise ValueError("Specify match_labels, all_wm, gm, subcort_gm, or wmh")
 
     mask = np.isin(data, list(labels)).astype(np.uint8)
 
@@ -332,6 +344,7 @@ def create_all_masks(
         ("gm_cerebellum.nii.gz", dict(match_labels=[8, 47])),
         ("wm_cerebellum.nii.gz", dict(match_labels=[7, 46])),
         ("wm_cc.nii.gz", dict(match_labels=[251, 252, 253, 254, 255])),
+        ("wmh.nii.gz", dict(wmh=True)),
     ]
 
     for name, kwargs in masks_spec:
@@ -437,6 +450,7 @@ def create_coregistered_masks(
         ("gm_cerebellum", dict(match_labels=[8, 47])),
         ("wm_cerebellum", dict(match_labels=[7, 46])),
         ("wm_cc", dict(match_labels=[251, 252, 253, 254, 255])),
+        ("wmh", dict(wmh=True)),
     ]
 
     for name, kwargs in masks_spec:

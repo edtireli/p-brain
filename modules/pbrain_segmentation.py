@@ -1,6 +1,6 @@
 """p-brain tissue segmentation using a locally trained UNet3D.
 
-Replaces FastSurfer / SynthSeg with a lightweight 7-class tissue model
+Replaces FastSurfer / SynthSeg with a lightweight 6-class tissue model
 that produces binary masks directly — no FreeSurfer CLI required.
 
 Tissue classes:
@@ -9,8 +9,7 @@ Tissue classes:
     2 = cortical gray matter
     3 = subcortical gray matter
     4 = brainstem
-    5 = cerebellar white matter
-    6 = cerebellar gray matter
+    5 = cerebellum (WM + GM merged)
 
 Usage inside p-brain:
     --segmentation pbrain
@@ -41,9 +40,8 @@ TISSUE_CEREBRAL_WM = 1
 TISSUE_CORTICAL_GM = 2
 TISSUE_SUBCORTICAL_GM = 3
 TISSUE_BRAINSTEM = 4
-TISSUE_CEREBELLAR_WM = 5
-TISSUE_CEREBELLAR_GM = 6
-NUM_TISSUE = 7
+TISSUE_CEREBELLUM = 5
+NUM_TISSUE = 6
 
 
 def _resolve_model_path() -> str:
@@ -103,6 +101,7 @@ def _load_model(checkpoint_path: str, device: str = "cpu"):
     base_channels = int(model_cfg.get("base_channels", 32))
     deep_supervision = bool(model_cfg.get("deep_supervision", False))
     dropout = float(model_cfg.get("dropout", 0.0))
+    pool_z = bool(ck.get("config", {}).get("pool_z", False))
 
     model = make_model(
         in_channels=in_channels,
@@ -111,6 +110,7 @@ def _load_model(checkpoint_path: str, device: str = "cpu"):
         model="unet3d",
         deep_supervision=deep_supervision,
         dropout=dropout,
+        pool_z=pool_z,
     )
     model.load_state_dict(ck["model"], strict=True)
     model = model.to(device)
@@ -146,8 +146,11 @@ def _sliding_window_inference(
     step_w = max(1, int(pW * (1 - overlap)))
 
     # Pad volume so it's at least patch_size in every dim, and dims are
-    # multiples of 16 (UNet requirement for 4 pooling stages in H,W).
+    # multiples of 16 (UNet requirement for 4 pooling stages).
     pad_d = max(pD - D, 0)
+    total_d = D + pad_d
+    if total_d % 16 != 0:
+        pad_d += 16 - (total_d % 16)
     pad_h = max(pH - H, 0)
     # Ensure H+pad_h is multiple of 16
     total_h = H + pad_h
@@ -279,17 +282,22 @@ def _extract_masks_from_labels(
     affine: np.ndarray,
     output_dir: str,
 ) -> dict[str, np.ndarray]:
-    """Extract binary tissue masks from a 7-class label volume and save them.
+    """Extract binary tissue masks from a 6-class label volume and save them.
+
+    The model predicts a single 'cerebellum' class (merged WM+GM).  For backward
+    compatibility with the 14-tuple interface, we emit both ``gm_cerebellum`` and
+    ``wm_cerebellum`` pointing to the same unified cerebellum mask.
 
     Returns a dict of {mask_name: bool_array}.
     """
+    cerebellum_mask = (label_vol == TISSUE_CEREBELLUM)
     masks = {
         "wm":               (label_vol == TISSUE_CEREBRAL_WM),
         "cortical_gm":      (label_vol == TISSUE_CORTICAL_GM),
         "subcortical_gm":   (label_vol == TISSUE_SUBCORTICAL_GM),
         "gm_brainstem":     (label_vol == TISSUE_BRAINSTEM),
-        "gm_cerebellum":    (label_vol == TISSUE_CEREBELLAR_GM),
-        "wm_cerebellum":    (label_vol == TISSUE_CEREBELLAR_WM),
+        "gm_cerebellum":    cerebellum_mask,   # unified cerebellum
+        "wm_cerebellum":    cerebellum_mask,   # same mask for compat
         "wm_cc":            np.zeros_like(label_vol, dtype=bool),  # empty — CC is inside cerebral_wm
     }
 
@@ -374,7 +382,7 @@ def run_pbrain_segmentation(
         total_brain = sum(v for k, v in voxel_counts.items() if k > 0)
         print(f"[pbrain-seg] Inference complete — {total_brain:,} brain voxels")
         for i, name in enumerate(["bg", "wm", "cortical_gm", "subcortical_gm",
-                                   "brainstem", "cerebellar_wm", "cerebellar_gm"]):
+                                   "brainstem", "cerebellum"]):
             pct = 100 * voxel_counts[i] / max(pred.size, 1)
             print(f"  {name:18s}: {voxel_counts[i]:>10,}  ({pct:.1f}%)")
 

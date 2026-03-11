@@ -989,6 +989,31 @@ def parse_args():
             "Default: both (patlak + tikhonov)."
         ),
     )
+    parser.add_argument(
+        "--tissue-roi", "--tissue-mode",
+        dest="tissue_roi",
+        type=str,
+        choices=("automatic", "manual", "voxel"),
+        default=None,
+        help=(
+            "Tissue ROI method: automatic (default — uses brain segmentation) | "
+            "manual (user draws ROIs interactively, skips segmentation) | "
+            "voxel (voxelwise-only, no segmentation, no manual drawing)."
+        ),
+    )
+    parser.add_argument(
+        "--overlay",
+        dest="overlay",
+        type=str,
+        choices=("auto", "dce", "t1", "t2", "flair", "pick"),
+        default=None,
+        help=(
+            "Background volume for manual tissue ROI drawing: "
+            "auto (default — picks best available structural, falls back to DCE) | "
+            "dce | t1 | t2 | flair | pick (interactive file chooser among all sequences). "
+            "Only relevant when --tissue-roi=manual."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1345,6 +1370,10 @@ def main():
             env["P_BRAIN_ROI_SSS_CONC_MAT"] = str(args.roi_sss_conc_mat)
         if getattr(args, "roi_tscc_mat", None):
             env["P_BRAIN_ROI_TSCC_MAT"] = str(args.roi_tscc_mat)
+        if getattr(args, "tissue_roi", None):
+            env["P_BRAIN_TISSUE_ROI_METHOD"] = str(args.tissue_roi)
+        if getattr(args, "overlay", None):
+            env["P_BRAIN_MANUAL_ROI_OVERLAY"] = str(args.overlay)
         if is_control:
             env["PBRAIN_CONTROLS"] = "1"
         else:

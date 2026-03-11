@@ -197,12 +197,12 @@ def parse_args():
         '--overlay',
         dest='overlay',
         type=str,
-        choices=['auto', 'dce', 't1', 't2', 'flair'],
+        choices=['auto', 'dce', 't1', 't2', 'flair', 'pick'],
         default=None,
         help='Background volume for manual ROI drawing: '
              'auto (default — picks best available structural, falls back to DCE) | '
-             'dce | t1 | t2 | flair.  Only relevant when --tissue-mode=manual or '
-             '--roi-mode=manual.',
+             'dce | t1 | t2 | flair | pick (interactive file chooser).  '
+             'Only relevant when --tissue-mode=manual or --roi-mode=manual.',
     )
     parser.add_argument(
         '--single-bolus',

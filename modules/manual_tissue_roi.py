@@ -177,10 +177,94 @@ def _build_masks_from_saved_rois(
 
 # ── Interactive CLI entry point (matplotlib) ─────────────────────────
 
+def _discover_nifti_sequences(nifti_directory: str) -> List[Tuple[str, str]]:
+    """Discover all NIfTI files in the subject's NIfTI directory.
+
+    Returns a list of ``(display_name, absolute_path)`` tuples, sorted by
+    name.  Skips files inside ``segmentation/`` sub-trees and derived maps
+    (T1/M0 fitting outputs, etc.).
+    """
+    import glob
+
+    deny_subdirs = {"segmentation", "analysis", "fitting"}
+    deny_tokens = (
+        "t1_map", "t1map", "m0_map", "m0map", "voxel_t1", "voxel_m0",
+        "ki_", "vp_", "cbf_", "mtt_", "cth_", "in_dce", "_mask",
+        "temp_wm", "temp_subcortical", "cortical_gm", "subcortical_gm",
+        "wm_cerebellum", "wm_cc", "gm_brainstem", "gm_cerebellum",
+        "aparc", "aseg", "wmh",
+    )
+
+    results: List[Tuple[str, str]] = []
+    for pattern in ("*.nii", "*.nii.gz"):
+        for path in glob.glob(os.path.join(nifti_directory, "**", pattern), recursive=True):
+            name_lower = os.path.basename(path).lower()
+            parts_lower = [p.lower() for p in os.path.normpath(path).split(os.sep)]
+
+            # Skip files in deny sub-directories
+            if any(d in parts_lower for d in deny_subdirs):
+                continue
+            # Skip derived-map filenames
+            if any(tok in name_lower for tok in deny_tokens):
+                continue
+
+            rel = os.path.relpath(path, nifti_directory)
+            results.append((rel, path))
+
+    results.sort(key=lambda x: x[0].lower())
+    return results
+
+
+def _pick_overlay_interactive(
+    nifti_directory: str,
+    dce_path: str,
+) -> Optional[str]:
+    """Present an interactive menu of all NIfTI sequences and let the user pick.
+
+    Returns the selected file path, or ``None`` to fall back to DCE frame 2.
+    """
+    sequences = _discover_nifti_sequences(nifti_directory)
+    if not sequences:
+        print("[manual-tissue-roi] No NIfTI sequences found for overlay selection.")
+        return None
+
+    print()
+    print("=" * 60)
+    print("  Available NIfTI sequences for overlay:")
+    print("=" * 60)
+    for idx, (rel_name, abs_path) in enumerate(sequences, 1):
+        # Show shape info
+        try:
+            img = nib.load(abs_path)
+            shape_str = "×".join(str(s) for s in img.shape)
+        except Exception:
+            shape_str = "?"
+        tag = " (DCE)" if os.path.abspath(abs_path) == os.path.abspath(dce_path) else ""
+        print(f"  [{idx:2d}] {rel_name}  ({shape_str}){tag}")
+    print(f"  [ 0] Use DCE frame 2 (default)")
+    print("=" * 60)
+
+    while True:
+        choice = input("[?] Select overlay number (0 = DCE, default 0): ").strip()
+        if choice == "" or choice == "0":
+            return None
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(sequences):
+                selected = sequences[idx - 1]
+                print(f"[✓] Selected: {selected[0]}")
+                return selected[1]
+            else:
+                print(f"[!] Enter a number between 0 and {len(sequences)}.")
+        except ValueError:
+            print("[!] Invalid input. Enter a number.")
+
+
 def _interactive_draw_tissue_rois(
     dce_path: str,
     t2_path: Optional[str] = None,
     overlay_path: Optional[str] = None,
+    nifti_directory: Optional[str] = None,
 ) -> Dict[str, Dict[int, List[np.ndarray]]]:
     """Show the matplotlib ROI selector and collect tissue ROIs.
 
@@ -194,10 +278,17 @@ def _interactive_draw_tissue_rois(
     ``overlay_path`` selects the background volume for interactive drawing.
     When ``None`` (or the volume cannot be loaded / shape-matched),
     frame 2 (index 1) of the DCE 4-D is used.
+
+    ``nifti_directory`` is passed when ``--overlay pick`` is active so the
+    user can interactively choose from all available NIfTI sequences.
     """
     from termcolor import colored
     from .opt04_tissue_function import ROISelector_tissue
     import matplotlib.pyplot as plt
+
+    # ── Handle "pick" mode: interactive sequence chooser ──
+    if overlay_path == "__pick__" and nifti_directory:
+        overlay_path = _pick_overlay_interactive(nifti_directory, dce_path)
 
     # Load DCE frame 2 (index 1) as the default display volume.
     # Frame 1 is often blurry / has artefacts; frame 2 is the first clean frame.
@@ -250,12 +341,18 @@ def _interactive_draw_tissue_rois(
         print(colored("=" * 60, "white"))
         print(colored(f"  Draw ROI for: {tissue_name}", "cyan"))
         print(colored("=" * 60, "white"))
-        print("1. Left " + colored("click", "cyan") + " to add ROI points.")
-        print("2. Press " + colored("shift", "cyan") + " to close the polygon.")
-        print("3. Press " + colored("enter", "cyan") + " to save the current ROI.")
-        print("4. Use " + colored("left/right", "cyan") + " arrows to change slices.")
-        print("5. Press " + colored("z", "cyan") + " to zoom.")
-        print("6. Press " + colored("Esc", "red") + " to finish this tissue type.")
+        print("  Left " + colored("click", "cyan") + "       → add ROI point")
+        print("  " + colored("Shift", "cyan") + "+click   → close polygon")
+        print("  " + colored("Enter", "cyan") + "          → save current ROI")
+        print("  " + colored("←/→", "cyan") + "            → change slice  (hold 3s = fast)")
+        print("  " + colored("↑/↓", "cyan") + "            → change frame  (4-D data only)")
+        print("  " + colored("Backspace", "cyan") + "      → remove last point")
+        print("  " + colored("x", "cyan") + "              → discard current polygon")
+        print("  " + colored("u / Ctrl+Z", "cyan") + "    → undo last saved ROI")
+        print("  " + colored("r / Ctrl+Shift+Z", "cyan") + " → redo")
+        print("  " + colored("c", "cyan") + "              → clear all ROIs on slice")
+        print("  " + colored("z", "cyan") + "+click       → zoom cycle")
+        print("  " + colored("Esc", "red") + "            → finish this tissue type")
         print()
 
         skip = input(
@@ -346,6 +443,9 @@ def _run_manual_tissue_analysis(
     overlay_path: Optional[str] = None
     if overlay_pref == "dce":
         overlay_path = None  # will use DCE frame 2
+    elif overlay_pref == "pick":
+        # Signal _interactive_draw_tissue_rois to run the interactive chooser.
+        overlay_path = "__pick__"
     elif overlay_pref in ("t1", "t2", "flair"):
         overlay_path = _struct_candidates.get(overlay_pref)
         if not overlay_path:
@@ -435,7 +535,8 @@ def _run_manual_tissue_analysis(
     else:
         # Interactive CLI drawing.
         drawn = _interactive_draw_tissue_rois(dce_path, t2_path=t2_path,
-                                              overlay_path=overlay_path)
+                                              overlay_path=overlay_path,
+                                              nifti_directory=nifti_directory)
         if not drawn:
             print("[manual-tissue-roi] No ROIs drawn. Falling back to voxelwise-only.")
 

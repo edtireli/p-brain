@@ -75,6 +75,20 @@ def load_from_pickle(file_path: str) -> Any:
         return pickle.load(file)
 
 
+def _ref_header_for_dtype(ref_header, data):
+    """Copy *ref_header* but override its datatype to match *data*.
+
+    nibabel uses the **header** datatype (not the array dtype) when writing
+    to disk.  If the source DCE NIfTI was int16 (e.g. from parrec2nii) but
+    the derived map is float32, the values would be silently quantised.
+    This helper preserves all spatial/orientation metadata while ensuring
+    the on-disk dtype matches the actual data.
+    """
+    hdr = ref_header.copy()
+    hdr.set_data_dtype(np.asarray(data).dtype)
+    return hdr
+
+
 def _tqdm(*args, **kwargs):
     kwargs.setdefault("disable", False)
     kwargs.setdefault("dynamic_ncols", True)
@@ -1481,6 +1495,97 @@ def _fs_shell_preamble() -> str:
     return " && ".join(parts) + " && "
 
 
+def _auto_install_freesurfer_macos() -> str | None:
+    """Attempt to download and install FreeSurfer on macOS.
+
+    Tries ``brew install freesurfer`` first (fastest).  If Homebrew is
+    unavailable, downloads the official ``.pkg`` installer from the
+    FreeSurfer website and runs it with ``sudo installer``.
+
+    Returns the FREESURFER_HOME path on success, ``None`` on failure or
+    if the user declines.
+    """
+    import platform
+    if platform.system() != "Darwin":
+        return None
+
+    print()
+    print("=" * 60)
+    print("  FreeSurfer / SynthSeg not found on this system.")
+    print("  p-brain can attempt to install it for you.")
+    print("=" * 60)
+    try:
+        answer = input("[?] Install FreeSurfer now? (y/n, default y): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if answer not in ("", "y", "yes"):
+        return None
+
+    import shutil as _sh
+
+    # ── Method 1: Homebrew cask ──
+    brew = _sh.which("brew")
+    if brew:
+        print("[install] Trying: brew install --cask freesurfer ...")
+        try:
+            res = subprocess.run(
+                [brew, "install", "--cask", "freesurfer"],
+                capture_output=True, text=True, timeout=600,
+            )
+            if res.returncode == 0:
+                # Homebrew typically installs to /Applications/freesurfer/<ver>
+                _fs_base = pathlib.Path("/Applications/freesurfer")
+                if _fs_base.is_dir():
+                    for d in sorted(_fs_base.iterdir(), reverse=True):
+                        if (d / "bin" / "mri_synthseg").is_file():
+                            return str(d)
+        except Exception as exc:
+            print(f"[install] brew install failed: {exc}")
+
+    # ── Method 2: Official .pkg installer ──
+    # Determine architecture
+    _arch = platform.machine()  # arm64 or x86_64
+    _fs_version = "7.4.1"
+    if _arch == "arm64":
+        _pkg_url = f"https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/{_fs_version}/freesurfer-macOS-darwin_arm64-{_fs_version}.pkg"
+    else:
+        _pkg_url = f"https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/{_fs_version}/freesurfer-macOS-darwin_x86_64-{_fs_version}.pkg"
+
+    print(f"[install] Downloading FreeSurfer {_fs_version} ({_arch}) ...")
+    print(f"[install] URL: {_pkg_url}")
+    _pkg_tmp = os.path.join(os.path.expanduser("~"), f"freesurfer-{_fs_version}.pkg")
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(_pkg_url, _pkg_tmp)
+        print(f"[install] Downloaded to {_pkg_tmp}")
+        print("[install] Running installer (may require admin password) ...")
+        res = subprocess.run(
+            ["sudo", "installer", "-pkg", _pkg_tmp, "-target", "/"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if res.returncode == 0:
+            _fs_base = pathlib.Path("/Applications/freesurfer")
+            if _fs_base.is_dir():
+                for d in sorted(_fs_base.iterdir(), reverse=True):
+                    if (d / "bin" / "mri_synthseg").is_file():
+                        return str(d)
+        else:
+            print(f"[install] Installer failed: {res.stderr}")
+    except Exception as exc:
+        print(f"[install] Download/install failed: {exc}")
+    finally:
+        if os.path.exists(_pkg_tmp):
+            try:
+                os.remove(_pkg_tmp)
+            except OSError:
+                pass
+
+    print("[install] Automatic installation failed.")
+    print("[install] Please install FreeSurfer manually from:")
+    print("[install]   https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall")
+    return None
+
+
 def segmentation(
     fastsurfer_path,
     seg_mgz_path,
@@ -1634,10 +1739,24 @@ def segmentation(
         if not synthseg_bin:
             synthseg_bin = _shutil.which("mri_synthseg")
         if not synthseg_bin:
+            # ── Auto-install FreeSurfer (macOS) ──
+            # On macOS, attempt to install FreeSurfer via the official
+            # package if the user consents.
+            _installed_fs = _auto_install_freesurfer_macos()
+            if _installed_fs:
+                synthseg_bin = os.path.join(_installed_fs, "bin", "mri_synthseg")
+                if not (os.path.isfile(synthseg_bin) and os.access(synthseg_bin, os.X_OK)):
+                    synthseg_bin = None
+                else:
+                    fs_home = _installed_fs
+                    os.environ["FREESURFER_HOME"] = fs_home
+                    print(f"FreeSurfer installed at {fs_home}")
+        if not synthseg_bin:
             raise FileNotFoundError(
                 "mri_synthseg not found under FREESURFER_HOME, "
                 "/Applications/freesurfer/, or on PATH. "
-                "SynthSeg requires FreeSurfer 7.4 or later."
+                "SynthSeg requires FreeSurfer 7.4 or later.\n"
+                "Install FreeSurfer from https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall"
             )
         print(f"Using mri_synthseg: {synthseg_bin}")
 
@@ -1812,15 +1931,23 @@ def segmentation(
     cortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'cortical_gm.nii.gz')
     subcortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'subcortical_gm.nii.gz')
     wm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'wm.nii.gz')
+    wmh_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'wmh.nii.gz')
 
     # Create masks using predefined flags
-    # White Matter Mask
+    # White Matter Mask (temp — includes WM-hypointensities via --all-wm)
     temp_wm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'temp_wm.nii.gz')
     if force_recreate_masks or not os.path.exists(temp_wm_mask_path):
         wm_command = f"mri_binarize --i {aseg_nii_path} --all-wm --o {temp_wm_mask_path}"
         subprocess.run(wm_command, shell=True)
     else:
         print("Temporary WM mask already exists, skipping mri_binarize for temp WM.")
+
+    # WM-Hypointensities mask (labels 77, 78, 79) — separate from WM
+    if force_recreate_masks or not os.path.exists(wmh_mask_path):
+        wmh_command = f"mri_binarize --i {aseg_nii_path} --match 77 78 79 --o {wmh_mask_path}"
+        subprocess.run(wmh_command, shell=True)
+    else:
+        print("WMH mask already exists, skipping mri_binarize for WM-hypointensities.")
 
     # Subcortical Gray Matter Mask
     temp_subcortical_gm_mask_path = os.path.join(os.path.dirname(aseg_mgz_path), 'temp_subcortical_gm.nii.gz')
@@ -1885,9 +2012,9 @@ def segmentation(
     else:
         print("Subcortical GM mask already exists, skipping creation.")
 
-    # Create white matter mask by subtracting cerebellar WM and corpus callosum from the temp WM mask
+    # Create white matter mask by subtracting cerebellar WM, corpus callosum, and WM-hypointensities from the temp WM mask
     if force_recreate_masks or not os.path.exists(wm_mask_path):
-        wm_command = f"fslmaths {temp_wm_mask_path} -sub {wm_cerebellum_mask_path} -sub {wm_cc_mask_path} -thr 0.5 -bin {wm_mask_path}"
+        wm_command = f"fslmaths {temp_wm_mask_path} -sub {wm_cerebellum_mask_path} -sub {wm_cc_mask_path} -sub {wmh_mask_path} -thr 0.5 -bin {wm_mask_path}"
         subprocess.run(wm_command, shell=True)
     else:
         print("WM mask already exists, skipping creation.")
@@ -2233,6 +2360,28 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("WM mask in DCE space already exists, skipping creation.")
 
+    # Create WM-hypointensities mask in DCE space (labels 77, 78, 79)
+    wmh_mask_dce_path = aseg_in_dce_path.replace('.nii.gz', '_wmh.nii.gz')
+    if force_recreate_masks or not os.path.exists(wmh_mask_dce_path):
+        wmh_command = f"mri_binarize --i {aseg_in_dce_path} --match 77 78 79 --o {wmh_mask_dce_path}"
+        print(f"Running command: {wmh_command}")
+        result = subprocess.run(wmh_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for WMH in DCE space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for WMH in DCE space failed.")
+    else:
+        print("WMH mask in DCE space already exists, skipping mri_binarize.")
+
+    # Subtract WMH from WM mask in DCE space (WM-hypointensities should not be in the WM mask)
+    if os.path.exists(wmh_mask_dce_path) and os.path.exists(wm_mask_dce_path):
+        _wmh_dce_data = nib.load(wmh_mask_dce_path).get_fdata()
+        if np.any(_wmh_dce_data > 0):
+            _wm_dce_img = nib.load(wm_mask_dce_path)
+            _wm_dce_data = _wm_dce_img.get_fdata() - _wmh_dce_data
+            _wm_dce_data = (_wm_dce_data >= 0.5).astype(np.uint8)
+            nib.save(nib.Nifti1Image(_wm_dce_data, _wm_dce_img.affine, _wm_dce_img.header), wm_mask_dce_path)
+            print("Subtracted WMH from WM mask in DCE space.")
+
     # Similarly for T2 space
     wm_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_wm.nii.gz')
     if force_recreate_masks or not os.path.exists(wm_mask_t2_path):
@@ -2349,6 +2498,28 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     else:
         print("WM mask in T2 space already exists, skipping creation.")
 
+    # Create WM-hypointensities mask in T2 space (labels 77, 78, 79)
+    wmh_mask_t2_path = aseg_in_t2_path.replace('.nii.gz', '_wmh.nii.gz')
+    if force_recreate_masks or not os.path.exists(wmh_mask_t2_path):
+        wmh_command = f"mri_binarize --i {aseg_in_t2_path} --match 77 78 79 --o {wmh_mask_t2_path}"
+        print(f"Running command: {wmh_command}")
+        result = subprocess.run(wmh_command, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"mri_binarize failed for WMH in T2 space with error:\n{result.stderr}")
+            raise RuntimeError("mri_binarize command for WMH in T2 space failed.")
+    else:
+        print("WMH mask in T2 space already exists, skipping mri_binarize.")
+
+    # Subtract WMH from WM mask in T2 space
+    if os.path.exists(wmh_mask_t2_path) and os.path.exists(wm_mask_t2_path):
+        _wmh_t2_data = nib.load(wmh_mask_t2_path).get_fdata()
+        if np.any(_wmh_t2_data > 0):
+            _wm_t2_img = nib.load(wm_mask_t2_path)
+            _wm_t2_data = _wm_t2_img.get_fdata() - _wmh_t2_data
+            _wm_t2_data = (_wm_t2_data >= 0.5).astype(np.uint8)
+            nib.save(nib.Nifti1Image(_wm_t2_data, _wm_t2_img.affine, _wm_t2_img.header), wm_mask_t2_path)
+            print("Subtracted WMH from WM mask in T2 space.")
+
     # Ensure all mask files exist before loading
     required_files = [
         wm_mask_dce_path, cortical_gm_mask_dce_path, subcortical_gm_mask_dce_path,
@@ -2369,6 +2540,15 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     wm_cerebellum_mask_dce = nib.load(wm_cerebellum_mask_dce_path).get_fdata().astype(bool)
     wm_cc_mask_dce = nib.load(wm_cc_mask_dce_path).get_fdata().astype(bool)
 
+    # WMH masks (optional — may not contain any voxels)
+    wmh_mask_dce = None
+    if os.path.exists(wmh_mask_dce_path):
+        wmh_mask_dce = nib.load(wmh_mask_dce_path).get_fdata().astype(bool)
+        n_wmh_dce = int(np.sum(wmh_mask_dce))
+        print(f"[segmentation] WM-hypointensities in DCE space: {n_wmh_dce} voxels")
+        if n_wmh_dce == 0:
+            wmh_mask_dce = None
+
     wm_mask_t2 = nib.load(wm_mask_t2_path).get_fdata().astype(bool)
     cortical_gm_mask_t2 = nib.load(cortical_gm_mask_t2_path).get_fdata().astype(bool)
     subcortical_gm_mask_t2 = nib.load(subcortical_gm_mask_t2_path).get_fdata().astype(bool)
@@ -2377,10 +2557,19 @@ def coregistration(seg_mgz_path, dce_path, t2_path):
     wm_cerebellum_mask_t2 = nib.load(wm_cerebellum_mask_t2_path).get_fdata().astype(bool)
     wm_cc_mask_t2 = nib.load(wm_cc_mask_t2_path).get_fdata().astype(bool)
 
+    wmh_mask_t2 = None
+    if os.path.exists(wmh_mask_t2_path):
+        wmh_mask_t2 = nib.load(wmh_mask_t2_path).get_fdata().astype(bool)
+        n_wmh_t2 = int(np.sum(wmh_mask_t2))
+        print(f"[segmentation] WM-hypointensities in T2 space: {n_wmh_t2} voxels")
+        if n_wmh_t2 == 0:
+            wmh_mask_t2 = None
+
     return (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
             subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
             gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
-            wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce)
+            wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce,
+            wmh_mask_t2, wmh_mask_dce)
 
 
 def patlak_analysis_plotting(c_tissue, c_input, time):
@@ -3383,14 +3572,15 @@ def compute_and_plot_ctcs_median(
 
         if compute_per_voxel_Ki:
             os.makedirs(patlak_analysis_dir, exist_ok=True)
-            Ki_per_voxel_nii = nib.Nifti1Image(np.asarray(Ki_per_voxel, dtype=np.float32), affine=affine, header=ref_header.copy())
+            _ki_data = np.asarray(Ki_per_voxel, dtype=np.float32)
+            Ki_per_voxel_nii = nib.Nifti1Image(_ki_data, affine=affine, header=_ref_header_for_dtype(ref_header, _ki_data))
             Ki_per_voxel_path = os.path.join(patlak_analysis_dir, 'Ki_per_voxel.nii.gz')
             nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
             print(f"K_i per voxel saved to {Ki_per_voxel_path}")
 
             vp_data = np.asarray(lambda_per_voxel, dtype=np.float32)
             vp_data = np.where(np.isfinite(vp_data), np.maximum(vp_data, 0.0), vp_data).astype(np.float32)
-            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=affine, header=ref_header.copy())
+            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=affine, header=_ref_header_for_dtype(ref_header, vp_data))
             vp_per_voxel_path = os.path.join(patlak_analysis_dir, 'vp_per_voxel.nii.gz')
             nib.save(vp_per_voxel_nii, vp_per_voxel_path)
             print(f"v_p per voxel saved to {vp_per_voxel_path}")
@@ -3416,26 +3606,29 @@ def compute_and_plot_ctcs_median(
 
         if compute_per_voxel_CBF:
             os.makedirs(tikhonov_analysis_dir, exist_ok=True)
-            CBF_per_voxel_nii = nib.Nifti1Image(np.asarray(CBF_per_voxel, dtype=np.float32),
+            _cbf_data = np.asarray(CBF_per_voxel, dtype=np.float32)
+            CBF_per_voxel_nii = nib.Nifti1Image(_cbf_data,
                                                 affine=affine,
-                                                header=ref_header.copy())
+                                                header=_ref_header_for_dtype(ref_header, _cbf_data))
             CBF_per_voxel_path = os.path.join(tikhonov_analysis_dir, 'CBF_per_voxel_tikhonov.nii.gz')
             nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
             print(f"CBF per voxel saved to {CBF_per_voxel_path}")
 
             if settings.WRITE_MTT and MTT_per_voxel is not None:
-                mtt_img = nib.Nifti1Image(np.asarray(MTT_per_voxel, dtype=np.float32),
+                _mtt_data = np.asarray(MTT_per_voxel, dtype=np.float32)
+                mtt_img = nib.Nifti1Image(_mtt_data,
                                           affine=affine,
-                                          header=ref_header.copy())
+                                          header=_ref_header_for_dtype(ref_header, _mtt_data))
                 mtt_img = annotate_cth_mtt_header(mtt_img)
                 mtt_path = os.path.join(tikhonov_analysis_dir, 'mtt_map.nii.gz')
                 nib.save(mtt_img, mtt_path)
                 print(f"MTT map saved to {mtt_path} (method={settings.CTH_MTT_METHOD})")
 
             if settings.WRITE_CTH and CTH_per_voxel is not None:
-                cth_img = nib.Nifti1Image(np.asarray(CTH_per_voxel, dtype=np.float32),
+                _cth_data = np.asarray(CTH_per_voxel, dtype=np.float32)
+                cth_img = nib.Nifti1Image(_cth_data,
                                           affine=affine,
-                                          header=ref_header.copy())
+                                          header=_ref_header_for_dtype(ref_header, _cth_data))
                 cth_img = annotate_cth_mtt_header(cth_img)
                 cth_path = os.path.join(tikhonov_analysis_dir, 'cth_map.nii.gz')
                 nib.save(cth_img, cth_path)
@@ -3448,16 +3641,17 @@ def compute_and_plot_ctcs_median(
                 and CBF_per_voxel is not None
             ):
                 cbv_data = np.asarray(CBF_per_voxel, dtype=np.float32) * np.asarray(MTT_per_voxel, dtype=np.float32) / 60.0
-                cbv_img = nib.Nifti1Image(cbv_data, affine=affine, header=ref_header.copy())
+                cbv_img = nib.Nifti1Image(cbv_data, affine=affine, header=_ref_header_for_dtype(ref_header, cbv_data))
                 cbv_path = os.path.join(tikhonov_analysis_dir, 'cbv_map.nii.gz')
                 nib.save(cbv_img, cbv_path)
                 print(f"CBV map saved to {cbv_path}")
 
             if offset_per_voxel is not None:
+                _off_data = np.asarray(offset_per_voxel, dtype=np.float32)
                 offset_img = nib.Nifti1Image(
-                    np.asarray(offset_per_voxel, dtype=np.float32),
+                    _off_data,
                     affine=affine,
-                    header=ref_header.copy(),
+                    header=_ref_header_for_dtype(ref_header, _off_data),
                 )
                 offset_path = os.path.join(tikhonov_analysis_dir, 'offset_map.nii.gz')
                 nib.save(offset_img, offset_path)
@@ -3491,8 +3685,9 @@ def compute_and_plot_ctcs_median(
                 ('vp_etofts_per_voxel', vp_etofts_per_voxel),
                 ('kep_per_voxel',     kep_per_voxel),
             ]:
-                _nii = nib.Nifti1Image(np.asarray(_arr, dtype=np.float32),
-                                       affine=affine, header=ref_header.copy())
+                _arr_f32 = np.asarray(_arr, dtype=np.float32)
+                _nii = nib.Nifti1Image(_arr_f32,
+                                       affine=affine, header=_ref_header_for_dtype(ref_header, _arr_f32))
                 _p = os.path.join(etofts_analysis_dir, f'{_name}.nii.gz')
                 nib.save(_nii, _p)
                 print(f"{_name} saved to {_p}")
@@ -4401,7 +4596,8 @@ def compute_and_plot_ctcs_median(
             )
 
         # Save Ki_per_voxel as a .nii file
-        Ki_per_voxel_nii = nib.Nifti1Image(Ki_per_voxel, affine=ref_affine)
+        _ki_data2 = np.asarray(Ki_per_voxel, dtype=np.float32)
+        Ki_per_voxel_nii = nib.Nifti1Image(_ki_data2, affine=ref_affine)
         Ki_per_voxel_path = os.path.join(analysis_directory, 'Ki_per_voxel.nii.gz')
         nib.save(Ki_per_voxel_nii, Ki_per_voxel_path)
         print(f"K_i per voxel saved to {Ki_per_voxel_path}")
@@ -4410,7 +4606,7 @@ def compute_and_plot_ctcs_median(
         vp_data = np.asarray(lambda_per_voxel, dtype=np.float32)
         vp_data = np.where(np.isfinite(vp_data), np.maximum(vp_data, 0.0), vp_data).astype(np.float32)
         if ref_header is not None:
-            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine, header=ref_header.copy())
+            vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine, header=_ref_header_for_dtype(ref_header, vp_data))
         else:
             vp_per_voxel_nii = nib.Nifti1Image(vp_data, affine=ref_affine)
         vp_per_voxel_path = os.path.join(analysis_directory, 'vp_per_voxel.nii.gz')
@@ -4438,9 +4634,10 @@ def compute_and_plot_ctcs_median(
             )
 
         # Save CBF_per_voxel as a .nii file
-        CBF_per_voxel_nii = nib.Nifti1Image(np.asarray(CBF_per_voxel, dtype=np.float32),
+        _cbf_data2 = np.asarray(CBF_per_voxel, dtype=np.float32)
+        CBF_per_voxel_nii = nib.Nifti1Image(_cbf_data2,
                                             affine=ref_affine,
-                                            header=ref_header.copy())
+                                            header=_ref_header_for_dtype(ref_header, _cbf_data2))
         CBF_per_voxel_path = os.path.join(analysis_directory, 'CBF_per_voxel_tikhonov.nii.gz')
         nib.save(CBF_per_voxel_nii, CBF_per_voxel_path)
         print(f"CBF per voxel saved to {CBF_per_voxel_path}")
@@ -4460,9 +4657,10 @@ def compute_and_plot_ctcs_median(
                 print(f"{metric_name} median GM/WM: no finite values")
 
         if settings.WRITE_MTT and MTT_per_voxel is not None:
-            mtt_img = nib.Nifti1Image(np.asarray(MTT_per_voxel, dtype=np.float32),
+            _mtt_data2 = np.asarray(MTT_per_voxel, dtype=np.float32)
+            mtt_img = nib.Nifti1Image(_mtt_data2,
                                       affine=ref_affine,
-                                      header=ref_header.copy())
+                                      header=_ref_header_for_dtype(ref_header, _mtt_data2))
             mtt_img = annotate_cth_mtt_header(mtt_img)
             mtt_path = os.path.join(analysis_directory, 'mtt_map.nii.gz')
             nib.save(mtt_img, mtt_path)
@@ -4470,9 +4668,10 @@ def compute_and_plot_ctcs_median(
             log_median("MTT", MTT_per_voxel)
 
         if settings.WRITE_CTH and CTH_per_voxel is not None:
-            cth_img = nib.Nifti1Image(np.asarray(CTH_per_voxel, dtype=np.float32),
+            _cth_data2 = np.asarray(CTH_per_voxel, dtype=np.float32)
+            cth_img = nib.Nifti1Image(_cth_data2,
                                       affine=ref_affine,
-                                      header=ref_header.copy())
+                                      header=_ref_header_for_dtype(ref_header, _cth_data2))
             cth_img = annotate_cth_mtt_header(cth_img)
             cth_path = os.path.join(analysis_directory, 'cth_map.nii.gz')
             nib.save(cth_img, cth_path)
@@ -4486,7 +4685,7 @@ def compute_and_plot_ctcs_median(
             and CBF_per_voxel is not None
         ):
             cbv_data = np.asarray(CBF_per_voxel, dtype=np.float32) * np.asarray(MTT_per_voxel, dtype=np.float32) / 60.0
-            cbv_img = nib.Nifti1Image(cbv_data, affine=ref_affine, header=ref_header.copy())
+            cbv_img = nib.Nifti1Image(cbv_data, affine=ref_affine, header=_ref_header_for_dtype(ref_header, cbv_data))
             cbv_path = os.path.join(analysis_directory, 'cbv_map.nii.gz')
             nib.save(cbv_img, cbv_path)
             print(f"CBV map saved to {cbv_path}")
@@ -5588,12 +5787,18 @@ def _tissue_function_AI(model, analysis_directory, nifti_directory, image_direct
         (wm_mask_t2, wm_mask_dce, cortical_gm_mask_t2, cortical_gm_mask_dce,
          subcortical_gm_mask_t2, subcortical_gm_mask_dce, gm_brainstem_mask_t2,
          gm_brainstem_mask_dce, gm_cerebellum_mask_t2, gm_cerebellum_mask_dce,
-         wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce) = coregistration(
+         wm_cerebellum_mask_t2, wm_cerebellum_mask_dce, wm_cc_mask_t2, wm_cc_mask_dce,
+         wmh_mask_t2, wmh_mask_dce) = coregistration(
             seg_mgz_path=seg_mgz_path,
             dce_path=dce_path,
             t2_path=t2_path
         )
 
+        if wmh_mask_dce is not None:
+            n_wmh = int(np.sum(wmh_mask_dce))
+            print(f'[segmentation] WM-hypointensities mask: {n_wmh} voxels in DCE space')
+        else:
+            print('[segmentation] No WM-hypointensities detected.')
         # Load the T2 image for visualization
         t2_img = nib.load(t2_path).get_fdata()
 

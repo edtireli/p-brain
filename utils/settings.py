@@ -403,10 +403,12 @@ if TISSUE_ROI_METHOD not in {"automatic", "manual"}:
 # - auto (default): picks the best available structural (T1 > T2 > FLAIR),
 #   falling back to DCE if none exist.
 # - dce / t1 / t2 / flair: force a specific volume type.
+# - pick: interactive chooser — list all NIfTIs in the subject's NIfTI/
+#   directory and let the user select one at the prompt.
 MANUAL_ROI_OVERLAY = (
     os.environ.get("P_BRAIN_MANUAL_ROI_OVERLAY", "auto") or "auto"
 ).strip().lower()
-if MANUAL_ROI_OVERLAY not in {"auto", "dce", "t1", "t2", "flair"}:
+if MANUAL_ROI_OVERLAY not in {"auto", "dce", "t1", "t2", "flair", "pick"}:
     MANUAL_ROI_OVERLAY = "auto"
 
 # Flip angle (degrees) used by signal->concentration conversion.
