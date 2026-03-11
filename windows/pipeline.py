@@ -299,6 +299,7 @@ def _run_tissue_analysis_windows(
                 output_path=seg_nii_path,
                 synthseg_home=synthseg_home,
                 robust=True,
+                parc=True,
                 cpu=cpu,
                 vol_csv=os.path.join(mri_dir, "synthseg_volumes.csv"),
                 qc_csv=os.path.join(mri_dir, "synthseg_qc.csv"),

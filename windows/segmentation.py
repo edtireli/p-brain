@@ -117,6 +117,13 @@ def _auto_install_synthseg() -> Optional[str]:
     except Exception as exc:
         print(f"[install] pip install warning: {exc}")
 
+    # Provision SynthSeg 2.0 model weights from FreeSurfer
+    _models_ok = _provision_synthseg_models(
+        os.path.join(synthseg_dir, "models")
+    )
+    if not _models_ok:
+        print("[install] Continuing without 2.0 models — SynthSeg will fall back to 1.0.")
+
     # Verify import
     try:
         if synthseg_dir not in sys.path:
@@ -127,9 +134,111 @@ def _auto_install_synthseg() -> Optional[str]:
         return synthseg_dir
     except ImportError:
         print("[install] SynthSeg installed but import failed.")
-        print("[install] You may need to download the model weights manually.")
-        print("[install] See: https://github.com/BBillot/SynthSeg#readme")
-        return synthseg_dir  # return path anyway — models can be added later
+        print("[install] You may need to install tensorflow manually.")
+        return synthseg_dir  # return path anyway — can retry later
+
+
+_SYNTHSEG_MODEL_FILES = [
+    "synthseg_robust_2.0.h5",   # 205 MB — robust segmentation
+    "synthseg_2.0.h5",          #  51 MB — fast segmentation
+    "synthseg_parc_2.0.h5",     #  51 MB — cortical parcellation
+    "synthseg_qc_2.0.h5",       #  48 MB — QC scores
+]
+
+
+def _provision_synthseg_models(model_dir: str) -> bool:
+    """Copy SynthSeg 2.0 model weights into *model_dir*.
+
+    Searches for an existing FreeSurfer installation (macOS / Linux)
+    and copies the ``.h5`` files from there.  Returns ``True`` if at
+    least the robust model was provisioned.
+    """
+    import shutil
+    import pathlib
+
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Already have the robust model?
+    if os.path.isfile(os.path.join(model_dir, "synthseg_robust_2.0.h5")):
+        return True
+
+    # ── Locate candidate source directories ──
+    source_dirs: list[str] = []
+
+    # 0. SYNTHSEG_MODELS env — user can point directly at a directory
+    #    containing the .h5 files (e.g. on a USB drive)
+    _sm_env = os.environ.get("SYNTHSEG_MODELS", "")
+    if _sm_env and os.path.isdir(_sm_env):
+        source_dirs.append(_sm_env)
+
+    # 1. FREESURFER_HOME env
+    fs_home = os.environ.get("FREESURFER_HOME", "")
+    if fs_home:
+        d = os.path.join(fs_home, "models")
+        if os.path.isdir(d):
+            source_dirs.append(d)
+
+    # 2. Common macOS install paths
+    _fs_base = pathlib.Path("/Applications/freesurfer")
+    if _fs_base.is_dir():
+        for ver_dir in sorted(_fs_base.iterdir(), reverse=True):
+            d = ver_dir / "models"
+            if d.is_dir():
+                source_dirs.append(str(d))
+
+    # 3. Common Linux paths
+    for prefix in ["/usr/local/freesurfer", "/opt/freesurfer",
+                   os.path.expanduser("~/freesurfer")]:
+        d = os.path.join(prefix, "models")
+        if os.path.isdir(d):
+            source_dirs.append(d)
+
+    # 4. Windows — common FreeSurfer / portable model locations
+    if sys.platform == "win32":
+        for drive in ["C", "D", "E", "F"]:
+            for candidate in [
+                f"{drive}:\\freesurfer\\models",
+                f"{drive}:\\FreeSurfer\\models",
+                f"{drive}:\\synthseg_models",
+            ]:
+                if os.path.isdir(candidate):
+                    source_dirs.append(candidate)
+
+    # 5. Alongside the p-brain repo  (../synthseg_models)
+    _pbrain_parent = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    _sibling = os.path.join(_pbrain_parent, "synthseg_models")
+    if os.path.isdir(_sibling):
+        source_dirs.append(_sibling)
+
+    # ── Copy from first valid source ──
+    for fs_dir in source_dirs:
+        robust = os.path.join(fs_dir, "synthseg_robust_2.0.h5")
+        if os.path.isfile(robust):
+            print(f"[install] Found FreeSurfer models at {fs_dir}")
+            for fname in _SYNTHSEG_MODEL_FILES:
+                src = os.path.join(fs_dir, fname)
+                dst = os.path.join(model_dir, fname)
+                if os.path.isfile(src) and not os.path.isfile(dst):
+                    print(f"[install]   Copying {fname} ({os.path.getsize(src) // 1048576} MB) ...")
+                    shutil.copy2(src, dst)
+            print("[install] SynthSeg 2.0 model weights provisioned.")
+            return True
+
+    print("[install] ⚠ Could not find SynthSeg 2.0 model weights.")
+    print("[install]   The SynthSeg git repo only ships the 1.0 model.")
+    print("[install]   The 2.0 weights (~355 MB) ship with FreeSurfer 7.4+.")
+    print("[install]")
+    print("[install]   Options:")
+    print("[install]     1) Install FreeSurfer (7.4+) and re-run.")
+    print("[install]     2) Copy the .h5 files from another machine's FreeSurfer")
+    print(f"[install]        into: {model_dir}")
+    print("[install]     3) Set the SYNTHSEG_MODELS environment variable to a")
+    print("[install]        directory containing the .h5 files, then re-run.")
+    print("[install]")
+    print("[install]   Required files:")
+    for f in _SYNTHSEG_MODEL_FILES:
+        print(f"[install]     • {f}")
+    return False
 
 
 def _ensure_synthseg_importable(synthseg_home: str) -> None:
@@ -153,7 +262,7 @@ def run_synthseg(
     synthseg_home: Optional[str] = None,
     robust: bool = True,
     fast: bool = False,
-    parc: bool = False,
+    parc: bool = True,
     vol_csv: Optional[str] = None,
     qc_csv: Optional[str] = None,
     cpu: bool = False,
@@ -173,7 +282,7 @@ def run_synthseg(
     fast : bool
         Skip some post-processing for speed.  Default False.
     parc : bool
-        Also output cortical parcellation.  Default False.
+        Also output cortical parcellation.  Default True.
     vol_csv : str, optional
         Write region volumes to this CSV file.
     qc_csv : str, optional
@@ -200,15 +309,20 @@ def run_synthseg(
     v1 = False
     if robust:
         fast = True  # SynthSeg-robust always uses fast mode
-        model_file = "synthseg_2.0_robust.h5"
+        model_file = "synthseg_robust_2.0.h5"
     else:
         model_file = "synthseg_2.0.h5"
 
     model_path = os.path.join(model_dir, model_file)
     if not os.path.isfile(model_path):
+        # Attempt to provision 2.0 models from FreeSurfer
+        _provision_synthseg_models(model_dir)
+    if not os.path.isfile(model_path):
         raise FileNotFoundError(
             f"SynthSeg model not found: {model_path}\n"
-            "Download the models per the SynthSeg README."
+            "The SynthSeg 2.0 model weights are not included in the git repo.\n"
+            "They ship with FreeSurfer 7.4+. Install FreeSurfer or manually\n"
+            "copy the .h5 files into: {model_dir}"
         )
 
     # Build argument dict matching SynthSeg_predict.py

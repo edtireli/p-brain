@@ -1769,6 +1769,7 @@ def segmentation(
                     input_path=t1_path,
                     output_path=_seg_nii_path,
                     robust=True,
+                    parc=True,
                     cpu=False,
                     vol_csv=os.path.join(mri_dir, "synthseg_volumes.csv"),
                     qc_csv=os.path.join(mri_dir, "synthseg_qc.csv"),
