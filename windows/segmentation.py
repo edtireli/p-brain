@@ -55,6 +55,45 @@ def _resolve_synthseg_home(hint: Optional[str] = None) -> str:
     )
 
 
+def _patch_synthseg_numpy_compat(synthseg_dir: str) -> None:
+    """Patch SynthSeg source for NumPy >= 1.24 compatibility.
+
+    Replaces deprecated ``np.int``, ``np.float``, ``np.bool``, ``np.complex``
+    aliases (removed in NumPy 1.24) with their builtin / surviving equivalents.
+    """
+    import re
+
+    # Map of patterns → replacements  (word-boundary safe)
+    _REPLACEMENTS = {
+        r'\bnp\.int\b':     'np.int_',
+        r'\bnp\.float\b':   'np.float_',
+        r'\bnp\.bool\b':    'np.bool_',
+        r'\bnp\.complex\b': 'np.complex_',
+        r'\bnp\.str\b':     'np.str_',
+        r'\bnp\.object\b':  'np.object_',
+    }
+
+    patched_files = 0
+    for root, _dirs, files in os.walk(synthseg_dir):
+        for fname in files:
+            if not fname.endswith('.py'):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                text = open(fpath, 'r', encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            new_text = text
+            for pattern, repl in _REPLACEMENTS.items():
+                new_text = re.sub(pattern, repl, new_text)
+            if new_text != text:
+                with open(fpath, 'w', encoding='utf-8') as f:
+                    f.write(new_text)
+                patched_files += 1
+    if patched_files:
+        print(f"[install] Patched {patched_files} SynthSeg file(s) for NumPy compat.")
+
+
 def _auto_install_synthseg() -> Optional[str]:
     """Attempt to automatically install SynthSeg (Python package).
 
@@ -105,6 +144,9 @@ def _auto_install_synthseg() -> Optional[str]:
         except Exception as exc:
             print(f"[install] git clone failed: {exc}")
             return None
+
+    # Patch for NumPy >= 1.24 (np.int / np.float removed)
+    _patch_synthseg_numpy_compat(synthseg_dir)
 
     # Install Python dependencies
     print("[install] Installing SynthSeg Python dependencies ...")
