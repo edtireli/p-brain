@@ -410,29 +410,104 @@ def plot_time_intensity_curves_and_CTC_t2(data, data2, roi_voxels, roi_voxels_up
 
 
 class ROISelector_tissue:
+    """Interactive ROI selector for tissue segmentation.
+
+    Controls
+    --------
+    Left click        : Add a point to the current ROI polygon.
+    Shift + click     : Close the polygon (connect to first point).
+    Enter             : Save the current ROI and start a new one.
+    Left / Right      : Change slice (single press = 1 step).
+                        Hold for 3 s → fast scrolling (5 slices/step).
+    Up / Down         : Change frame (for 4-D data only).
+    z + click         : Cycle zoom level around click position.
+    Ctrl+Z / u        : Undo — remove the last saved ROI on this slice.
+    c                 : Clear — remove ALL saved ROIs on this slice.
+    Ctrl+Shift+Z / r  : Redo — restore the last undone ROI.
+    x                 : Clear current (unsaved) polygon points.
+    Backspace/Delete  : Remove the last point from the current polygon.
+    Escape            : Close the selector.
+    """
+
+    # Time (seconds) before arrow-key holding triggers fast-scroll mode.
+    _HOLD_THRESHOLD_S = 3.0
+    _FAST_STEP = 5  # slices per tick when in fast-scroll mode.
+
     def __init__(self, data, slice_index=None):
+        import time as _time
+        self._time = _time
+
         self.data = data
-        # Set the slice_index to the middle of the data if not provided
+        self._is_4d = data.ndim == 4
+        self.frame_index = 0  # only used when _is_4d
+
         if slice_index is None:
             self.slice_index = data.shape[2] // 2
         else:
             self.slice_index = slice_index
+
         self.roi_points = []
         self.roi_slices = defaultdict(list)
+
+        # Undo / redo stacks (per-slice)
+        self._undo_stack = defaultdict(list)  # slice → [removed_roi, ...]
+        self._redo_stack = defaultdict(list)
+
         self.zoom_level = 0
+        self.zoom_center = None
+
+        # Arrow-key hold tracking
+        self._arrow_press_time = None
+        self._arrow_key_held = None
+        self._arrow_fast_mode = False
+
+        # Pre-compute windowed intensity for display (ignore outliers)
+        self._vmin = None
+        self._vmax = None
+        self._compute_display_range()
+
         self.fig, self.ax = plt.subplots()
-        # Connect event handlers for interaction
         self.fig.canvas.mpl_connect('button_press_event', self.onclick)
         self.fig.canvas.mpl_connect('key_press_event', self.on_key)
+        self.fig.canvas.mpl_connect('key_release_event', self._on_key_release)
         self.redraw()
         if not turbo_mode:
             plt.show()
 
+    # ── Display helpers ──────────────────────────────────────────────
+
+    def _compute_display_range(self):
+        """Compute robust min/max for display (2nd–98th percentile)."""
+        flat = self.data.ravel()
+        finite = flat[np.isfinite(flat)]
+        if finite.size > 0:
+            self._vmin = float(np.percentile(finite, 2))
+            self._vmax = float(np.percentile(finite, 98))
+        else:
+            self._vmin, self._vmax = 0.0, 1.0
+
+    def get_current_frame(self, data):
+        if self._is_4d:
+            return data[:, :, self.slice_index, self.frame_index]
+        return data[:, :, self.slice_index]
+
+    @property
+    def _n_slices(self):
+        return self.data.shape[2]
+
+    @property
+    def _n_frames(self):
+        return self.data.shape[3] if self._is_4d else 1
+
+    # ── Mouse ────────────────────────────────────────────────────────
+
     def onclick(self, event):
-        if event.inaxes != self.ax: return
+        if event.inaxes != self.ax:
+            return
         x, y = int(event.xdata), int(event.ydata)
         if event.key == 'shift':
-            self.roi_points.append(self.roi_points[0]) 
+            if self.roi_points:
+                self.roi_points.append(self.roi_points[0])
             self.redraw()
         elif event.key == 'z':
             self.zoom_center = (x, y)
@@ -442,81 +517,200 @@ class ROISelector_tissue:
             self.roi_points.append((x, y))
             self.redraw()
 
+    # ── Keyboard ─────────────────────────────────────────────────────
+
     def on_key(self, event):
         if event.key == 'escape':
             plt.close(self.fig)
-        elif event.key == 'left':
-            self.slice_index = (self.slice_index - 1) % self.data.shape[2]
+            return
+
+        # ── Slice / frame navigation (with hold-to-fast-scroll) ──
+        if event.key in ('left', 'right', 'up', 'down'):
+            now = self._time.time()
+            same_key = (self._arrow_key_held == event.key)
+
+            if same_key and self._arrow_press_time is not None:
+                elapsed = now - self._arrow_press_time
+                if elapsed >= self._HOLD_THRESHOLD_S:
+                    self._arrow_fast_mode = True
+            else:
+                # New key or different key — reset
+                self._arrow_press_time = now
+                self._arrow_key_held = event.key
+                self._arrow_fast_mode = False
+
+            step = self._FAST_STEP if self._arrow_fast_mode else 1
+
+            if event.key == 'left':
+                self.slice_index = (self.slice_index - step) % self._n_slices
+            elif event.key == 'right':
+                self.slice_index = (self.slice_index + step) % self._n_slices
+            elif event.key == 'up' and self._is_4d:
+                self.frame_index = (self.frame_index + step) % self._n_frames
+            elif event.key == 'down' and self._is_4d:
+                self.frame_index = (self.frame_index - step) % self._n_frames
             self.redraw()
-        elif event.key == 'right':
-            self.slice_index = (self.slice_index + 1) % self.data.shape[2]
-            self.redraw()
-        elif event.key == 'enter':
-            self.find_enclosed_voxels()
+            return
+
+        # ── Save current ROI ──
+        if event.key == 'enter':
+            if len(self.roi_points) >= 3:
+                self.find_enclosed_voxels()
+                self._redo_stack[self.slice_index].clear()
             self.roi_points = []
             self.redraw()
+            return
+
+        # ── Undo (Ctrl+Z or u) ──
+        if event.key in ('ctrl+z', 'u'):
+            if self.roi_slices[self.slice_index]:
+                removed = self.roi_slices[self.slice_index].pop()
+                self._redo_stack[self.slice_index].append(removed)
+                n = len(self.roi_slices[self.slice_index])
+                print(f"[ROI] Undo — {n} ROI(s) remain on slice {self.slice_index + 1}")
+            else:
+                print(f"[ROI] Nothing to undo on slice {self.slice_index + 1}")
+            self.redraw()
+            return
+
+        # ── Redo (Ctrl+Shift+Z or r) ──
+        if event.key in ('ctrl+shift+z', 'ctrl+Z', 'r'):
+            if self._redo_stack[self.slice_index]:
+                restored = self._redo_stack[self.slice_index].pop()
+                self.roi_slices[self.slice_index].append(restored)
+                n = len(self.roi_slices[self.slice_index])
+                print(f"[ROI] Redo — {n} ROI(s) on slice {self.slice_index + 1}")
+            else:
+                print(f"[ROI] Nothing to redo on slice {self.slice_index + 1}")
+            self.redraw()
+            return
+
+        # ── Clear all saved ROIs on this slice ──
+        if event.key == 'c':
+            cleared = self.roi_slices[self.slice_index]
+            if cleared:
+                # Push all to undo stack for potential redo
+                for roi in reversed(cleared):
+                    self._redo_stack[self.slice_index].append(roi)
+                self.roi_slices[self.slice_index] = []
+                print(f"[ROI] Cleared all ROIs on slice {self.slice_index + 1}")
+            self.roi_points = []
+            self.redraw()
+            return
+
+        # ── Clear current (unsaved) polygon ──
+        if event.key == 'x':
+            self.roi_points = []
+            self.redraw()
+            return
+
+        # ── Remove last polygon point ──
+        if event.key in ('backspace', 'delete'):
+            if self.roi_points:
+                self.roi_points.pop()
+            self.redraw()
+            return
+
+    def _on_key_release(self, event):
+        """Reset hold-tracking when arrow key is released."""
+        if event.key in ('left', 'right', 'up', 'down'):
+            self._arrow_press_time = None
+            self._arrow_key_held = None
+            self._arrow_fast_mode = False
+
+    # ── ROI polygon → voxel mask ─────────────────────────────────────
 
     def find_enclosed_voxels(self):
-        N = self.data.shape[0]
+        if len(self.roi_points) < 3:
+            return
+        rows, cols = self.data.shape[0], self.data.shape[1]
         path = Path(self.roi_points)
-        x, y = np.meshgrid(np.arange(N), np.arange(N))
+        x, y = np.meshgrid(np.arange(cols), np.arange(rows))
         points = np.column_stack((x.ravel(), y.ravel()))
-        mask = path.contains_points(points)
-        mask = mask.reshape(N, N)
+        mask = path.contains_points(points).reshape(rows, cols)
         enclosed_voxels = np.argwhere(mask)
-        self.roi_slices[self.slice_index].append(enclosed_voxels) 
+        self.roi_slices[self.slice_index].append(enclosed_voxels)
+        n = len(self.roi_slices[self.slice_index])
+        print(f"[ROI] Saved ROI #{n} on slice {self.slice_index + 1}: "
+              f"{len(enclosed_voxels)} voxels")
 
-
-    def get_current_frame(self, data):
-        return data[:, :, self.slice_index]
+    # ── Drawing ──────────────────────────────────────────────────────
 
     def redraw(self):
         self.ax.clear()
         frame = self.get_current_frame(self.data)
-
-        # Calculate aspect ratio to stretch the image
         y_size, x_size = frame.shape
         aspect_ratio = x_size / y_size
 
-        # Stretch the image to fill a square plot
-        self.ax.imshow(frame, cmap='viridis', origin='lower', aspect=aspect_ratio)
+        self.ax.imshow(
+            frame, cmap='viridis', origin='lower', aspect=aspect_ratio,
+            vmin=self._vmin, vmax=self._vmax,
+            interpolation='nearest',
+        )
 
+        # Zoom
         if self.zoom_level > 0 and self.zoom_center:
-            # Adjust the zoom center and zoom limits
             x_center, y_center = self.zoom_center
             zoom_factor = 2 ** self.zoom_level
             x_zoom = min(x_size, y_size * aspect_ratio) / zoom_factor
             y_zoom = min(y_size, x_size / aspect_ratio) / zoom_factor
+            self.ax.set_xlim(
+                max(0, x_center - x_zoom / 2),
+                min(x_size, x_center + x_zoom / 2),
+            )
+            self.ax.set_ylim(
+                max(0, y_center - y_zoom / 2),
+                min(y_size, y_center + y_zoom / 2),
+            )
 
-            x_start = max(0, x_center - x_zoom / 2)
-            x_end = min(x_size, x_center + x_zoom / 2)
-            y_start = max(0, y_center - y_zoom / 2)
-            y_end = min(y_size, y_center + y_zoom / 2)
+        # Draw previously saved ROIs on this slice (blue fill)
+        for roi_voxels in self.roi_slices.get(self.slice_index, []):
+            if len(roi_voxels) > 0:
+                from matplotlib.patches import Rectangle as _Rect
+                for (ry, rx) in roi_voxels:
+                    self.ax.add_patch(
+                        _Rect((rx, ry), 1, 1, linewidth=0,
+                              facecolor='cyan', alpha=0.25)
+                    )
 
-            self.ax.set_xlim(x_start, x_end)
-            self.ax.set_ylim(y_start, y_end)
-
-        self.title = self.ax.set_title(f'Slice {self.slice_index + 1}', fontsize=15)    
+        # Draw current (unsaved) polygon
         if self.roi_points:
             x, y = zip(*self.roi_points)
             self.ax.plot(x, y, 'r-', markersize=0.5, alpha=0.75)
             self.ax.plot(x, y, 'ro', markersize=2)
             self.ax.fill(x, y, 'r', alpha=0.3)
 
-        self.fig.canvas.draw()
-        
+        # Title with status info
+        total_rois = sum(len(v) for v in self.roi_slices.values())
+        slice_rois = len(self.roi_slices.get(self.slice_index, []))
+        title = f'Slice {self.slice_index + 1}/{self._n_slices}'
+        if self._is_4d:
+            title += f'  Frame {self.frame_index + 1}/{self._n_frames}'
+        title += f'  |  ROIs: {slice_rois} (slice)  {total_rois} (total)'
+        if self.roi_points:
+            title += f'  |  Drawing: {len(self.roi_points)} pts'
+        self.ax.set_title(title, fontsize=11)
+
+        self.fig.canvas.draw_idle()
+
     def get_selected_voxels(self):
         return self.roi_slices
 
 
 def start_roi_selection_tissue(filename_t2, filename_dce, rotate_AC=True, time_points=1, analysis_directory='dir', image_directory='dir', flip_angle_deg=None):
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-Instructions-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
-    print("1. Left " +colored('click', 'cyan') +" to select ROI points.")
-    print("2. Press " +colored('shift', 'cyan') +" to close the ROI.")
-    print("3. Press " +colored('enter', 'cyan') +" to save the current ROI.")
-    print("4. Use " +colored('left/right', 'cyan') +" arrows to change slices.")
-    print("6. Press " +colored('z', 'cyan') +" to zoom in/out.")
-    print("7. Press " +colored('Esc', 'red') +" to close the GUI.")
+    print("  Left " + colored('click', 'cyan') + "       → add ROI point")
+    print("  " + colored('Shift', 'cyan') + "+click   → close polygon")
+    print("  " + colored('Enter', 'cyan') + "          → save current ROI")
+    print("  " + colored('←/→', 'cyan') + "            → change slice  (hold 3s = fast)")
+    print("  " + colored('↑/↓', 'cyan') + "            → change frame  (4-D data only)")
+    print("  " + colored('Backspace', 'cyan') + "      → remove last point")
+    print("  " + colored('x', 'cyan') + "              → discard current polygon")
+    print("  " + colored('u / Ctrl+Z', 'cyan') + "    → undo last saved ROI")
+    print("  " + colored('r / Ctrl+Shift+Z', 'cyan') + " → redo")
+    print("  " + colored('c', 'cyan') + "              → clear all ROIs on slice")
+    print("  " + colored('z', 'cyan') + "+click       → zoom cycle")
+    print("  " + colored('Esc', 'red') + "            → close the GUI")
     print(colored('=-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-==-=-=', 'white'))
     print(filename_dce)
     data_3d = nib.load(filename_t2).get_fdata()

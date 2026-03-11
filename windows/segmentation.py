@@ -29,7 +29,11 @@ from typing import Optional
 
 
 def _resolve_synthseg_home(hint: Optional[str] = None) -> str:
-    """Return the root of the SynthSeg repository."""
+    """Return the root of the SynthSeg repository.
+
+    If SynthSeg is not found, attempts automatic installation via
+    ``git clone`` + ``pip install``.
+    """
     candidates = [
         hint,
         os.environ.get("SYNTHSEG_HOME"),
@@ -38,11 +42,94 @@ def _resolve_synthseg_home(hint: Optional[str] = None) -> str:
     for c in candidates:
         if c and os.path.isdir(c):
             return os.path.abspath(c)
+
+    # ── Auto-install SynthSeg ──
+    installed = _auto_install_synthseg()
+    if installed:
+        return installed
+
     raise FileNotFoundError(
         "SynthSeg repository not found.  Clone it with:\n"
         "  git clone https://github.com/BBillot/SynthSeg.git\n"
         "Then set --synthseg-home or SYNTHSEG_HOME."
     )
+
+
+def _auto_install_synthseg() -> Optional[str]:
+    """Attempt to automatically install SynthSeg (Python package).
+
+    Clones the SynthSeg repo into ``<p-brain>/vendor/SynthSeg`` and
+    installs its Python dependencies.
+
+    Returns the SynthSeg home directory on success, ``None`` on failure
+    or if the user declines.
+    """
+    import shutil
+    import subprocess
+
+    print()
+    print("=" * 60)
+    print("  SynthSeg not found on this system.")
+    print("  p-brain can install it automatically for you.")
+    print("=" * 60)
+    try:
+        answer = input("[?] Install SynthSeg now? (y/n, default y): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if answer not in ("", "y", "yes"):
+        return None
+
+    vendor_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vendor")
+    synthseg_dir = os.path.join(vendor_dir, "SynthSeg")
+
+    git = shutil.which("git")
+    if not git:
+        print("[install] git not found — cannot clone SynthSeg.")
+        return None
+
+    os.makedirs(vendor_dir, exist_ok=True)
+
+    # Clone
+    if not os.path.isdir(synthseg_dir):
+        print("[install] Cloning SynthSeg repository ...")
+        try:
+            res = subprocess.run(
+                [git, "clone", "--depth", "1",
+                 "https://github.com/BBillot/SynthSeg.git", synthseg_dir],
+                capture_output=True, text=True, timeout=300,
+            )
+            if res.returncode != 0:
+                print(f"[install] git clone failed: {res.stderr}")
+                return None
+            print("[install] SynthSeg cloned successfully.")
+        except Exception as exc:
+            print(f"[install] git clone failed: {exc}")
+            return None
+
+    # Install Python dependencies
+    print("[install] Installing SynthSeg Python dependencies ...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install",
+             "tensorflow", "nibabel", "numpy", "matplotlib"],
+            capture_output=True, text=True, timeout=600,
+        )
+    except Exception as exc:
+        print(f"[install] pip install warning: {exc}")
+
+    # Verify import
+    try:
+        if synthseg_dir not in sys.path:
+            sys.path.insert(0, synthseg_dir)
+        import SynthSeg  # noqa: F401
+        print("[install] SynthSeg installation verified.")
+        os.environ["SYNTHSEG_HOME"] = synthseg_dir
+        return synthseg_dir
+    except ImportError:
+        print("[install] SynthSeg installed but import failed.")
+        print("[install] You may need to download the model weights manually.")
+        print("[install] See: https://github.com/BBillot/SynthSeg#readme")
+        return synthseg_dir  # return path anyway — models can be added later
 
 
 def _ensure_synthseg_importable(synthseg_home: str) -> None:

@@ -401,6 +401,23 @@ def _run_tissue_analysis_windows(
         wm_cc_mask_t2 = _load(t2_masks["wm_cc"])
         wm_cc_mask_dce = _load(dce_masks["wm_cc"])
 
+        # WMH masks (optional — may not be present or may be empty)
+        wmh_mask_dce = None
+        wmh_mask_t2 = None
+        if "wmh" in dce_masks and os.path.isfile(dce_masks["wmh"]):
+            _wmh = _load(dce_masks["wmh"])
+            if np.any(_wmh):
+                wmh_mask_dce = _wmh
+                # Subtract WMH from WM in DCE space
+                wm_mask_dce = wm_mask_dce & ~wmh_mask_dce
+                n_wmh = int(np.sum(wmh_mask_dce))
+                print(f"[masks] WM-hypointensities in DCE space: {n_wmh} voxels")
+        if "wmh" in t2_masks and os.path.isfile(t2_masks["wmh"]):
+            _wmh = _load(t2_masks["wmh"])
+            if np.any(_wmh):
+                wmh_mask_t2 = _wmh
+                wm_mask_t2 = wm_mask_t2 & ~wmh_mask_t2
+
         compute_and_plot_ctcs_median(
             data_4d, t2_img,
             wm_mask_t2, cortical_gm_mask_t2, subcortical_gm_mask_t2,
