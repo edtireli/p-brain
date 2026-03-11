@@ -56,22 +56,33 @@ def _resolve_synthseg_home(hint: Optional[str] = None) -> str:
 
 
 def _patch_synthseg_numpy_compat(synthseg_dir: str) -> None:
-    """Patch SynthSeg source for NumPy >= 1.24 compatibility.
+    """Patch SynthSeg source for NumPy >= 2.0 compatibility.
 
-    Replaces deprecated ``np.int``, ``np.float``, ``np.bool``, ``np.complex``
-    aliases (removed in NumPy 1.24) with their builtin / surviving equivalents.
+    Replaces removed ``np.int``, ``np.float``, ``np.bool``, ``np.complex``,
+    ``np.int_``, ``np.float_``, ``np.bool_``, ``np.str_``, ``np.object_``
+    aliases with their surviving equivalents (``np.int64``, ``np.float64``,
+    ``np.bool_`` → ``bool``, etc.).
     """
     import re
 
-    # Map of patterns → replacements  (word-boundary safe)
-    _REPLACEMENTS = {
-        r'\bnp\.int\b':     'np.int_',
-        r'\bnp\.float\b':   'np.float_',
-        r'\bnp\.bool\b':    'np.bool_',
-        r'\bnp\.complex\b': 'np.complex_',
-        r'\bnp\.str\b':     'np.str_',
-        r'\bnp\.object\b':  'np.object_',
-    }
+    # Order matters — longer patterns first so np.float_ is matched
+    # before np.float, and np.int_ before np.int.
+    _REPLACEMENTS = [
+        # numpy 2.0 removals  (np.*_ forms)
+        (r'\bnp\.int_\b',     'np.int64'),
+        (r'\bnp\.float_\b',   'np.float64'),
+        (r'\bnp\.bool_\b',    'bool'),
+        (r'\bnp\.complex_\b', 'np.complex128'),
+        (r'\bnp\.str_\b',     'str'),
+        (r'\bnp\.object_\b',  'object'),
+        # numpy 1.24 removals (bare np.* forms, no trailing _)
+        (r'\bnp\.int\b',      'np.int64'),
+        (r'\bnp\.float\b',    'np.float64'),
+        (r'\bnp\.bool\b',     'bool'),
+        (r'\bnp\.complex\b',  'np.complex128'),
+        (r'\bnp\.str\b',      'str'),
+        (r'\bnp\.object\b',   'object'),
+    ]
 
     patched_files = 0
     for root, _dirs, files in os.walk(synthseg_dir):
@@ -84,7 +95,7 @@ def _patch_synthseg_numpy_compat(synthseg_dir: str) -> None:
             except OSError:
                 continue
             new_text = text
-            for pattern, repl in _REPLACEMENTS.items():
+            for pattern, repl in _REPLACEMENTS:
                 new_text = re.sub(pattern, repl, new_text)
             if new_text != text:
                 with open(fpath, 'w', encoding='utf-8') as f:
