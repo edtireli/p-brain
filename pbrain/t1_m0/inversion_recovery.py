@@ -101,7 +101,13 @@ class _IRFitter:
         B_arr = np.full((X, Y, Z), np.nan, dtype=float)
 
         if mask is None:
-            mask = np.ones((X, Y, Z), dtype=bool)
+            # Auto-mask: fit only voxels with real signal (skip air). The IR
+            # T1 fit is a per-voxel non-linear solve, so masking out ~60% air
+            # voxels both speeds it up and avoids fitting noise.
+            smax = np.nanmax(np.abs(signals), axis=-1)
+            pos = smax[np.isfinite(smax) & (smax > 0)]
+            thr = 0.08 * float(np.percentile(pos, 98)) if pos.size else 0.0
+            mask = smax > thr
         else:
             mask = np.asarray(mask, dtype=bool)
 

@@ -41,7 +41,7 @@ class Config:
     # ── Acquisition (paper §4.2 defaults) ────────────────────────────
     tr_s: float = 0.01118        # TR = 11.18 ms (3D T1 reference)
     te_s: float = 0.00193        # TE = 1.93 ms (DCE)
-    flip_angle_deg: float = 8.0
+    flip_angle_deg: float = 30.0     # DCE readout flip angle (paper protocol)
     r1_per_s_mM: float = 4.0     # relaxivity at 3 T
     prepulse_to_readout_s: float = 0.120
     dt_s: float = 2.463          # DCE temporal sampling

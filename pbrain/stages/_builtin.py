@@ -215,11 +215,19 @@ class T1M0Stage:
         ir_data: np.ndarray | None = None
         ti_s: np.ndarray | None = None
         ref_affine: np.ndarray | None = None
-        if ir_path_s and Path(ir_path_s).exists() and ti_path_s and Path(ti_path_s).exists():
+        if ir_path_s and Path(ir_path_s).exists():
             ir_img = nib.load(str(ir_path_s))
             ir_data = np.asarray(ir_img.dataobj, dtype=np.float32)
-            ti_s = np.load(ti_path_s)
             ref_affine = np.asarray(ir_img.affine, dtype=float)
+            if ti_path_s and Path(ti_path_s).exists():
+                ti_s = np.load(ti_path_s)
+            # An IR series assembled from separate per-TI files carries no
+            # per-frame TI in the NIfTI — fall back to the configured
+            # inversion_times_ms when they match the frame count.
+            if (ti_s is None or np.unique(np.asarray(ti_s)).size < 2) and ir_data.ndim == 4:
+                cfg_ti = np.asarray(ctx.config.inversion_times_ms, dtype=float) / 1000.0
+                if cfg_ti.size == ir_data.shape[-1]:
+                    ti_s = cfg_ti
 
         opts = dict(ctx.config.options_for("t1_m0", plugin_key))
         result = fitter.fit(ir_data, ti_s, **opts)
@@ -278,7 +286,7 @@ class AIFStage:
             dce_signal = dce_signal[..., None]
         dce_affine = np.asarray(dce_img.affine, dtype=float)
 
-        ct_img = nib.load(str(stc_mf.outputs["ct"]))
+        ct_img = nib.load(str(stc_mf.outputs["concentration"]))
         ct_data = np.asarray(ct_img.dataobj, dtype=np.float32)
         if ct_data.ndim == 3:
             ct_data = ct_data[..., None]
@@ -428,12 +436,12 @@ class SignalToConcStage:
         # conversion. There is no per-region averaging of T1/M0 anywhere.
         C = conv.convert(S, T1, M0, **opts)
         ct_out = ctx.path_scheme.output_path(
-            ctx.subject_dir, self.name, plugin_key, None, "ct", "nii.gz"
+            ctx.subject_dir, self.name, plugin_key, None, "concentration", "nii.gz"
         )
         _save_nifti(C, np.asarray(dce_img.affine, dtype=float), ct_out)
 
         return StageOutput(
-            artefacts={"ct": ct_out},
+            artefacts={"concentration": ct_out},
             metadata={
                 "converter": plugin_key,
                 "flip_angle_deg": opts["flip_angle_deg"],
@@ -460,7 +468,7 @@ class NormalisationStage:
         aif_mf = ctx.upstream_manifests["aif"]
         load_mf = ctx.upstream_manifests["load"]
 
-        C_img = nib.load(str(stc_mf.outputs["ct"]))
+        C_img = nib.load(str(stc_mf.outputs["concentration"]))
         C = np.asarray(C_img.dataobj, dtype=np.float32)
         # AIF curve is already in mM (the AIF stage now reads from the
         # mM volume directly, not from the raw signal).

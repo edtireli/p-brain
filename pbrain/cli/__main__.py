@@ -13,6 +13,7 @@ def _help() -> int:
         "  run-cohort          Run the pipeline over many subjects (parallel, resumable).\n"
         "  list                Overview of registered plug-ins (every plug-point).\n"
         "  list <plug-point>   Detailed contract for one plug-point (e.g. `list models`).\n"
+        "  setup               Get everything ready to run: check + install deps, dcm2niix, FreeSurfer, GPU.\n"
         "  check-deps          Verify third-party Python deps; offer to pip-install missing ones.\n"
     )
     return 0
@@ -119,6 +120,9 @@ def main() -> int:
         return _list_overview()
     if cmd == "check-deps":
         return _check_deps()
+    if cmd == "setup":
+        from pbrain.cli._setup import setup
+        return setup()
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 

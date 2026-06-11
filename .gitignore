@@ -51,3 +51,7 @@ run_gamma_roi.py
 demo/raw/
 demo/phantom/
 # (demo/maps/*.png are small example montages referenced by the README — kept)
+
+# Tikhonov-Bayes — kept internal for now (run locally, not in the public repo).
+pbrain/models/tikhonov_bayes.py
+pbrain/diagnostics/tikhonov_bayes.py

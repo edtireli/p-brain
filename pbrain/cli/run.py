@@ -121,7 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-file", type=Path, default=None,
                    help="Also append all log records to this file.")
 
-    p.add_argument("--flip-angle-deg", type=float, default=8.0)
+    p.add_argument("--flip-angle-deg", type=float, default=30.0)
     p.add_argument("--tr-s", type=float, default=0.01118)
     p.add_argument("--r1-per-s-mM", type=float, default=4.0)
     p.add_argument("--baseline-frames", type=int, default=5)
