@@ -2,20 +2,24 @@
 
 <img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
 
-**_p_-Brain is a framework for automated DCE-MRI (and diffusion) research that
-research groups extend with their own models.** It takes raw scanner data
-through every step — T1/M0 mapping, arterial-input-function extraction,
+_p_-Brain takes raw dynamic-contrast-enhanced (and diffusion) MRI through the
+whole analysis — T1/M0 mapping, arterial-input-function extraction,
 signal-to-concentration conversion, tissue parcellation, pharmacokinetic and
-diffusion modelling — and emits standardised voxel / tissue / parcel outputs,
-fully automatically.
+diffusion modelling — and produces standardised voxel-, tissue-, and
+parcel-level results, fully automatically.
 
-The point is not just the models we ship. It is that **your own model is a
-single file.** Drop it into `pbrain/models/`, call it by name with `--models
-yourmodel`, and the framework runs it on every subject, aggregates it to every
-anatomical level, writes NIfTI/CSV/JSON, and renders diagnostics — with **no
-changes to the core**. The same is true for a new AIF method, segmentation
-backend, or whole pipeline stage. The aim is to let the field stop
-re-implementing plumbing and standardise on shared, comparable outputs.
+It is two things at once. **As shipped it is a validated, ready-to-run
+pipeline** you can point at real scanner data today and get publication-grade
+maps (Ki, CBF, MTT, CTH, FA, …). And it is a **template you extend**: each step
+is a self-contained plug-in, so adding your own kinetic model — or a different
+AIF, segmentation backend, or whole stage — is a single file and **no changes
+to the core**. Drop a model into `pbrain/models/`, call it with `--models
+yourmodel`, and it is run on every subject, aggregated to every anatomical
+level, written as NIfTI/CSV/JSON, and given diagnostics automatically.
+
+The aim is to let groups stop re-implementing the same plumbing: use it as-is,
+modify what you need, and extend it to go beyond — while everyone's outputs
+stay directly comparable.
 
 > If you use _p_-Brain in your research, please **cite our paper** (Tireli et
 > al.; see [Citation](#citation)).
@@ -149,6 +153,10 @@ python -m pbrain list models      # one plug-point in detail
 **Run a whole cohort** — parallel, resumable, error-isolated:
 
 ```bash
+# the simplest form: run every subject folder inside a directory
+python -m pbrain run-cohort --config study.toml --data-dir /data --workers 8
+
+# or select with a glob / explicit list
 python -m pbrain run-cohort --config study.toml --subjects-glob '/data/sub-*' --workers 8
 ```
 
@@ -160,11 +168,13 @@ under [Models](#models).
 
 ## Add your own
 
-**This is the feature.** A new kinetic model — a whole new way of turning the
-concentration curves into parameter maps — is **one file** and **zero core
-changes**. You write the maths; the framework does everything else: it runs
-your model on every voxel/curve, aggregates the result to tissue classes and
-parcels, writes NIfTI + CSV + JSON, and renders fit diagnostics.
+> **Step-by-step guide:** [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md) —
+> templates for models, AIF methods, segmentation backends, diffusion models,
+> and whole pipeline stages. Start there.
+
+A new kinetic model is one file and no core changes. You write the maths; the
+framework runs it on every voxel/curve, aggregates the result to tissue classes
+and parcels, writes NIfTI + CSV + JSON, and renders fit diagnostics.
 
 `pbrain/models/two_cxm.py`:
 

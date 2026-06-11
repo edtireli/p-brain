@@ -13,6 +13,7 @@ the standard FreeSurfer labelmap.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -94,6 +95,16 @@ class _SynthSegTissue:
                 "`source $FREESURFER_HOME/SetUpFreeSurfer.sh`."
             )
 
+        # mri_synthseg needs FREESURFER_HOME set. Auto-derive it from the
+        # binary location (…/<FREESURFER_HOME>/bin/mri_synthseg) when the env
+        # isn't already sourced, so a fresh shell just works.
+        env = dict(os.environ)
+        if not env.get("FREESURFER_HOME"):
+            fs_home = Path(binary).resolve().parent.parent
+            if (fs_home / "SetUpFreeSurfer.sh").exists():
+                env["FREESURFER_HOME"] = str(fs_home)
+                env.setdefault("SUBJECTS_DIR", str(fs_home / "subjects"))
+
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +118,7 @@ class _SynthSegTissue:
         if not robust:
             cmd.append("--fast")
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
         if result.returncode != 0:
             raise RuntimeError(
                 f"mri_synthseg failed: "

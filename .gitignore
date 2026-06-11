@@ -55,3 +55,8 @@ demo/phantom/
 # Tikhonov-Bayes — kept internal for now (run locally, not in the public repo).
 pbrain/models/tikhonov_bayes.py
 pbrain/diagnostics/tikhonov_bayes.py
+
+# Fractional Mittag-Leffler residue — local-only kinetic model.
+pbrain/models/mittag_leffler.py
+pbrain/diagnostics/mittag_leffler.py
+run_mittag_leffler.py

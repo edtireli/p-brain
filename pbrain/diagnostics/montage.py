@@ -141,12 +141,14 @@ def montage_volume(arr: np.ndarray, out_path: Path, *, mask: np.ndarray | None =
             ax.axis("off")                         # absent slice → blank tile
 
     if title:
-        fig.suptitle(title + (f"  [{units}]" if units else ""), fontsize=12)
+        fig.suptitle(title, fontsize=12)
     if im is not None:
         cax = fig.add_axes([0.925, 0.15, 0.015, 0.7])
         cb = fig.colorbar(im, cax=cax)
         cb.outline.set_visible(False)
         cb.ax.tick_params(labelsize=9)
+        if units and units not in ("(unitless)", "RGB"):   # real units only
+            cb.set_label(units, fontsize=10, rotation=90, labelpad=2)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

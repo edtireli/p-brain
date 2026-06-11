@@ -34,6 +34,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Shared config file (.toml/.yaml). Per-subject inputs "
                         "are resolved relative to each subject directory.")
     g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--data-dir", help="Run every immediate sub-directory of this "
+                                      "folder as a subject (the simplest 'do all of them').")
     g.add_argument("--subjects-glob", help="Glob of subject directories, e.g. '/data/sub-*'.")
     g.add_argument("--subjects", nargs="+", help="Explicit subject directories.")
     p.add_argument("--workers", type=int, default=1,
@@ -82,7 +84,11 @@ def main(argv: list[str]) -> int:
     configure_logging(level_from_flags(args.quiet, args.verbose), log_file=args.log_file)
     log = get_logger("cohort")
 
-    if args.subjects_glob:
+    if args.data_dir:
+        root = Path(args.data_dir)
+        subjects = sorted(str(p) for p in root.iterdir()
+                          if p.is_dir() and not p.name.startswith("."))
+    elif args.subjects_glob:
         import glob
         subjects = sorted(p for p in glob.glob(args.subjects_glob) if Path(p).is_dir())
     else:
