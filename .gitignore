@@ -18,3 +18,36 @@ build/
 .venv/
 
 .vscode/
+
+# ─── Validation universe (MATLAB reference + parity scripts) ───────────
+# Lives on disk for ongoing development; never reaches the public branch.
+validation/
+
+# ─── Runtime artefacts that should never be tracked ────────────────────
+batch_logs/
+qc_jumps/
+yes_subjects.json
+*.bak*
+
+# ─── Gamma family — local-only kinetic models ──────────────────────────
+# Auto-discovery picks them up on disk; absent on a fresh clone from main.
+pbrain/models/gamma.py
+pbrain/models/egamma.py
+pbrain/models/gamma_gain.py
+pbrain/diagnostics/gamma.py
+pbrain/diagnostics/egamma.py
+pbrain/diagnostics/gamma_gain.py
+models/gamma.py
+models/egamma.py
+models/gamma_gain.py
+modules/gamma_runner.py
+modules/egamma_runner.py
+modules/gamma_gain_runner.py
+modules/gamma_plots.py
+run_gamma_only.py
+run_gamma_roi.py
+
+# Demo: regenerable via `python -m pbrain.demo` — don't commit the NIfTIs.
+demo/raw/
+demo/phantom/
+# (demo/maps/*.png are small example montages referenced by the README — kept)

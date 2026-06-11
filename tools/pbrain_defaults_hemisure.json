@@ -1,7 +1,0 @@
-{
-  "ctcModel": "turboflash",
-  "t1RecoveryModel": "turboflash",
-  "pkModel": "both",
-  "turboflashBaselineFrames": 12,
-  "writeSliceDiagnostics": true
-}

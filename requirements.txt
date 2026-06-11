@@ -1,14 +1,21 @@
-scipy
-matplotlib
-termcolor
-pyfiglet
-seaborn
-nibabel
-tqdm
-numpy
-dipy
-opencv-python
-scikit-image
-tensorflow
-Pillow
-networkx
+# Minimal runtime dependencies for the `pbrain` package.
+#
+# Run `python -m pbrain check-deps` to verify these are installed and to
+# interactively install any that are missing.
+#
+# The legacy `p-brain` codebase has additional dependencies in the top-level
+# `requirements.txt`; this file is the minimal set for the new `pbrain/`
+# pipeline only.
+
+# Required
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+nibabel>=5.0
+
+# Optional — install only if the corresponding plug-in is selected
+# tensorflow>=2.13       # CNN AIF (aif.cnn, aif.cnn_sss_shifted).
+#                          On Apple Silicon also install tensorflow-metal.
+# torch>=2.0             # --device mps / --device cuda probing
+# pydicom>=2.4           # DICOM input loader
+# pyyaml>=6.0          # YAML config files (--config study.yaml); TOML works without it

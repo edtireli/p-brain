@@ -1,684 +1,429 @@
-# _p_-Brain: Advanced Neuroimaging platform
+# _p_-Brain — modular DCE-MRI & diffusion analysis
+
 <img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
 
+_p_-Brain turns raw dynamic-contrast-enhanced (DCE) MRI and diffusion (DWI)
+series into quantitative parameter maps — blood–brain-barrier leakage,
+perfusion, capillary transit-time heterogeneity, and white-matter
+microstructure — through a **fully modular, plug-and-play pipeline**. Every
+step is a single-file plug-in that is auto-discovered at runtime; research
+groups add new models or swap methods by dropping a file in, with **zero
+changes to the core**.
 
-_p_-Brain is an end-to-end neuroimaging analysis script that turns raw dynamic contrast-enhanced (DCE) MRI series into quantitative maps of blood–brain barrier leakage, vascular volume, and perfusion. The toolkit combines classical pharmacokinetic modeling with CNN-based region-of-interest (ROI) extraction, anatomical parcellation, and transparent quality-control outputs so that a single command can deliver voxel-wise, parcel-wise, and whole-brain readouts of:
+> **Author:** Edis Devin Tireli, M.Sc., Ph.D. student
+> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet; Department of Neuroscience and Department of Clinical Medicine, University of Copenhagen.
 
-- BBB influx constant Ki
-- Plasma volume vp
-- Extended Tofts parameters (Ktrans, kep, ve)
-- Cerebral blood flow (CBF)
-- Mean transit time (MTT)
-- Capillary transit-time heterogeneity (CTH)
-
-> **Author:** Edis Devin Tireli, M.Sc., Ph.D. student  
-> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet, Department of Neuroscience and Department of Clinical Medicine, University of Copenhagen. 
-
----
-
-## Quick navigation
-1. [Why p-Brain?](#why-p-brain)
-2. [p-brain Platform (Desktop app)](#p-brain-platform-desktop-app)
-3. [p-brain (Standalone pipeline)](#p-brain-standalone-pipeline)
-4. [Data layout and repository structure](#data-layout-and-repository-structure)
-5. [Installation](#installation)
-6. [Segmentation methods](#segmentation-methods)
-7. [Running the script](#running-the-script)
-8. [Workflow details](#workflow-details)
-9. [Outputs and deliverables](#outputs-and-deliverables)
-10. [Automation features](#automation-features)
-11. [Configuration and environment variables](#configuration-and-environment-variables)
-12. [Addons](#addons)
-13. [Recent changes](#recent-changes-20252026-highlights)
-14. [Contributing & support](#contributing--support)
-15. [License & acknowledgments](#license--acknowledgments)
+Quantitative outputs include BBB influx **Ki** and plasma volume **vp**
+(Patlak), **CBF / MTT / CTH** (Tikhonov deconvolution, with empirical-Bayes
+λ-selection and per-voxel uncertainty), extended-Tofts **Ktrans/ve/vp**, and
+the full diffusion panel **FA, MD, MK, KFA, μFA, GFA, free-water, RSI
+restricted-fraction**.
 
 ---
 
-## Why p-Brain?
-Traditional DCE-MRI analysis requires hand-drawn ROIs for arterial/venous input functions, manual tissue masking, and bespoke scripts for each pharmacokinetic model. _p_-Brain removes these bottlenecks:
+## Contents
 
-- **Single script, full pipeline** – From T1/M0 fitting to Patlak, extended Tofts, and deconvolution-based residue analysis.
-- **CNN-driven automation** – Neural networks detect the right internal carotid artery (rICA) and superior sagittal sinus (SSS); SynthSeg-based anatomical segmentations (FreeSurfer 8+) define tissue ROIs.
-- **Multi-scale reporting** – Every run produces voxel mosaics, parcel tables, slice-wise distributions, and whole-brain medians for Ki, vp, CBF, MTT, and CTH.
-- **Reproducible QC** – Time-shifted concentration curves, Patlak fits, reference comparisons, and cohort projections are generated automatically so every decision is traceable.
-- **Batch-ready** – `enumerator.py` runs the pipeline over entire cohorts with optional control handling and environment-based overrides.
-
----
-
-## p-brain Platform (Desktop app)
-
-If you want a **production-style UI** on top of the pipeline (projects/subjects, job monitoring, and a rich QC/review workspace), see:
-
-- p-brain Platform: https://github.com/edtireli/p-brain-platform
-
-Most users should just download the **macOS desktop app** (a `.dmg`) from GitHub Releases:
-
-- Releases: https://github.com/edtireli/p-brain-platform/releases
-
-The platform surfaces p-brain outputs in a review-first workflow:
-
-- Project/subject browser and pipeline status
-- QC overlays for DCE outputs (maps, curves, fit diagnostics)
-- Interactive diffusion/tractography viewer
-- Local desktop launcher that bundles the UI and runs a small local bridge for file access
-
-### Platform screenshots (v1.0.0)
-
-![p-brain Platform dashboard](src/img/platform/Screenshot%202026-01-08%20at%2017.43.51.png)
-
-![Tractography viewer](src/img/platform/Screenshot%202026-01-08%20at%2017.45.21.png)
-
-![DCE series with AI overlay](src/img/platform/Screenshot%202026-01-08%20at%2017.47.11.png)
-
-![Voxelwise map example](src/img/platform/Screenshot%202026-01-08%20at%2017.45.41.png)
-
-![Parcelwise map example](src/img/platform/Screenshot%202026-01-08%20at%2017.45.56.png)
-
-![AIF/VIF and tissue functions](src/img/platform/Screenshot%202026-01-08%20at%2017.46.02.png)
-
-![Function isolation / selection](src/img/platform/Screenshot%202026-01-08%20at%2017.46.20.png)
-
-![Patlak analysis](src/img/platform/Screenshot%202026-01-08%20at%2017.46.35.png)
-
-![Extended Tofts estimation](src/img/platform/Screenshot%202026-01-08%20at%2017.46.54.png)
-
-![Segmentation results table](src/img/platform/Screenshot%202026-01-08%20at%2017.49.45.png)
-
-![Additional visualization](src/img/platform/Screenshot%202026-01-08%20at%2017.47.18.png)
-
-![Subjects overview / job status](src/img/platform/Screenshot%202026-01-08%20at%2017.49.13.png)
+1. [Install](#install)
+2. [Quick start](#quick-start)
+3. [Config files](#config-files)
+4. [The plug-in architecture](#the-plug-in-architecture)
+5. [Adding your own model / method / stage](#adding-your-own)
+6. [Models shipped](#models-shipped)
+7. [Diffusion track](#diffusion-track)
+8. [Outputs](#outputs)
+9. [Demo (synthetic phantom)](#demo)
+10. [Repository structure](#repository-structure)
 
 ---
 
-## p-brain (Standalone pipeline)
+## Install
 
-The screenshots above are from the optional **p-brain Platform** desktop app.
-
-Everything below describes **p-brain as a standalone pipeline** in this repository: the expected `data/` layout, how to install dependencies, and how to run `main.py` / `enumerator.py` directly.
-
-## Data layout and repository structure
-### Expected dataset tree
-By default the GUI scans the `data/` directory (override via `--data-dir` or `P_BRAIN_DATA_DIR`). Each exam folder should contain raw input as well as the derived analysis subfolders:
-
-```
-data/
-└── subject_id/
-    ├── x.PAR / x.REC   # raw Philips exports (optional if NIfTI already provided)
-    ├── NIfTI/          # populated automatically when converting PAR/REC
-    ├── Analysis/
-    │   ├── CTC Data/
-    │   ├── TSCC Data/
-    │   ├── ITC Data/
-    │   └── ROI Data/
-    └── Images/
-```
-
-Control cohorts live under `data/controls/<id>`. Set `PBRAIN_CONTROLS=1` or pass `--controls` to `enumerator.py` so the script automatically tags outputs with a `control.json` descriptor.
-
-### Repository overview
-| Path | Description |
-|------|-------------|
-| `modules/` | CLI menus, modeling backends, and GUI hooks. |
-| `utils/` | Configuration, plotting helpers, and shared utilities. |
-| `AI/` | Default CNN weights for rICA/SSS slice detection and ROI segmentation. |
-| `addons/` | Optional plugins (e.g., GM/WM boundary ROIs). |
-| `src/img/` | Repository-owned images used exclusively in the README. |
-| `main.py` | Interactive runner used by the GUI/CLI. |
-| `enumerator.py` | Batch launcher that iterates over multiple datasets. |
-
-Key filenames (configured in `utils/parameters.py`) include the axial 2D reference image, DCE series, inversion recovery stack (WIPTI_xxxxx.nii), and optional 3D T1/T2/FLAIR reconstructions. Dedicated `control_*` entries allow alternative names for control acquisitions.
-
----
-
-## Installation
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/edtireli/p-brain.git
-   cd p-brain
-   ```
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **FreeSurfer 8.0+** *(required for default SynthSeg segmentation)*
-   ```bash
-   # macOS ARM64 example — download from https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall
-   # Install to /Applications/freesurfer/8.1.0
-   export FREESURFER_HOME=/Applications/freesurfer/8.1.0
-   source $FREESURFER_HOME/SetUpFreeSurfer.sh
-   ```
-   SynthSeg requires `mri_synthseg` on PATH. Alternative segmentation methods
-   (`--segmentation fastsurfer`, `recon-all`, or `pbrain`) do not require
-   FreeSurfer 8.
-
-4. *(Optional)* **Fetch addon submodules**
-   ```bash
-   git submodule update --init -- addons/<addon_name>
-   ```
-
-Version strings are derived automatically from `git describe --tags` inside `modules/__init__.py`, so releases always match the tag checked out locally.
-
----
-
-## Segmentation methods
-
-p-Brain supports multiple brain segmentation backends. The default is
-**SynthSeg** (FreeSurfer 8+). Select a method with `--segmentation <method>`:
-
-| Method | Requirements | Description |
-|--------|-------------|-------------|
-| `synthseg` *(default)* | FreeSurfer ≥ 8.0 | `mri_synthseg --parc --fast` — DKT cortical parcellation (~98 labels). T1 is automatically conformed via `mri_convert --conform` for robust Philips/vendor NIfTI handling. Uses 80% of available CPU threads. |
-| `fastsurfer` | [FastSurfer](https://github.com/deep-mi/FastSurfer) | Deep-learning cortical parcellation (~95 DKT labels). Requires a local FastSurfer install. |
-| `freesurfer` | FreeSurfer | Auto-selects `synthseg` (FS ≥ 8) or `recon-all` (FS < 8). |
-| `recon-all` | FreeSurfer | Classic `recon-all -all` pipeline (~6–12 hours). |
-| `pbrain` | None | Lightweight UNet3D trained on p-brain data (6-class tissue model). No FreeSurfer or FastSurfer needed. |
-
-### SynthSeg options
-- **Fast mode** *(default)*: single forward pass, ~2 min, good quality.
-- **Robust mode** (`--synthseg-robust`): 15 forward passes, ~10–15 min, highest accuracy.
-- T1 preprocessing: `mri_convert --conform` (256³, 1 mm iso, uchar) is always applied before SynthSeg to handle non-standard `scl_slope` values in Philips PAR/REC → NIfTI conversions.
-
----
-
-## Running the script
-### Interactive GUI/CLI
 ```bash
-python3 main.py
+git clone https://github.com/edtireli/p-brain.git
+cd p-brain
+pip install -r requirements.txt
+python -m pbrain check-deps          # verify deps; offers to pip-install missing
 ```
-1. A small GUI lists available dataset folders under the configured data directory. Select one and click **Accept**.
-2. The terminal menu appears and offers three modes:
-   - **Manual mode** – Step-by-step execution with GUI ROI drawing.
-   - **Automatic mode** – Fully automated pipeline (CNN inputs, SynthSeg segmentation, Patlak/Tofts/deconvolution, reporting).
-   - **Pseudo-automatic mode** – Hybrid workflow where the user can review intermediate ROIs before modeling.
 
-### Manual menu overview
-| Option | Purpose |
-|--------|---------|
-|0|View MRI series (axial/sagittal).|
-|1|Fit T1/M0 from the inversion recovery stack.|
-|2|Generate concentration time curves (CTCs) from user-drawn ROIs.|
-|3|Time-shift venous curves to arterial peaks (with amplitude rescaling if necessary).|
-|4|Create tissue-specific CTCs (GM, WM, cerebellum, boundary, etc.).|
-|5|Estimate BBB permeability (Patlak + extended Tofts) and residue-derived perfusion metrics.|
-|6|Add free-form analysis notes to the dataset.|
-|7|Invoke addons (boundary ROI extraction, screenshots, ...).|
-|9|Exit.|
+Required: `numpy, scipy, matplotlib, nibabel`. Optional (only if you select a
+plug-in that needs it): `dipy` (diffusion), `tensorflow` (CNN AIF), `torch`
+(`--device mps/cuda`), `pydicom` (DICOM input), `pyyaml` (YAML config),
+`dmri-amico` (NODDI).
 
-### Batch processing
-`enumerator.py` wraps `main.py` so whole cohorts can be processed unattended:
+---
+
+## Quick start
+
 ```bash
-python enumerator.py 1001 1002
-python enumerator.py --all
-python enumerator.py --controls 01 02
-python enumerator.py --controls --all
-```
-Use `--data-dir` or `P_BRAIN_DATA_DIR` to point to an alternate root. The script automatically toggles `PBRAIN_CONTROLS` when `--controls` is provided.
+# kinetic only
+python -m pbrain run \
+    --subject-dir /data/sub-01 \
+    --dce dce.nii.gz --ir ir.nii.gz --t1 t1.nii.gz \
+    --models patlak,tikhonov_bayes \
+    --aggregations voxelwise,parcel,region \
+    --device auto
 
-#### Diffusion/tractography overrides
-- `--diffusion-file <filename>` lets you select a specific diffusion volume for both FA metrics and tractography. Pass either an absolute path or a filename relative to each dataset’s `NIfTI/` folder (e.g. `--diffusion-file WIPDWI_highres.nii.gz`).
-- `--orientation {tensor,dti,csd,mt_csd,qball,gqi}` continues to override the tractography model. `csd` uses the legacy single-shell fit, whereas `mt_csd` (alias: `msmt`, `msmt_csd`) runs the multi-tissue MSMT-CSD solver when multi-shell diffusion data are available. In both modes, the pipeline inspects how many non-b0 diffusion directions are available and automatically picks the largest safe spherical-harmonic (SH) order; sparse datasets fall back to lower SH orders to avoid ill-conditioned fits.
-- `--tracks_dont_recompute` skips streamline regeneration whenever `--tracks` (or `--tracks_only`) is present. This is handy for combos like `--diffusion_only --tracks_only --tracks_dont_recompute`, which recompute FA metrics but simply refresh tract renders/montages from an existing `tractography.trk`.
-- `--tracks_force` ignores cached streamlines and forces a fresh tractography build, even if `tractography.trk` already exists.
-- Advanced users can still pin the SH order via `P_BRAIN_TRACK_CSD_SH_ORDER`. Setting it to `auto` (default) keeps the adaptive behavior; numeric values force a specific even order.
-- Tractography attempts now support parallel execution via `P_BRAIN_TRACK_WORKERS`. Set it to the number of CPUs you want to dedicate (defaults to 1 to preserve historical behavior). The default backend uses threads; set `P_BRAIN_TRACK_PARALLEL_BACKEND=process` if you prefer separate worker processes. Combine this with `OMP_NUM_THREADS=1` when running on multi-socket machines so BLAS-heavy steps do not oversubscribe the system. Progress bars remain accurate even when attempts finish out of order.
-- To keep the CLI `--orientation csd` flag but still force multi-tissue MSMT-CSD, export `P_BRAIN_TRACK_FORCE_MT_CSD=1`. When set, every CSD request runs through the MSMT solver and logs the override inside `Analysis/diffusion/tractography_debug.json`.
-
----
-
-#### Additional CLI flags (main.py)
-| Flag | Description |
-|------|-------------|
-| `--segmentation <method>` | Segmentation backend: `synthseg` (default), `fastsurfer`, `freesurfer`, `recon-all`, `pbrain`. |
-| `--synthseg-robust` | Use SynthSeg robust mode (15 passes) instead of fast (1 pass). |
-| `--tissue-roi <mode>` | Tissue ROI strategy: `automatic` (default, atlas-based), `manual` (interactive drawing), `voxel` (voxelwise-only, skips segmentation). |
-| `--overlay <vol>` | Background volume for manual ROI drawing: `auto`, `dce`, `t1`, `t2`, `flair`. |
-| `--single-bolus` | Single contrast injection (sets peaks=1, skips second-peak search). |
-| `--num-peaks <n>` | Number of bolus peaks expected (default: 2). |
-| `--dce-skip-volumes <n>` | Discard leading DCE time frames before analysis (e.g. blurry first frames). |
-| `--roi-method <method>` | Input-function ROI method: `ai` (default), `deterministic`, `file`, `manual`. |
-| `--roi-aif-mat <path>` | Import arterial ROI mask from a MATLAB `.mat` file. |
-| `--roi-sss-mat <path>` | Import SSS ROI mask from a MATLAB `.mat` file. |
-| `--roi-tscc-mat <path>` | Import TSCC input function from a MATLAB `.mat` file. |
-| `--compare-reference` | Write QA comparison montages against reference `.mat` outputs. |
-| `--compare-matlab` | Compare T1/M0 outputs against a MATLAB reference `.mat`. |
-| `--t1m0-only` | Run only T1/M0 fitting and exit. |
-| `--t1m0-force` | Delete cached T1/M0 outputs before re-fitting (with `--t1m0-only`). |
-| `--flip-angle <deg>` | Override flip angle (degrees) for CTC conversion. Default: auto from metadata. |
-| `--t1-fit <mode>` | T1/M0 fitting source: `auto`, `ir`, `vfa`, `none`. |
-| `--ctc-model turboflash` | Use TurboFLASH signal model for concentration conversion. |
-| `--init-ktrans-from-patlak` | Initialise extended Tofts Ktrans from Patlak Ki. |
-
-
----
-
-## Workflow details
-The automated workflow mirrors the structure shown below. Gray boxes are completely unsupervised; white boxes correspond to manual overrides when running in manual or pseudo-automatic mode.
-
-1. **Inputs** – Minimum requirements: 3D T1-weighted structural volume, inversion recovery series (for T1/M0), and a 4D DCE time series. PAR/REC conversion uses `dcm2niix` when available; a built-in `nibabel` fallback handles conversion when `dcm2niix` is not installed. Look-Locker inversion recovery series with dynamic TI values are also supported. Optional diffusion data enables automated FA reporting.
-2. **Preprocessing** – Optional PAR/REC conversion via `dcm2niix`, rigid alignment of structural volumes to DCE space, and consistency checks on slice timing.
-3. **T1/M0 fitting** – Trust-region reflective solver fits the inversion recovery signal model with configurable inversion delays and relaxivity (default r1 = 4 s-1 mM-1).
-4. **Input-function extraction** – CNN slice classifier + ROI segmentation detect rICA and SSS. Venous curves are cross-correlated and rescaled to the arterial peak, compensating for transit delays and dispersion.
-5. **Tissue ROIs** – SynthSeg-based parcellations (FreeSurfer 8+, with `--parc` for full DKT cortical labels) define cortical GM, subcortical GM, WM, cerebellar lobes, brainstem, and GM/WM boundary masks. FastSurfer, recon-all, and the lightweight `pbrain` UNet are also available via `--segmentation`. Affine transforms propagate labels to DCE geometry.
-6. **Signal-to-concentration conversion** – Spoiled-GRE equation transforms signal intensity into gadolinium concentration using fitted T1, M0, flip angle, and TR. Guards prevent invalid logarithms or unstable tails.
-7. **Modeling**  
-   - **Patlak graphical analysis** for Ki and vp with user-configurable linear windows and residual-based uncertainty estimates.
-   - **Extended Tofts model** with Levenberg–Marquardt fitting for Ktrans, ve, vp, and kep.
-   - **Model-free deconvolution** (Tikhonov-regularized) providing CBF, MTT, and CTH from the residue function. An experimental gamma-variate estimator is also exposed for benchmarking.
-8. **Outputs** – Quantitative NIfTI maps, PNG mosaics, JSON summaries, CSV/TSV tables, cohort boxplots, atlas projections, and optional reference comparisons.
-9. **Quality assurance** – Automated checks for segmentation failures, mask overlaps, motion spikes, atypical AIFs, fit residuals, and log integrity. All warnings are logged alongside the outputs.
-
----
-
-## Outputs and deliverables
-Every automatic run produces the following without additional scripting:
-
-- **Voxel-wise maps** – Ki, vp, CBF, CTH, and MTT stored as NIfTI volumes plus pre-rendered mosaics.
-- **Parcellated summaries** – DKT atlas statistics (from SynthSeg or FastSurfer parcellation) for each parameter, exported as tables and overlay images.
-- **Slice-wise distributions** – Boxplots showing superior–inferior trends for Ki, vp, and perfusion metrics; useful for QC and cohort comparisons.
-- **Whole-brain medians** – GM, WM, cerebellar, and boundary medians saved in JSON for rapid reporting or EHR integration.
-- **Cohort projections** – When multiple datasets exist, the script averages parcel values across subjects and projects them onto a reference segmentation to create cohort fingerprints.
-- **Reference comparisons** – Optional automated figures contrasting _p_-Brain outputs with the Perffit2 implementation (GM/WM boxplots and subject-wise scatter plots).
-- **Processing transparency** – Composite figures stacking segmentations, input functions, tissue curves, Patlak fits, and resulting parameter maps, ensuring every automated decision is reviewable.
-
-All generated assets reside under the selected dataset folder inside `Analysis/`, `Images/AI_patlak`, `Images/AI_tikhonov`, and companion JSON/CSV directories.
-
----
-
-## Representative results gallery
-The figures below summarize what a fully automatic run produces for a technically uniform cohort of 97 DCE-MRI scans from 58 participants with mild traumatic brain injury (mTBI) but no macroscopic lesions on structural MRI. Each dataset was processed with the same automated sequence of segmentation, vascular input extraction, concentration conversion, and kinetic modeling (Patlak + extended Tofts + deconvolution). The resulting deliverables span voxelwise maps, parcellated summaries, slice-wise distributions, cohort fingerprints, and compact QC dashboards. The PNGs stored under `src/img/` are the actual exports from the pipeline.
-
-### Voxelwise maps
-Voxelwise maps quantify physiological parameters at native spatial resolution so you can examine localized BBB leakage, perfusion, and vascular volume without aggregating over parcels. These maps constitute the foundation for every downstream summary in the pipeline.
-
-- **BBB influx (Ki)** – Patlak-derived unidirectional transfer constant that reflects blood–brain barrier permeability.
-
-  ![Voxelwise Ki map](src/img/ki_voxel_montage_patlak.png)
-
-- **Cerebral blood flow (CBF)** – Model-free residue deconvolution highlights expected perfusion contrast between cortical/subcortical gray matter and deep white matter and resolves major vessels such as the circle of Willis.
-
-  ![Voxelwise CBF map](src/img/cbf_montage.png)
-
-- **Plasma volume (vp)** – Patlak intercept emphasizes the intravascular compartment along cortical ribbons and venous structures.
-
-  ![Voxelwise vp map](src/img/vp_per_voxel_patlak.png)
-
-- **Capillary transit-time heterogeneity (CTH)** – Derived from the normalized outflow $h(t)=-r'(t)/\int(-r')$, revealing spatial mottling that reflects variability in capillary passage times.
-
-  ![Voxelwise CTH map](src/img/cth_montage.png)
-
-- **Mean transit time (MTT)** – First-moment summary of the residue function that complements CTH by capturing overall transit duration.
-
-  ![Voxelwise MTT map](src/img/mtt_montage.png)
-
-### Regional and parcellated organization
-SynthSeg (or FastSurfer) anatomical labels propagated to DCE space allow every quantitative map to be summarized into parcel medians for rapid comparisons across lobes, networks, or subject groups. These exports double as CSV/TSV tables for statistics packages, see e.g. the parcelwise CBF map. 
-
-- ![Parcel-level CBF](src/img/cbf_parcel_montage_tikhonov.png)
-
-### Cohort distributions and QC
-Slice-wise boxplots summarize how each metric evolves along the superior–inferior axis, preserving the expected gray/white hierarchy while flagging outliers or motion-contaminated slabs.
-
-### Cohort-level atlas projection
-Aggregating parcel statistics across subjects produces cohort fingerprints that can be projected back onto a reference segmentation for quick visual baselines.
-
-### End-to-end transparency
-Composite panels document the entire automation chain—segmentation, vascular input functions, tissue curves, Patlak fits, and resulting parameter maps—so every decision remains auditable.
-
-<img width="3560" height="5721" alt="AI_Tissue_slice_5_segmented_median (1) (6)" src="https://github.com/user-attachments/assets/f6458d56-7f39-4e2e-a3e0-9b3b16ddef67" />
-
-### Whole-brain medians
-For dashboards or EHR-style summaries, the pipeline reports tissue-specific medians that retain GM>WM ordering while condensing each scan to a few numbers.
-
-#### Summary of findings
-The automated pipeline delivers physiologically consistent voxelwise maps, regional summaries, cohort-level projections, and QC figures without user interaction. Exporting these assets alongside transparent diagnostics provides a repeatable baseline for longitudinal monitoring, multi-site harmonization, and future research extensions.
-
----
-
-
-## Automation features
-### Neural-network models
-Four CNNs orchestrate input-function detection:
-- Slice classifier (rICA)
-- ROI segmentation (rICA)
-- Slice classifier (SSS)
-- ROI segmentation (SSS)
-
-Default paths live in `utils/settings.py` under `AI_MODEL_PATHS`. Override via environment variables:
-```
-SLICE_CLASSIFIER_RICA_MODEL
-RICA_ROI_MODEL
-SLICE_CLASSIFIER_SS_MODEL
-SS_ROI_MODEL
-```
-Pretrained weights are hosted on [Zenodo](https://doi.org/10.5281/zenodo.15655347); download them into the `AI/` directory.
-
-### Kinetic model selection
-Set `P_BRAIN_MODEL` (or edit `KINETIC_MODEL` in `utils/settings.py`) to control which models run:
-- `patlak`
-- `two_compartment` (extended Tofts + deconvolution)
-- `both` (default)
-
-Output files are suffixed with `_patlak` or `_tikhonov` and written to `Images/AI_patlak` and `Images/AI_tikhonov` respectively.
-
-### T1 recovery model
-Choose between inversion recovery (default) and saturation recovery by setting `P_BRAIN_T1_RECOVERY_MODEL` to `saturation`.
-
-### Regularisation strength
-Adjust the Tikhonov parameter via `--lambda`, `P_BRAIN_LAMBDA`, or the corresponding entry inside `utils/settings.py`. The default value is 5.0.
-
-### Global Ki slice exclusion
-Skip inferior/superior slices when summarizing whole-brain Ki values by setting:
-```
-P_BRAIN_GLOBAL_KI_SKIP_BOTTOM
-P_BRAIN_GLOBAL_KI_SKIP_TOP
-```
-Both default to 2.
-
-### Custom datasets and jump-fix
-- Drop an `apply_jumpfix.json` next to a dataset to enable automatic correction of sudden signal jumps.  
-- Provide your own neural-network weights by placing them inside `AI/` and updating `utils/settings.py`.
-
----
-
-## Configuration and environment variables
-Most behaviour is controlled through `utils/settings.py` and `utils/parameters.py`. You can override almost everything per-run via environment variables.
-
-Notes:
-- Booleans generally accept `1/0`, `true/false`, `yes/no` (case-insensitive).
-- Paths can be absolute or relative to the repo / dataset directory, depending on the setting.
-
-### Core paths and runtime
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_DATA_DIR` | `data/` | Root directory scanned by the GUI/CLI and by `enumerator.py`/`roi_only.py`. |
-| `PBRAIN_CONTROLS` | `0` | Treat datasets as controls during batch runs (also toggled by `enumerator.py --controls`). |
-| `P_BRAIN_CORES` | `4` | CPU cores used for multiprocessing where enabled. |
-| `P_BRAIN_MPL_BACKEND` | *(auto)* | Matplotlib backend override (also respects `MPLBACKEND`). |
-| `PBRAIN_DECOMPRESS_NIFTI_GZ` | *(unset)* | If set, prefer transparently decompressing `.nii.gz` inputs for tooling that can't read gzip. |
-
-### AI model checkpoint overrides (input-function detection)
-| Env var | Description |
-|---|---|
-| `SLICE_CLASSIFIER_RICA_MODEL` | Path to rICA slice classifier weights. |
-| `RICA_ROI_MODEL` | Path to rICA ROI segmentation weights. |
-| `SLICE_CLASSIFIER_SS_MODEL` | Path to SSS slice classifier weights. |
-| `SS_ROI_MODEL` | Path to SSS ROI segmentation weights. |
-
-### Model selection and modelling knobs
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_MODEL` | `both` | `patlak`, `two_compartment`, or `both`. |
-| `P_BRAIN_LAMBDA` | `0.5` | Tikhonov regularisation strength for deconvolution/two-compartment modelling. |
-| `P_BRAIN_PATLAK_WINDOW_START_FRACTION` | *(code default)* | Controls where the Patlak linear window starts (fraction of the acquisition). |
-| `P_BRAIN_PATLAK_MIN_R2` | *(code default)* | Minimum $R^2$ threshold for accepting Patlak fits. |
-| `P_BRAIN_NUMBER_OF_PEAKS` | *(code default)* | Peak-detection control used by some input-function utilities. |
-| `P_BRAIN_CTH_MTT_METHOD` | `tikhonov` | Residue-derived CTH/MTT strategy. |
-| `P_BRAIN_CTH_MTT_GAMMA_VOXELWISE` | `0` | If enabled, writes additional voxelwise gamma-derived maps. |
-| `P_BRAIN_GLOBAL_KI_SKIP_BOTTOM` | `2` | Inferior slices skipped for whole-brain Ki medians. |
-| `P_BRAIN_GLOBAL_KI_SKIP_TOP` | `2` | Superior slices skipped for whole-brain Ki medians. |
-
-### Signal-to-concentration conversion (CTC)
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_CTC_MODEL` | `saturation` | `saturation` (legacy closed-form) or `turboflash` (numerical inversion). |
-| `P_BRAIN_TURBO_NPH` | `1` | TurboFLASH ky=0 line index (1-based), used when `P_BRAIN_CTC_MODEL=turboflash`. |
-| `P_BRAIN_FLIP_ANGLE` | `auto` | Flip angle in degrees (number) or `auto` to use metadata. |
-| `P_BRAIN_T1_RECOVERY_MODEL` | `inversion` | `inversion` or `saturation` for T1/M0 fitting. |
-| `P_BRAIN_T1_FIT` | `auto` | `auto`, `ir`, `vfa`, or `none` for T1/M0 fitting inputs. |
-| `P_BRAIN_VFA_GLOB` | *(unset)* | Comma-separated VFA discovery glob(s) when `P_BRAIN_T1_FIT=vfa` or `auto` falls back. |
-| `P_BRAIN_HEMATOCRIT` | `0.42` | Haematocrit used in plasma/tissue conversions. |
-| `P_BRAIN_TISSUE_DENSITY` | `1.04` | Tissue density used for residue-derived perfusion metrics. |
-| `P_BRAIN_CTC_BATCH_VOXELS` | `20000` | Batch size for voxelwise CTC exports/debug in some routines. |
-| `P_BRAIN_WRITE_BRAIN_CTC_NIFTI` | `0` | If enabled, writes a whole-brain CTC 4D NIfTI (debug/inspection). |
-| `P_BRAIN_BRAIN_CTC_NIFTI_PATH` | *(unset)* | Optional explicit output path for the brain CTC NIfTI. |
-
-### Input-function choice and alignment
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_AIF_ARTERY` | `RICA` | Reference artery for arterial curves: `RICA` or `LICA`. |
-| `P_BRAIN_AIF_USE_SSS` | `1` | If enabled, use SSS-derived time-shifted/rescaled output curve (TSCC) for modelling. |
-| `P_BRAIN_TSCC_RESCALE` | `1` | If enabled, apply amplitude rescaling when generating TSCC (SSS aligned to artery). Set `0` for time-shift only. |
-| `P_BRAIN_TSCC_RESCALE_METHOD` | `peak` | Rescaling method: `peak` (peak-height; legacy upscaling only) or `auc` (area under curve / “total volume”; legacy upscaling only). |
-| `P_BRAIN_TSCC_WRITE_DEMO_PLOT` | `1` | If enabled, writes `Images/Time Shifted Concentration Curves/tscc_shift_rescale_demo.png`. |
-| `P_BRAIN_INPUT_FUNCTION` | *(legacy)* | Legacy alias: `SSS` forces TSCC output; `RICA`/`LICA` forces pure arterial output. |
-| `P_BRAIN_PLASMA_AIF` | `0` | If enabled, uses plasma-derived AIF conventions. |
-| `P_BRAIN_ALIGN_AIF` | `0` | If enabled, performs voxelwise delay alignment prior to deconvolution. |
-| `P_BRAIN_ALIGN_AIF_MAX_SHIFT` | `4.0` | Maximum allowed AIF shift (seconds) for delay alignment. |
-
-### Vascular ROI: curve extraction
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_VASCULAR_ROI_CURVE_METHOD` | `max` | `max` uses the single brightest voxel (max over time) within the ROI mask; `mean` averages over ROI voxels (more stable, can reduce peak amplitude). |
-| `P_BRAIN_VASCULAR_ROI_ADAPTIVE_MAX` | `1` | If enabled (and `P_BRAIN_VASCULAR_ROI_CURVE_METHOD=max`), re-selects the brightest ROI voxel independently at each time frame (“adaptive-max”). |
-
-## GUI applet: environment settings
-
-For quick, reproducible configuration without manually typing env vars, you can run a small Python UI that lists common `P_BRAIN_*` settings, lets you toggle/edit them, and applies them with one click.
-
-```zsh
-cd /Users/edt/Desktop/p-brain
-python pbrain_env_gui.py
+# kinetic + diffusion in one command
+python -m pbrain run \
+    --subject-dir /data/sub-01 \
+    --dce dce.nii.gz --ir ir.nii.gz --t1 t1.nii.gz --dwi dwi.nii.gz \
+    --models patlak,tikhonov_bayes \
+    --aggregations region,parcel \
+    --device auto
 ```
 
-**Apply** writes a `.env` file (default: `.pbrain.env` next to `main.py`) and updates the GUI process environment. To apply the same settings in your current shell session:
+When `--dwi` is given and `--diffusion` is omitted, a shell-aware default
+bundle is chosen automatically (single-shell → `dti`; multi-shell → `dti,
+dki, dki_micro, csd, fwdti, rsi`). Override with `--diffusion dti,csd` or
+`--diffusion all`, disable with `--diffusion ""`.
 
-```zsh
-source .pbrain.env
-```
+Runs are **resumable**: a stage whose output already exists is skipped, so
+re-running the same command (after a crash, or to add a model) continues in
+seconds. Pass `--force` to recompute everything. Every output manifest is
+stamped with the `pbrain` version + the resolved plug-in selection and
+options (provenance). `--quiet` / `--verbose` / `--log-file <path>` control
+logging.
 
-The applet can also launch `main.py` directly using the selected settings.
+**Run a whole cohort** — parallel, error-isolated, resumable:
 
-### ROI extraction: method selection
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_METHOD` | `ai` | `ai` (CNN-driven) or `deterministic` (PCA/connected-components). `geometry` is accepted as a legacy alias for `deterministic`. |
-
-### ROI extraction: shared knobs (AI + deterministic)
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_DCE_BASELINE_FRAMES` | *(code default)* | Baseline frames used for curve normalization in ROI routines. |
-| `P_BRAIN_ROI_NORMALIZE_CURVES` | `1` | If enabled, normalizes curves for PCA/diagnostic plots by baseline-subtraction + baseline-to-zero + robust scaling. |
-| `P_BRAIN_ROI_DILATE_PIXELS` | `2` | Final ROI dilation in pixels (applies to saved NIfTI masks). |
-| `P_BRAIN_ROI_SKULLSTRIP_DILATE` | `2` | Dilation iterations used by skullstrip-related masks in some ROI utilities. |
-| `P_BRAIN_ROI_SCORE_SPACE` | `signal` | Score space used by deterministic candidate scoring (`signal` or `ctc`, depending on module). |
-| `P_BRAIN_ROI_MID_Z_FRAC` | `0.30` | Fractional z-slab used by some ROI sampling/debug routines (middle of the volume). |
-| `P_BRAIN_ROI_AP_FLIP` | `0` | If enabled, flips anterior/posterior heuristics (useful for flipped datasets). |
-| `P_BRAIN_ROI_AP_GAMMA` | `1.5` | Gamma used to emphasize anterior/posterior weighting in some heuristics. |
-| `P_BRAIN_ROI_WRITE_SUMMARY_PLOTS` | `1` | If enabled, writes ROI QC montages and debug figures. |
-| `P_BRAIN_ROI_SUMMARY_FONTSIZE` | `18` | Font size for ROI summary figures/montages. |
-
-### Deterministic ROI: vessel candidate selection (PCA/peak-based)
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_VESSEL_PCT` | `99.0` | Start percentile for vascular candidate selection. |
-| `P_BRAIN_ROI_VESSEL_MIN_PCT` | `95.0` | Minimum percentile allowed when relaxing thresholds. |
-| `P_BRAIN_ROI_VESSEL_MIN_VOX` | `1200` | Minimum voxel count target for vascular candidates. |
-| `P_BRAIN_ROI_AV_SEED_PCT` | `99.5` | Seed percentile for artery/vein seed selection. |
-| `P_BRAIN_ROI_AV_SEED_MIN_PCT` | `95.0` | Minimum seed percentile when relaxing. |
-| `P_BRAIN_ROI_AV_SEED_MIN_VOX` | `200` | Minimum voxel count for seed masks. |
-| `P_BRAIN_ROI_AV_MIN_SEP_FRAMES` | `2` | Minimum separation (frames) between artery/vein timing peaks. |
-| `P_BRAIN_ROI_AV_TTP_LOGISTIC_SCALE` | `2.0` | Logistic scale used for artery/vein timing split weighting. |
-
-### Deterministic ROI: PCA debug and clustering
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_USE_PCA` | `1` | If enabled, uses PCA-derived curve-family logic for artery/vein separation. |
-| `P_BRAIN_ROI_DEBUG_PCA` | `1` | If enabled, writes PCA debug figures/masks. |
-| `P_BRAIN_ROI_DEBUG_PCA_MIDZ_ONLY` | `1` | If enabled, restricts PCA sampling to a middle z-slab. |
-| `P_BRAIN_ROI_PCA_MIN_VOXELS` | `1500` | Minimum vascular voxels required to run PCA debug. |
-| `P_BRAIN_ROI_PCA_MAX_VOXELS` | `20000` | Maximum voxels sampled for PCA debug. |
-| `P_BRAIN_ROI_PCA_COMPONENTS` | `3` | Number of PCA components used. |
-| `P_BRAIN_ROI_PCA_N_CLUSTERS` | `6` | k-means cluster count in PCA score space. |
-| `P_BRAIN_ROI_PCA_SEED` | `0` | Seed for k-means initialization. |
-
-PCA debug outputs are written under `Analysis/ROI Debug/` and include:
-- `pca_curve_families.png`
-- `pca_space_clusters.png` (PC1 vs PC2, dpi=300)
-- `pca_family_mask_cluster_*.nii.gz`, `pca_family_mask_artery.nii.gz`, `pca_family_mask_vein.nii.gz`
-
-### Deterministic ROI: ICA constraints and connected-components
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_ICA_COMPONENT_PCT` | `99.5` | Start percentile for ICA component candidate thresholding. |
-| `P_BRAIN_ROI_ICA_COMPONENT_MIN_PCT` | `95.0` | Minimum percentile when relaxing ICA thresholding. |
-| `P_BRAIN_ROI_ICA_COMPONENT_PCT_STEP` | `0.5` | Percentile decrement step when relaxing ICA thresholds. |
-| `P_BRAIN_ROI_ICA_MIN_AREA` | `8` | Minimum 2D component area (pixels) to consider per slice. |
-| `P_BRAIN_ROI_ICA_MAX_AREA` | `800` | Maximum 2D component area (pixels) to consider per slice. |
-| `P_BRAIN_ROI_ICA_MAX_COMPONENTS_PER_SLICE` | `3` | Max candidate components evaluated per slice. |
-| `P_BRAIN_ROI_ICA_MAX_BOUNDARY_CONTACT` | `0.20` | Reject components that contact the brain boundary too heavily. |
-| `P_BRAIN_ROI_ICA_EDGE_MARGIN` | `4` | Ignore components too close to the image edge. |
-| `P_BRAIN_ROI_ICA_MIN_LR_FROM_MIDLINE` | `0` | Optional minimum left/right distance from midline (in pixels). |
-| `P_BRAIN_ROI_ICA_MIDLINE_EXCLUDE_BAND` | *(unset)* | Optional midline exclusion band (pixels) to prevent midline leakage. |
-| `P_BRAIN_ROI_ICA_MIN_DIST_INNER` | `3` | Minimum distance inside the brain mask for ICA candidates. |
-| `P_BRAIN_ROI_ICA_MIN_ZSPAN` | `1` | Minimum z-span (slices) for ICA 3D components when enabled. |
-| `P_BRAIN_ROI_ICA_DILATE3D` | `1` | 3D dilation iterations applied to ICA mask after selection (if enabled). |
-| `P_BRAIN_ROI_Z_ALIGN_MIN_ICA` | `0.0` | Minimum z-orientation score for keeping ICA components in 3D mode. |
-
-ICA adjacent-slice augmentation:
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_ICA_ADD_ADJACENT` | `1` | If enabled, adds ICA voxels in slices above the lowest confirmed ICA slice when arterial evidence exists. |
-| `P_BRAIN_ROI_ICA_ADJACENT_SLICES` | *(unset)* | Explicit number of slices to extend upward (overrides fraction). |
-| `P_BRAIN_ROI_ICA_ADJACENT_FRAC` | `0.2` | Fraction of volume z-slices used when `..._SLICES` is unset (uses `ceil(frac * zdim)`). |
-| `P_BRAIN_ROI_ICA_ADJ_SCORE_PCT` | `99.5` | Percentile threshold used for arterial-evidence fallback when extending. |
-| `P_BRAIN_ROI_DEBUG_ICA_ADJ` | `0` | Debug-print which adjacent slices were added. |
-
-### Deterministic ROI: SSS constraints
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_SSS_MAX_AREA` | `220` | Maximum 2D component area (pixels) allowed for SSS. |
-| `P_BRAIN_SSS_MAX_DIST_INNER` | `5.0` | Max distance-from-brain-interior used in SSS scoring. |
-| `P_BRAIN_SSS_MAX_BOUNDARY_CONTACT` | `0.55` | Maximum boundary contact fraction for SSS candidates. |
-| `P_BRAIN_SSS_MIN_BOUNDARY_CONTACT` | `0.00` | Optional minimum boundary contact fraction for SSS candidates. |
-| `P_BRAIN_SSS_MAX_LR_SPAN` | `18` | Maximum left/right span (pixels) for SSS candidates. |
-| `P_BRAIN_SSS_MAX_ELONG` | `6.0` | Maximum elongation allowed for SSS candidates. |
-| `P_BRAIN_SSS_ELONG_PEN` | `1.0` | Penalty scale applied when SSS candidates are overly elongated. |
-| `P_BRAIN_SSS_POSTERIOR_BONUS` | `0.5` | Posterior bonus weight for SSS scoring. |
-| `P_BRAIN_ROI_SSS_MIN_ZSPAN` | `2` | Minimum z-span (slices) for SSS 3D components. |
-| `P_BRAIN_ROI_SSS_MIDLINE_BAND` | *(code default)* | Midline band used to constrain SSS. |
-| `P_BRAIN_ROI_Z_ALIGN_MIN_SSS` | *(code default)* | Minimum z-orientation score for keeping SSS components in 3D mode. |
-
-### Deterministic ROI: basilar artery constraints (optional)
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_BASILAR_PCT` | `99.0` | Start percentile for basilar candidate selection. |
-| `P_BRAIN_ROI_BASILAR_MIN_PCT` | `97.0` | Minimum percentile when relaxing basilar thresholds. |
-| `P_BRAIN_ROI_BASILAR_PCT_STEP` | `0.5` | Percentile decrement step for basilar selection. |
-| `P_BRAIN_ROI_BASILAR_MIN_AREA` | `6` | Minimum basilar component area (pixels). |
-| `P_BRAIN_ROI_BASILAR_MAX_AREA` | `400` | Maximum basilar component area (pixels). |
-| `P_BRAIN_ROI_BASILAR_MIDLINE_BAND` | *(auto)* | Midline band used to constrain basilar candidates. |
-| `P_BRAIN_ROI_BASILAR_SLICES` | `1` | Number of slices considered for basilar selection. |
-| `P_BRAIN_ROI_BASILAR_MIN_ZSPAN` | `1` | Minimum z-span (slices) for basilar 3D components. |
-| `P_BRAIN_ROI_BASILAR_MIN_DIST_INNER` | `2` | Minimum distance inside brain mask for basilar candidates. |
-| `P_BRAIN_ROI_BASILAR_MAX_BOUNDARY_CONTACT` | `0.50` | Maximum boundary contact fraction for basilar candidates. |
-| `P_BRAIN_ROI_Z_ALIGN_MIN_BASILAR` | *(inherits)* | z-orientation score threshold for basilar selection. |
-
-### Deterministic ROI: 3D component selection and debugging
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_ROI_USE_3D_COMPONENTS` | `1` | If enabled, selects ROIs via 3D connected-components rather than slice-by-slice only. |
-| `P_BRAIN_ROI_KEEP_Z_ORIENTED` | `1` | If enabled, prefers components aligned along the z-axis. |
-| `P_BRAIN_ROI_Z_ALIGN_MIN` | `0.55` | Minimum z-orientation score for keeping 3D components (global default). |
-| `P_BRAIN_ROI_COMP3D_MIN_VOX` | `40` | Minimum voxels for considering a 3D component. |
-| `P_BRAIN_ROI_DEBUG` | `0` | If enabled, writes extra ROI debug NIfTIs/figures. |
-| `P_BRAIN_ROI_DEBUG_STRICT` | `0` | If enabled, raises more aggressively on ROI debug failures. |
-| `P_BRAIN_ROI_DEBUG_3D` | `0` | If enabled, writes 3D-component debug exports. |
-| `P_BRAIN_ROI_DEBUG_MONTAGE_MAX_SLICES` | `12` | Max slices shown in ROI debug montages. |
-| `P_BRAIN_DEBUG_VEIN_MIN_DIST_INNER` | `2.0` | Debug-only vein selection constraint used in some ROI debug plots. |
-
-### Legacy (deprecated) geometry ROI knobs
-These variables remain for backward compatibility with older geometry-based ROI behaviour and/or older debugging paths:
-| Env var | Description |
-|---|---|
-| `P_BRAIN_ROI_RICA_SLICES`, `P_BRAIN_ROI_RICA_Z_RANGE`, `P_BRAIN_ROI_RICA_RADIUS` | Legacy geometry ROI parameters for rICA. |
-| `P_BRAIN_ROI_LICA_SLICES`, `P_BRAIN_ROI_LICA_Z_RANGE`, `P_BRAIN_ROI_LICA_RADIUS` | Legacy geometry ROI parameters for lICA. |
-| `P_BRAIN_ROI_SSS_SLICES`, `P_BRAIN_ROI_SSS_Z_RANGE`, `P_BRAIN_ROI_SSS_RADIUS` | Legacy geometry ROI parameters for SSS. |
-
-### Diffusion / tractography
-Diffusion file priority (which NIfTI is selected when multiple are present):
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_DIFFUSION_PRIORITY` | `dti,dwi_reg,dwi_iso,dwi` | Comma-separated file-group preference order (see `utils/parameters.py`). |
-
-Per-group diffusion model overrides:
-| Env var | Default | Description |
-|---|---:|---|
-| `P_BRAIN_DIFFUSION_MODEL_DTI` | `DTI` | Model for the `dti` group (`DTI` or `CSD`). |
-| `P_BRAIN_DIFFUSION_MODEL_DWI` | `CSD` | Model for the `dwi` group (`DTI` or `CSD`). |
-| `P_BRAIN_DIFFUSION_MODEL_DWI_REG` | `CSD` | Model for the `dwi_reg` group (`DTI` or `CSD`). |
-| `P_BRAIN_DIFFUSION_MODEL_DWI_ISO` | `CSD` | Model for the `dwi_iso` group (`DTI` or `CSD`). |
-
-Tractography tuning (advanced):
-| Env var | Description |
-|---|---|
-| `P_BRAIN_ENABLE_FURY`, `P_BRAIN_DISABLE_FURY` | Force-enable/disable FURY rendering backend if available. |
-| `P_BRAIN_DEBUG_TRACKS` | Enables additional tractography debug logs/exports. |
-| `P_BRAIN_TRACK_FORCE_MT_CSD` | Forces MSMT-CSD solver even when `--orientation csd` is used. |
-| `P_BRAIN_TRACK_CSD_SH_ORDER`, `P_BRAIN_TRACK_QBALL_SH_ORDER` | Spherical-harmonic order controls (often `auto`). |
-| `P_BRAIN_TRACK_WORKERS`, `P_BRAIN_TRACK_PARALLEL_BACKEND` | Parallelism controls for tractography attempts. |
-| `P_BRAIN_TRACK_*` | Many additional tuning knobs exist (lengths, thresholds, seeding, ACT/PFT toggles, animation export). See `modules/tractography.py` for details. |
-
-### Figure export styling (PNG/tiles)
-These mostly affect the mosaic/tile helpers under `utils/plotting.py`:
-| Env var | Description |
-|---|---|
-| `PBRAIN_PNG_DPI` | Default dpi for PNG exports. |
-| `PBRAIN_TURBO` | Use a high-contrast colormap preset where supported. |
-| `PBRAIN_NO_COLOR` | Disable colored colormaps (grayscale outputs). |
-| `PBRAIN_OUTER_MARGIN_PX`, `PBRAIN_TILE_INNER_MARGIN_PX`, `PBRAIN_TILE_GAP_PX` | Layout spacing for tile/mosaic figures. |
-| `PBRAIN_TRANSPARENT_GUTTERS`, `PBRAIN_TRANSPARENT_COLORBAR_BG` | Transparency controls for gutters/colorbar backgrounds. |
-| `PBRAIN_COLORBAR_UNITS_POSITION`, `PBRAIN_COLORBAR_UNITS_GAP_PX` | Controls where unit labels are placed on colorbars. |
-| `PBRAIN_COLORBAR_TICK_FONT_SIZE`, `PBRAIN_COLORBAR_UNITS_FONT_SIZE` | Font sizes for colorbar ticks/units. |
-
-Edit the Python files directly for permanent defaults or export environment variables for per-run overrides.
-
----
-
-## Addons
-Addons extend the manual workflow via menu option 7:
-- **Boundary addon** – Generates GM/WM boundary ROIs (via `fsl_anat`) and associated CTCs.
-- **Screenshot addon** – Navigate through axial slices and export presentation-quality PNG images.
-
-Initialize individual addons with:
 ```bash
-git submodule update --init -- addons/<addon_name>
+python -m pbrain run-cohort \
+    --config study.toml \
+    --subjects-glob '/data/sub-*' \
+    --workers 8
+```
+
+Each subject runs as a `pbrain run` would; a `{subject}` token in any config
+input path is substituted with the subject's directory name. Failures are
+isolated per subject and summarised at the end (ok / failed).
+
+**See what's installed** — every plug-in, its contract, its diagnostic:
+
+```bash
+python -m pbrain list             # overview of all plug-points
+python -m pbrain list models      # outputs, units, primary map, diagnostic source
+python -m pbrain list diffusion
+```
+
+**Override any plug-in option** with `--opt <plug-point>.<plugin>.<key>=<value>`:
+
+```bash
+--opt models.tikhonov.lambda_selection=gcv
+--opt models.tikhonov_bayes.uncertainty_samples=400
+--opt models.patlak.regression=huber
+--opt aif.cnn_sss_shifted.n_voxels=64
 ```
 
 ---
 
-## Recent changes (2025–2026 highlights)
+## Config files
 
-- **SynthSeg default segmentation** — SynthSeg (`mri_synthseg --parc --fast`) replaces FastSurfer as the default. Automatic `mri_convert --conform` preprocessing handles Philips NIfTI `scl_slope` issues. Full DKT cortical parcellation (98 labels). `--synthseg-robust` flag for 15-pass mode. Multi-threaded (80% CPU cores).
-- **FreeSurfer 8.1.0 support** — Native ARM64 (Apple Silicon) binary, no Rosetta needed.
-- **pbrain segmentation** — Lightweight UNet3D tissue model (6 classes) that runs without FreeSurfer or FastSurfer (`--segmentation pbrain`).
-- **FrameTimesStart fix** — DCE time-step resolution now checks `FrameTimesStart` before `RepetitionTime`, preventing nibabel PAR/REC from using the excitation TR (~4 ms) instead of the dynamic interval (~1.2 s).
-- **Tikhonov performance** — Voxelwise Tikhonov vectorised with batch residue metrics. Solver caching eliminates ~150 redundant Cholesky decompositions per run.
-- **nibabel PAR/REC fallback** — Full PAR/REC → NIfTI conversion without `dcm2niix` (magnitude-only extraction, LAS+ orientation matching).
-- **Philips intensity scaling** — nibabel converter applies floating-point rescale slope/intercept to match `dcm2niix` output values.
-- **Look-Locker IR support** — T1 fitting handles Look-Locker inversion recovery series with dynamic TI values.
-- **Manual ROI mode** — `--tissue-roi manual` lets users draw tissue ROIs interactively; `--overlay` selects the background volume.
-- **Voxelwise-only mode** — `--tissue-roi voxel` skips segmentation entirely for fast voxelwise maps.
-- **MATLAB `.mat` import** — `--roi-aif-mat`, `--roi-sss-mat`, `--roi-tscc-mat` load pre-existing ROI masks and input functions from MATLAB.
-- **Single-bolus support** — `--single-bolus` / `--num-peaks` for single-injection protocols.
-- **DCE frame trimming** — `--dce-skip-volumes` discards leading artefact frames.
-- **Flexible PK model combos** — `+` syntax for model selection (e.g. `patlak+tofts`).
-- **Reference QA comparisons** — `--compare-reference` and `--compare-matlab` write side-by-side montages against MATLAB/Perffit2 outputs.
-- **T1/M0 isolated runs** — `--t1m0-only` / `--t1m0-force` for standalone fitting.
-- **Signal jump correction** — Drop `apply_jumpfix.json` next to a dataset to auto-correct sudden signal jumps.
-- **macOS `._ file` cleanup** — Automatic removal of macOS `._` resource fork files that stall FreeSurfer `rm` calls on external drives.
+A versionable, shareable alternative to a long command line. `pbrain run
+--config study.toml` (or `.yaml`); **CLI flags override the file**.
+
+```toml
+subject_dir = "/data/sub-01"
+
+[inputs]
+dce = "dce.nii.gz"
+ir  = "ir.nii.gz"
+t1  = "t1.nii.gz"
+dwi = "dwi.nii.gz"
+
+[pipeline]
+t1m0         = "preloaded"
+aif          = "cnn_sss_shifted"
+tissue_roi   = "preloaded"
+models       = ["patlak", "tikhonov_bayes"]
+diffusion    = "default"
+aggregations = ["region", "parcel"]
+path_scheme  = "bids_like"
+device       = "auto"
+
+[acquisition]
+flip_angle_deg = 8.0
+tr_s           = 0.01118
+
+# Per-plug-in options — same keys as --opt
+[options]
+"models.tikhonov_bayes.uncertainty_samples" = 200
+"t1_m0.preloaded.t1_ms_path" = "/data/sub-01/t1_map.nii.gz"
+```
+
+TOML works out of the box (stdlib); YAML needs `pip install pyyaml`.
 
 ---
 
-## Contributing & support
-- Open issues or feature requests on GitHub.
-- For direct contact, reach out to Edis Tireli.
-- Pull requests should follow the existing directory layout and reference the appropriate configuration flags in `utils/settings.py` and `utils/parameters.py`.
+## The plug-in architecture
+
+The pipeline is a chain of **stages**, each delegating to a **plug-in** chosen
+from a registry. Both stages and plug-ins are auto-discovered — drop a file in
+the right directory and it appears. There are 12 plug-points:
+
+| plug-point | what it does | CLI flag |
+|---|---|---|
+| `io/loaders/` | read NIfTI / PAR-REC / DICOM | (auto by extension) |
+| `io/path_schemes/` | output layout (BIDS-like / legacy) | `--path-scheme` |
+| `t1_m0/` | T1 & M0 fitting | `--t1m0` |
+| `aif/` | arterial input function extraction | `--aif` |
+| `tissue_roi/` | parcellation / ROI provider (incl. **bring-your-own**) | `--tissue-roi` |
+| `signal_to_conc/` | signal → concentration | `--signal-to-conc` |
+| `normalisation/` | curve normalisation / alignment | `--normaliser` |
+| `models/` | kinetic models | `--models` |
+| `diffusion/` | diffusion models | `--diffusion` |
+| `aggregation/` | voxel / parcel / region / slice rollups | `--aggregations` |
+| `diagnostics/` | per-curve diagnostic plots | (auto by model) |
+| `stages/` | pipeline steps themselves | (discovered + ordered) |
+
+Key design properties:
+
+- **Auto-discovery.** Each plug-point's `__init__.py` calls `discover()`, which
+  scans the directory for modules exporting a `PLUGIN` and indexes them by key.
+- **Stages talk via file manifests**, not in-process objects — re-run one stage
+  without the rest.
+- **Stages are themselves a plug-point**, ordered by a topological sort over
+  each stage's `requires` declaration — no hardcoded pipeline list. A new stage
+  with `requires=("kinetic",)` slots in after the kinetic stage automatically.
+- **One options mechanism.** Every plug-in knob lives in `plugin_options`
+  (set via `--opt` or the config file). There are **no per-model fields baked
+  into the core Config** — research-group params need zero core changes.
+- **Generic aggregation & diagnostics.** Aggregators iterate whatever maps a
+  model emits; the diagnostic stage resolves a plot via `model.diagnose()` →
+  `diagnostics/<key>.py` → a generic fallback. A new model gets voxel/tissue/
+  parcel diagnostics for free.
+
+Full contract reference and templates: [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md).
+
+### Swapping the segmentation backend
+
+Built-in providers: `synthseg`, `fastsurfer`, `preloaded` (use a parcellation
+you already have), `voxelwise`, `manual`. To use **any other tool** without
+writing a plug-in, pick `command` and give the command in **one place**:
+
+```bash
+--tissue-roi command \
+--opt tissue_roi.command.cmd="fastsurfer.sh --t1 {input} --seg {output} --seg_only"
+```
+
+`{input}` is the T1 NIfTI pbrain writes; the command must write a label volume
+to `{output}`. FreeSurfer-style labels are grouped automatically (override with
+`--opt tissue_roi.command.region_map='{...}'`).
 
 ---
 
-## License & acknowledgments
-- **License:** MIT (see `LICENSE`).
-- **Acknowledgments:** Henrik B. W. Larsson, Ulrich Lindberg, Stig P. Cramer, Mark Vestergaard, and Antonis Asiminas for continuous collaboration and discussions.
+## Adding your own
 
-_p_-Brain is developed within the Functional Imaging Unit, Department of Clinical Physiology and Nuclear Medicine, Copenhagen University Hospital – Rigshospitalet, and the University of Copenhagen. The released CNN weights are available on Zenodo for reproducible deployment.
+A new kinetic model is **one file** — `pbrain/models/two_cxm.py`:
+
+```python
+from dataclasses import dataclass
+from typing import Any, ClassVar
+import numpy as np
+from .base import CurveInputs, ModelResult
+
+@dataclass(frozen=True, slots=True)
+class TwoCXM:
+    key:         ClassVar[str] = "two_cxm"
+    name:        ClassVar[str] = "Two-compartment exchange model"
+    description: ClassVar[str] = "Fp, PS, vp, ve via 2CXM least-squares."
+    accepts:     ClassVar[dict] = {"c_tissue": np.ndarray, "c_input": np.ndarray, "t_s": np.ndarray}
+    produces:    ClassVar[dict] = {"fp": np.ndarray, "ps": np.ndarray, "vp": np.ndarray, "ve": np.ndarray}
+    outputs:     ClassVar[tuple] = ("fp", "ps", "vp", "ve")
+    units:       ClassVar[dict] = {"fp": "mL/100g/min", "ps": "mL/100g/min", "vp": "fraction", "ve": "fraction"}
+    primary_map: ClassVar[str]  = "fp"
+
+    def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
+        ...   # your math
+        return ModelResult(maps={"fp": fp, "ps": ps, "vp": vp, "ve": ve},
+                           units=dict(self.units))
+
+PLUGIN = TwoCXM()
+```
+
+Then `python -m pbrain run --models two_cxm,patlak ...` runs it, aggregates all
+four maps at every level, and renders diagnostics — no other file touched. Same
+recipe for AIF extractors, normalisers, diffusion models, or whole new
+pipeline stages. See [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md).
+
+---
+
+## Models shipped
+
+**Kinetic** (`--models`):
+
+| key | outputs | notes |
+|---|---|---|
+| `patlak` | ki, vb | robust default (AIF-floor + OLS / Huber) — BBB leakage |
+| `patlak_legacy` | ki, vb | byte-frozen legacy OLS parity |
+| `tikhonov` | cbf, mtt, cth, λ | GCV λ-selection, log-spaced grid |
+| `tikhonov_legacy` | cbf, mtt, cth, λ | bit-equal to the legacy production solver |
+| `tikhonov_bayes` | cbf, mtt, cth, λ, **cbf_sd** | empirical-Bayes λ + calibrated uncertainty |
+| `extended_tofts` | ktrans, ve, vp, kep | constrained Levenberg-Marquardt |
+
+`tikhonov_bayes` is a novel contribution — it dissolves the L-curve/GCV
+endpoint-collapse via marginal-likelihood λ-selection and reports per-voxel
+posterior SD on CBF (λ-marginalised, validated calibrated). See
+[`docs/tikhonov_bayes_explained.md`](docs/tikhonov_bayes_explained.md).
+
+### Kinetic options & defaults
+
+Every option is set with `--opt models.<key>.<opt>=<value>` (or in a config
+file). Defaults are the values used when you don't set anything.
+
+**`patlak`** — BBB influx Ki and blood volume vp from the Patlak plot.
+| option | default | what it does |
+|---|---|---|
+| `regression` | `huber` | slope fit: `huber` (robust, down-weights leverage points) or `ols` (plain least-squares). |
+| `tail_mode` | `smart` | which late time-points enter the fit: `smart` (curvature-detected linear tail) or `legacy` (fixed upper-2⁄3 window). |
+| `aif_min_fraction` | `0.05` | drop AIF samples below this fraction of the peak — prevents a near-zero AIF from blowing Ki up (always on). |
+
+**`tikhonov`** — CBF, MTT, CTH by regularised SVD deconvolution of the residue function.
+| option | default | what it does |
+|---|---|---|
+| `lambda_selection` | `gcv` | regularisation-strength picker: `gcv` (generalised cross-validation), `lcurve` (Hansen corner), or `evidence` (marginal likelihood — most robust on smooth DCE curves). |
+| `lambda_spacing` | `log` | λ grid spacing: `log` or `linear`. |
+| `n_lambdas` | `121` | number of λ values searched. |
+| `mtt_cth_method` | `residue_integral` | MTT/CTH from the residue function (`residue_integral`) or central-volume theorem (`central_volume`). |
+
+**`tikhonov_bayes`** — same outputs plus a calibrated per-voxel CBF SD.
+| option | default | what it does |
+|---|---|---|
+| `lambda_selection` | `evidence` | (forced — the Bayesian formulation needs the evidence λ.) |
+| `compute_cbf_sd` | `true` | emit the closed-form posterior SD on CBF (`cbf_sd`). |
+| `uncertainty_samples` | `0` | `0` = fast closed-form CBF SD; `>0` = draw that many λ-marginalised samples to also get MTT/CTH SD. |
+
+**`extended_tofts`** — Ktrans, ve, vp, kep by constrained Levenberg-Marquardt (no tuning needed for the default fit).
+
+**`patlak_legacy` / `tikhonov_legacy`** — byte-frozen reproductions of the legacy fits for parity checks; not meant for tuning.
+
+**Diffusion** (`--diffusion`): see below.
+
+---
+
+## Diffusion track
+
+A second plug-point parallel to the kinetic models, fitted in native DWI space
+and resampled to the parcellation. The DWI input may be **NIfTI, PAR/REC, or
+DICOM** — PAR/REC and DICOM are converted to NIfTI + FSL gradients on the fly
+(`dcm2niix`), so DTI runs straight off raw scanner exports. For NIfTI input the
+`.bval`/`.bvec` sidecars are auto-detected next to the DWI (override with
+`--bvals`/`--bvecs`).
+
+| key | outputs | notes |
+|---|---|---|
+| `dti` | fa, md, ad, rd, colorfa | tensor model (b≤1500) |
+| `dki` | mk, ak, rk, kfa + DTI | kurtosis, multi-shell |
+| `dki_micro` | awf, tortuosity, de_axial/radial, **ufa** | WMTI microstructure + μFA (Hansen) |
+| `csd` | gfa, peak1, nufo | constrained spherical deconvolution |
+| `fwdti` | tfa, tmd, tad, trd, **fw** | free-water elimination (Pasternak) |
+| `rsi` | restricted / hindered / free | restriction spectrum (White) |
+| `noddi` | icvf, odi, iso | needs AMICO + high-b shell |
+
+### Which diffusion model, when
+
+- **`dti`** — the workhorse: FA, MD, AD, RD (+ colour-FA). Works on any DWI
+  with a b0 + one shell (uses b ≤ 1500). **Start here for FA/MD.**
+- **`dki`** — adds mean/axial/radial **kurtosis** and KFA (non-Gaussian
+  diffusion). Needs **≥ 2 non-zero shells**.
+- **`dki_micro`** — WMTI microstructure (axonal water fraction, tortuosity,
+  axial/radial De) and **μFA**. Multi-shell.
+- **`fwdti`** — **free-water elimination**: tissue FA/MD with CSF/oedema
+  removed, plus the free-water fraction `fw` (an oedema marker). Multi-shell.
+- **`csd`** — constrained spherical deconvolution: GFA + fibre peak directions
+  + number of fibre orientations (crossing fibres). Multi-shell preferred.
+- **`rsi`** — restriction-spectrum fractions (restricted / hindered / free);
+  needs a **high-b shell (≥ 1500)**.
+- **`noddi`** — neurite density / orientation dispersion; needs **AMICO**
+  installed and a high-b shell.
+
+Selection: `--diffusion dti` (single model), `--diffusion dti,dki,fwdti`
+(list), `--diffusion default` (shell-aware: `dti` always; multi-shell adds
+`dki,dki_micro,csd,fwdti,rsi`), `--diffusion all`, or `--diffusion ""` to
+disable. The DWI is given with `--dwi` and FSL `.bval`/`.bvec` sidecars are
+auto-detected (override with `--bvals`/`--bvecs`). Each model's options are set
+the same way as kinetic ones: `--opt diffusion.<key>.<opt>=<value>`.
+
+---
+
+## Outputs
+
+BIDS-like layout under `<subject>/derivatives/`:
+
+```
+01_load/  02_t1m0/  03_aif/  04_tissue_roi/  05_signal_to_conc/
+06_normalisation/  07_kinetic/<model>/{voxelwise,parcel,region,slice_wise}/
+diffusion/<model>/{native,voxelwise}/  08_summary/  diagnostics/
+```
+
+Each stage writes a `manifest.json` declaring its outputs, its provenance
+(`pbrain` version + resolved plug-in selection & options), and a QC block.
+Downstream stages read by name; the resume logic reads it to skip completed
+work. The `diagnostics` stage renders, every run: per-model fit plots and
+**voxel / tissue / parcel montages of every parameter map**
+(`…/diagnostics/montage/<map>_{voxel,tissue,parcel}.png`) — the figures shown
+above.
+
+---
+
+## Representative output
+
+Whole-brain parameter maps from a single subject — perfusion / leakage
+(kinetic) and white-matter microstructure (diffusion). **These montages are
+produced by the pipeline itself** — an independent, model-agnostic generator
+(`diagnostics` stage) renders `voxel`, `tissue`, and `parcel` montages for
+*every* map a model emits, so a new model gets them for free. The grid is the
+balanced factorisation of the slice count (the 10-slice DCE → 2×5) and the
+slices span each map's data extent — no hardcoded slice number (the DTI maps
+below are 48-slice, same renderer):
+
+| | |
+|---|---|
+| **Ki** — BBB influx (Patlak) | **CBF** — cerebral blood flow (Tikhonov) |
+| ![Ki](docs/img/ki_voxel_montage_patlak.png) | ![CBF](docs/img/cbf_montage.png) |
+| **CTH** — capillary transit-time heterogeneity | **FA** — fractional anisotropy (DTI) |
+| ![CTH](docs/img/cth_montage.png) | ![FA](docs/img/fa_montage.png) |
+
+![MD](docs/img/md_montage.png)
+*MD — mean diffusivity (DTI).* Every map is also aggregated to tissue
+classes and DKT parcels.
+
+---
+
+## Demo
+
+```bash
+python -m pbrain.demo --clean
+```
+
+Synthesises a 64×64×10 four-region phantom (+ anisotropic DWI), runs the full
+pipeline end-to-end — kinetic *and* diffusion — and writes 6-slice parameter-map
+montages to `demo/maps/`. Verifies the whole system with zero patient data.
+
+---
+
+## Repository structure
+
+```
+pbrain/            the package — everything lives here
+  core/            Plugin/Stage protocols, discovery, Config, Pipeline, devices
+  io/              loaders (nifti/parrec/dicom/dwi) + path_schemes
+  t1_m0/  aif/  tissue_roi/  signal_to_conc/  normalisation/
+  models/          kinetic models + their tools
+  diffusion/       diffusion models
+  aggregation/     voxel/parcel/region/slice rollups
+  diagnostics/     per-model diagnostic plots (+ generic fallback)
+  stages/          the pipeline steps (a discoverable, topo-ordered plug-point)
+  cli/             run / list / check-deps entry points + config-file loader
+  demo/            synthetic-phantom end-to-end demo
+AI/                CNN weights for the rICA/SSS AIF detector (runtime asset)
+docs/              ARCHITECTURE.md, ADDING_PLUGINS.md, tikhonov_bayes_explained.md
+tests/             pbrain test suite
+validation/        cohort runners + validation notes/figures
+```
+
+---
+
+## License & citation
+
+See [`LICENSE`](LICENSE). If you use _p_-Brain in research, please cite the
+accompanying paper (Tireli et al.) and this repository.
