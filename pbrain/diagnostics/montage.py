@@ -91,14 +91,16 @@ _TILE_GREY = (0.86, 0.87, 0.89)        # subtle grey square behind each map
 
 def montage_volume(arr: np.ndarray, out_path: Path, *, mask: np.ndarray | None = None,
                    title: str = "", units: str = "", max_slices: int = 16,
-                   cmap=None) -> Path:
+                   vlims: tuple[float, float] = (2.0, 96.0), cmap=None) -> Path:
     """Render one article-style montage of ``arr`` (X, Y, Z) to ``out_path``.
 
     * ``mask`` (3-D bool): restrict display to brain voxels — voxels outside
       the mask become transparent so only segmented tissue is shown.
-    * Each slice sits on a subtle grey square so white (high-value) voxels do
-      not blend into the white page.
-    * Anterior points up (radiological axial).
+    * ``vlims`` (lo, hi) percentiles of the displayed tissue set the colour
+      window. The default (2, 96) scales to the bulk of the tissue so bright
+      outliers (vessels, partial-volume) saturate at the top instead of
+      squashing the main tissue into the dark end.
+    * Each slice sits on a subtle grey square; anterior points up.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -111,15 +113,18 @@ def montage_volume(arr: np.ndarray, out_path: Path, *, mask: np.ndarray | None =
         arr = np.where(np.asarray(mask, bool), arr, np.nan)
     cmap = (cmap or _specthl()).copy()
     cmap.set_bad((0, 0, 0, 0))                     # NaN → transparent → grey shows
+    cmap.set_over(cmap(1.0))                        # outliers saturate, not clip-white
 
     slices = _select_slices(arr, max_slices)
     rows, cols = balanced_grid(len(slices))
 
+    # Colour window from the displayed-tissue distribution only (brain voxels),
+    # so a few bright outliers don't darken everything else.
     finite = arr[np.isfinite(arr) & (arr != 0)]
-    vmin, vmax = (np.percentile(finite, [1, 99]) if finite.size else (0.0, 1.0))
+    lo, hi = vlims
+    vmin, vmax = (np.percentile(finite, [lo, hi]) if finite.size else (0.0, 1.0))
     if vmin == vmax:
         vmax = vmin + 1e-6
-    vmin = min(vmin, 0.0)                           # background (0) anchors the dark end
 
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2),
                              facecolor="white", squeeze=False)
@@ -185,13 +190,15 @@ def render_levels(arr: np.ndarray, out_dir: Path, stem: str, *,
                   parc: np.ndarray | None = None,
                   region_map: dict[str, list[int]] | None = None,
                   title: str = "", units: str = "", max_slices: int = 16,
+                  vlims: tuple[float, float] = (2.0, 96.0),
                   levels: tuple[str, ...] = ("voxel", "tissue", "parcel"),
                   ) -> dict[str, Path]:
     """Write the requested montage levels for one map. Returns ``{level: path}``.
 
     ``levels`` selects which to render — a parcel-painted map (from an
     average-then-fit model) passes ``("tissue", "parcel")`` so it is never
-    shown as a (misleading) per-voxel montage.
+    shown as a (misleading) per-voxel montage. ``vlims`` are the colour-window
+    percentiles (default scales to the bulk tissue, not outliers).
     """
     out_dir = Path(out_dir)
     written: dict[str, Path] = {}
@@ -199,16 +206,16 @@ def render_levels(arr: np.ndarray, out_dir: Path, stem: str, *,
     if "voxel" in levels:
         written["voxel"] = montage_volume(
             arr, out_dir / f"{stem}_voxel.png", mask=brain,
-            title=title, units=units, max_slices=max_slices)
+            title=title, units=units, max_slices=max_slices, vlims=vlims)
     if parc is not None:
         if "tissue" in levels and region_map:
             written["tissue"] = montage_volume(
                 paint_by_label(arr, parc, region_map),
                 out_dir / f"{stem}_tissue.png",
-                title=title, units=units, max_slices=max_slices)
+                title=title, units=units, max_slices=max_slices, vlims=vlims)
         if "parcel" in levels:
             written["parcel"] = montage_volume(
                 paint_by_label(arr, parc),
                 out_dir / f"{stem}_parcel.png",
-                title=title, units=units, max_slices=max_slices)
+                title=title, units=units, max_slices=max_slices, vlims=vlims)
     return written

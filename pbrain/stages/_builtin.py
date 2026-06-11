@@ -360,10 +360,29 @@ class TissueROIStage:
         opts = dict(ctx.config.options_for("tissue_roi", plugin_key))
         roi = provider.extract(t1_vol, t1_aff, out_dir=out_dir, **opts)
 
+        # The parcellation must live on the DCE grid — that's where the kinetic
+        # maps are aggregated. A provider that segments a high-res 3-D T1 (e.g.
+        # SynthSeg) returns its own grid, so resample to the DCE grid with
+        # nearest-neighbour (labels are integers). Providers already in DCE
+        # space (preloaded *_in_DCE) pass through unchanged.
+        parc = roi.parcellation.astype(np.int16)
+        parc_affine = roi.affine
+        dce_img = nib.load(str(load_mf.outputs["dce"]))
+        dce_shape = tuple(dce_img.shape[:3])
+        if parc.shape != dce_shape:
+            from nibabel.processing import resample_from_to
+            res = resample_from_to(
+                nib.Nifti1Image(parc, np.asarray(parc_affine, dtype=float)),
+                (dce_shape, np.asarray(dce_img.affine, dtype=float)), order=0)
+            parc = np.asarray(res.dataobj).astype(np.int16)
+            parc_affine = np.asarray(dce_img.affine, dtype=float)
+            _log.info("tissue_roi: resampled %s parcellation %s → DCE grid %s",
+                      plugin_key, roi.parcellation.shape, dce_shape)
+
         parc_out = ctx.path_scheme.output_path(
             ctx.subject_dir, self.name, plugin_key, None, "parcellation", "nii.gz"
         )
-        _save_nifti(roi.parcellation.astype(np.int16), roi.affine, parc_out)
+        _save_nifti(parc, parc_affine, parc_out)
         labels_out = ctx.path_scheme.output_path(
             ctx.subject_dir, self.name, plugin_key, None, "labels", "json"
         )
