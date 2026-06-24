@@ -96,3 +96,42 @@ class KineticModel(Plugin, Protocol):
     units: ClassVar[dict[str, str]]
 
     def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult: ...
+
+
+def reconstruct_gamma_residue_ct(
+    t_s: np.ndarray, c_input: np.ndarray, *,
+    cbf: float, mtt: float, cth: float, e_leak: float = 0.0,
+) -> np.ndarray:
+    """Parametric QC reconstruction ``Cₜ = (cbf/6000)·(Cₐ ⊗ R)``.
+
+    ``R`` is a gamma-variate residue with mean ``mtt`` and SD ``cth`` (plus an
+    optional irreversible-leak plateau ``e_leak``). This is the shared backend
+    for the **model-free** Tikhonov / Stieltjes ``predict()`` — they fit a
+    non-parametric residue/spectrum whose *exact* overlay lives in their own
+    diagnostics, so this gives the uniform ``predict()`` interface a sensible
+    parametric curve rather than nothing. ``cbf`` is mL/100g/min (the gamma
+    flow convention ``f = cbf/6000``); ``mtt``/``cth`` are seconds.
+    """
+    from scipy.stats import gamma as _gamma
+
+    t = np.asarray(t_s, dtype=float).ravel()
+    ca = np.asarray(c_input, dtype=float).ravel()
+    n = int(min(t.size, ca.size))
+    if n == 0 or not (np.isfinite(cbf) and np.isfinite(mtt) and mtt > 0):
+        return np.full(n, np.nan)
+    t, ca = t[:n], ca[:n]
+    cth = cth if (np.isfinite(cth) and cth > 0) else 0.5 * mtt
+    k = (mtt / cth) ** 2                       # gamma shape
+    theta = cth ** 2 / mtt                     # gamma scale (mean k·θ = mtt)
+    h = _gamma.pdf(np.maximum(t, 0.0), a=k, scale=theta)
+    dt = np.diff(t)
+    H = np.concatenate(([0.0], np.cumsum(0.5 * (h[1:] + h[:-1]) * dt)))
+    R = np.clip(1.0 - H, 0.0, 1.0)
+    e_leak = float(np.clip(e_leak, 0.0, 1.0))
+    R = (1.0 - e_leak) * R + e_leak            # leak plateau
+    dtf = np.concatenate(([dt[0] if dt.size else 1.0], dt))
+    f = float(cbf) / 6000.0
+    ct = np.empty(n, dtype=float)
+    for i in range(n):                         # Cₐ ⊗ R (single QC curve → O(n²) is fine)
+        ct[i] = f * float(np.sum(ca[: i + 1] * R[i::-1][: i + 1] * dtf[: i + 1]))
+    return ct

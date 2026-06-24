@@ -96,7 +96,11 @@ The first three steps:
 
 1. **Point at your data.** `--dce` is the 4-D DCE series (NIfTI, PAR/REC, or
    DICOM — converted automatically). `--ir` is the inversion-recovery series
-   used to fit T1/M0; `--dwi` is an optional diffusion scan.
+   used to fit T1/M0; `--dwi` is an optional diffusion scan. Each of `--dce`,
+   `--t1`, `--ir` accepts a **full path, a filename, a protocol-name substring,
+   or `auto`** — so you can write `--dce hperf --t1 auto --ir auto` once and
+   reuse it across subjects whose scan numbers differ (raw PAR/REC are matched
+   by their Philips `Protocol name`; `--ir auto` assembles the `TI_*` series).
 2. **Choose your methods.** `--models patlak,tikhonov` selects the kinetic
    models; `--aif`, `--tissue-roi`, `--t1m0` select how each upstream step is
    done. Sensible defaults mean you can omit most of them.
@@ -153,12 +157,31 @@ python -m pbrain list models      # one plug-point in detail
 **Run a whole cohort** — parallel, resumable, error-isolated:
 
 ```bash
-# the simplest form: run every subject folder inside a directory
-python -m pbrain run-cohort --config study.toml --data-dir /data --workers 8
+# ── one flag, raw scanner data: point --cohort at a folder of subjects ──
+# Each sub-directory is a subject of raw Philips PAR/REC. Inputs are
+# auto-discovered by protocol name (DCE = hperf*; the TI_* saturation-recovery
+# series is assembled into an IR; a 3-D T1 anatomical for SynthSeg), then the
+# full pipeline runs with ALL kinetic models at tissue (region) + parcel level.
+# No config needed. Add --force for a fresh re-run. Pass several roots to run
+# patients + controls + follow-ups in one go.
+python -m pbrain run-cohort --cohort /data/patients /data/controls --workers 4 --force
 
-# or select with a glob / explicit list
+#   pick models / levels, or skip known-bad subjects:
+python -m pbrain run-cohort --cohort /data/patients --workers 4 \
+    --models tikhonov,inverse_gaussian --aggregations region,parcel \
+    --exclude 20221003x1            # --voxelwise to fit per-voxel (slower)
+
+# ── config mode, pre-converted NIfTI cohorts: inputs from a shared config ──
+python -m pbrain run-cohort --config study.toml --data-dir /data --workers 8
 python -m pbrain run-cohort --config study.toml --subjects-glob '/data/sub-*' --workers 8
 ```
+
+`--cohort` is the one-flag "do the whole study" path: it resolves each subject's
+DCE / IR / T1 itself (scan numbers vary between subjects, so they can't be
+templated by name) and fits every model at the parcel level by default
+(average-then-fit — exactly the resolution these models support, and tractable
+across hundreds of subjects). Use `--config` mode when inputs are already
+NIfTI and named consistently.
 
 **Override any option** with `--opt <plug-point>.<plugin>.<key>=<value>`, e.g.
 `--opt models.tikhonov.lambda_selection=evidence`. Every knob is documented
@@ -331,6 +354,7 @@ natural sort order:
 03_aif/                         arterial input function
 04_tissue_roi/                  parcellation + tissue region map
 05_signal_to_conc/              4-D contrast concentration  (concentration.nii.gz)
+    <converter>/diagnostics/      conversion QC plot  (conversion_qc.png)
 06_normalisation/               normalised curves
 07_kinetic/<model>/             per model:
     voxelwise/                    whole-brain maps  (nii.gz)

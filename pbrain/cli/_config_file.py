@@ -96,7 +96,8 @@ def load_config_file(path: Path) -> dict[str, Any]:
     acq = raw.get("acquisition", {}) or {}
     for ck, dest in (("flip_angle_deg", "flip_angle_deg"), ("tr_s", "tr_s"),
                      ("r1_per_s_mM", "r1_per_s_mM"),
-                     ("baseline_frames", "baseline_frames"), ("dt_s", "dt_s")):
+                     ("baseline_frames", "baseline_frames"), ("dt_s", "dt_s"),
+                     ("aif_blood_t1_ms", "aif_blood_t1_ms")):
         if ck in acq:
             out[dest] = acq[ck]
 

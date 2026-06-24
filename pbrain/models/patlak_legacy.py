@@ -51,5 +51,9 @@ class _PatlakLegacy:
         opts.setdefault("aif_floor_double_bolus", False)
         return _SMART.fit(inputs, **opts)
 
+    def predict(self, maps: dict[str, Any], c_input: np.ndarray,
+                t_s: np.ndarray) -> np.ndarray:
+        return _SMART.predict(maps, c_input, t_s)
+
 
 PLUGIN = _PatlakLegacy()

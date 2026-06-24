@@ -18,7 +18,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -55,8 +55,53 @@ class _ParRecLoader:
             raise FileNotFoundError(f"REC sidecar not found for {path}")
 
         if shutil.which("dcm2niix"):
-            return self._load_via_dcm2niix(path)
-        return self._load_via_nibabel(path)
+            series = self._load_via_dcm2niix(path)
+        else:
+            series = self._load_via_nibabel(path)
+
+        # The NIfTI zoom (and nibabel's pixdim) give the *mean* dynamic
+        # spacing, which the prep/dummy gap before the first dynamic inflates
+        # (2.439 s vs the true 2.430 s median on 20250217x4 — a 0.35 % Patlak-Ki
+        # offset, since Ki ∝ 1/∫Ca·dt). The paper's pipeline uses the robust
+        # *median* per-dynamic spacing read straight from the PAR's
+        # ``dyn_scan_begin_time``; reproduce it here so the DCE time axis is
+        # bit-exact with ``Analysis/Fitting/time_points_s.npy``.
+        if series.axis4_kind == "time" and series.n_frames > 1:
+            dt = self._dce_dt_s_from_par(path)
+            if dt is not None and dt > 0:
+                n = series.n_frames
+                series = replace(series, axis4_values=np.arange(n, dtype=float) * dt)
+        return series
+
+    @staticmethod
+    def _dce_dt_s_from_par(par: Path) -> float | None:
+        """Median per-dynamic frame spacing (s) from the PAR ``dyn_scan_begin_time``.
+
+        The pixdim/zoom spacing is the *mean* over dynamics, which the prep gap
+        before the first dynamic inflates. The paper uses the *median*
+        (``np.median(np.diff(begin_times))``), robust to that gap. Returns
+        ``None`` when the field is absent so the caller keeps the zoom value.
+        """
+        try:
+            import nibabel as nib
+
+            idf = nib.load(str(par)).header.image_defs
+            names = idf.dtype.names or ()
+            if "dynamic scan number" not in names or "dyn_scan_begin_time" not in names:
+                return None
+            dyn = np.asarray(idf["dynamic scan number"])
+            tb = np.asarray(idf["dyn_scan_begin_time"], dtype=float)
+            ud = np.unique(dyn)
+            if ud.size < 3:
+                return None
+            times = np.array([tb[dyn == d][0] for d in ud], dtype=float)
+            dts = np.diff(times)
+            dts = dts[np.isfinite(dts) & (dts > 0)]
+            if dts.size == 0:
+                return None
+            return float(np.median(dts))
+        except Exception:
+            return None
 
     @staticmethod
     def _load_via_dcm2niix(par: Path) -> Series4D:

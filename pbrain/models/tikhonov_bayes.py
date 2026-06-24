@@ -85,5 +85,9 @@ class _TikhonovBayes:
         # the KineticStage validation accepts the extra maps.
         return result
 
+    def predict(self, maps: dict[str, Any], c_input: np.ndarray,
+                t_s: np.ndarray) -> np.ndarray:
+        return _SMART.predict(maps, c_input, t_s)
+
 
 PLUGIN = _TikhonovBayes()

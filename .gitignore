@@ -56,7 +56,16 @@ demo/phantom/
 pbrain/models/tikhonov_bayes.py
 pbrain/diagnostics/tikhonov_bayes.py
 
-# Fractional Mittag-Leffler residue — local-only kinetic model.
+# Local-only research kinetic models (never on the public branch).
 pbrain/models/mittag_leffler.py
 pbrain/diagnostics/mittag_leffler.py
 run_mittag_leffler.py
+pbrain/models/inverse_gaussian.py
+pbrain/diagnostics/inverse_gaussian.py
+run_inverse_gaussian.py
+pbrain/models/stieltjes.py
+pbrain/diagnostics/stieltjes.py
+run_stieltjes.py
+pbrain/analysis/
+run_eikonal.py
+scripts/run_cohorts_fresh.py

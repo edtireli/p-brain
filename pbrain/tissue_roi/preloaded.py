@@ -58,8 +58,9 @@ _LEGACY_TISSUE_LABELS_FREESURFER = (
 )
 
 _LEGACY_REGION_MAP_FS = {
-    "cortical_GM": [*range(1000, 1036), *range(2000, 2036)],
-    "subcortical_GM": [10, 11, 12, 13, 17, 18, 26, 49, 50, 51, 52, 53, 54, 58],
+    "cortical_GM": [3, 42, *range(1000, 1036), *range(2000, 2036)],
+    # 28/60 = VentralDC (deep GM) — added; ventricles/CSF stay excluded.
+    "subcortical_GM": [10, 11, 12, 13, 17, 18, 26, 28, 49, 50, 51, 52, 53, 54, 58, 60],
     "WM": [2, 41, 77, 251, 252, 253, 254, 255],
     "Cerebellum_GM": [8, 47],
     "Cerebellum_WM": [7, 46],

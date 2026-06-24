@@ -82,8 +82,8 @@ def _pick_primary_map(model: Any, output_names: list[str]) -> str | None:
 class DiagnosticsStage:
     name: str = "diagnostics"
     requires: tuple[str, ...] = (
-        "load", "signal_to_conc", "normalisation", "aif", "kinetic", "tissue_roi",
-        "diffusion",
+        "load", "t1_m0", "signal_to_conc", "normalisation", "aif", "kinetic",
+        "tissue_roi", "diffusion",
     )
     plugin_key: str = "multi"
 
@@ -113,6 +113,34 @@ class DiagnosticsStage:
 
         artefacts: dict[str, Path] = {}
         per_model_source: dict[str, str] = {}
+
+        # ── conversion QC: signal→concentration sanity figure, every run ──
+        # Renders the *raw* concentration volume (what the user opens), so the
+        # out-of-brain saturated voxels and the low tissue scale are visible at
+        # a glance — not the normalised C used for fitting.
+        try:
+            from pbrain.diagnostics.conversion import render_conversion_qc
+            stc_mf = ctx.upstream_manifests["signal_to_conc"]
+            conc_raw = np.asarray(
+                nib.load(str(stc_mf.outputs["concentration"])).dataobj, dtype=np.float32)
+            dce_sig = np.asarray(
+                nib.load(str(load_mf.outputs["dce"])).dataobj, dtype=np.float32)
+            if dce_sig.ndim == 3:
+                dce_sig = dce_sig[..., None]
+            t1_mf = ctx.upstream_manifests.get("t1_m0")
+            t1_map = None
+            if t1_mf is not None and "t1_map_ms" in t1_mf.outputs:
+                t1_map = np.asarray(
+                    nib.load(str(t1_mf.outputs["t1_map_ms"])).dataobj, dtype=float)
+            qc_out = ctx.path_scheme.aggregation_dir(
+                ctx.subject_dir, "signal_to_conc", ctx.config.signal_to_conc, "diagnostics"
+            ) / "conversion_qc.png"
+            render_conversion_qc(conc_raw, dce_sig, ca, t_s, parc > 0, qc_out,
+                                 t1_map=t1_map, baseline_frames=ctx.config.baseline_frames)
+            artefacts["conversion_qc"] = qc_out
+            _log.info("conversion QC -> %s", qc_out)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("conversion QC failed: %s", exc)
 
         for model_key in ctx.config.kinetic_models:
             model = MODELS.get(model_key)

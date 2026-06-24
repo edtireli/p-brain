@@ -388,8 +388,8 @@ def fit_patlak_vectorised(
     t_s: np.ndarray,              # (T,)
     *,
     mask: np.ndarray | None = None,
-    tail_mode: TailMode = "curvature",
-    regression: Regression = "huber",
+    tail_mode: TailMode = "x_max_fraction",
+    regression: Regression = "ols",
     huber_delta: float = 1.345,
     huber_max_iter: int = 20,
     x_fraction: float = 1.0 / 3.0,

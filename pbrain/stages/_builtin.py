@@ -168,13 +168,23 @@ class LoadStage:
             ctx.subject_dir, self.name, None, None, "dce_meta", "json"
         )
 
+        # The 3-D T1 is optional: if present but unusable (empty/corrupt), proceed
+        # without it rather than crash — tissue ROI then falls back to a whole-brain
+        # mask. A bad *required* input (DCE/IR) still fails loudly via the loader.
         if t1_path is not None and Path(t1_path).exists():
-            t1 = load_4d(t1_path)
-            t1_out = ctx.path_scheme.output_path(
-                ctx.subject_dir, self.name, None, None, "t1_anatomical", "nii.gz"
-            )
-            _save_nifti(t1.data[..., 0], t1.affine, t1_out)
-            artefacts["t1_anatomical"] = t1_out
+            try:
+                t1 = load_4d(t1_path)
+            except Exception as exc:              # noqa: BLE001 — optional input
+                _log.warning("load: T1 anatomical unusable (%s) — proceeding "
+                             "without it; tissue ROI falls back to whole-brain",
+                             exc)
+                t1 = None
+            if t1 is not None:
+                t1_out = ctx.path_scheme.output_path(
+                    ctx.subject_dir, self.name, None, None, "t1_anatomical", "nii.gz"
+                )
+                _save_nifti(t1.data[..., 0], t1.affine, t1_out)
+                artefacts["t1_anatomical"] = t1_out
 
         if ir_path is not None and Path(ir_path).exists():
             ir = load_4d(ir_path)
@@ -221,12 +231,23 @@ class T1M0Stage:
             ref_affine = np.asarray(ir_img.affine, dtype=float)
             if ti_path_s and Path(ti_path_s).exists():
                 ti_s = np.load(ti_path_s)
-            # An IR series assembled from separate per-TI files carries no
-            # per-frame TI in the NIfTI — fall back to the configured
-            # inversion_times_ms when they match the frame count.
-            if (ti_s is None or np.unique(np.asarray(ti_s)).size < 2) and ir_data.ndim == 4:
+            # An IR series assembled from separate per-TI files carries only
+            # frame INDICES (0,1,2,…) in its 4-th-axis values, not real
+            # inversion times — using them as TIs rails the fit to the T1
+            # ceiling. Fall back to the configured inversion_times_ms when they
+            # match the frame count and the loaded values are missing,
+            # degenerate, OR look like consecutive frame indices.
+            if ir_data.ndim == 4:
                 cfg_ti = np.asarray(ctx.config.inversion_times_ms, dtype=float) / 1000.0
-                if cfg_ti.size == ir_data.shape[-1]:
+                n = ir_data.shape[-1]
+                ta = None if ti_s is None else np.ravel(np.asarray(ti_s, dtype=float))
+                degenerate = ta is None or np.unique(ta).size < 2
+                frame_indices = (ta is not None and ta.size == n
+                                 and np.allclose(np.sort(ta), np.arange(n), atol=0.01))
+                if cfg_ti.size == n and (degenerate or frame_indices):
+                    if frame_indices:
+                        _log.info("t1_m0: ir_ti_s looked like frame indices — "
+                                  "using configured inversion_times_ms")
                     ti_s = cfg_ti
 
         opts = dict(ctx.config.options_for("t1_m0", plugin_key))
@@ -296,6 +317,32 @@ class AIFStage:
         t1 = np.asarray(nib.load(str(t1m0_mf.outputs["t1_map_ms"])).dataobj, dtype=float)
         m0 = np.asarray(nib.load(str(t1m0_mf.outputs["m0_map"])).dataobj, dtype=float)
 
+        # Flow correction for the AIF: blood voxels violate the static
+        # saturation-recovery T1 model (inflow makes recovery look faster), so
+        # their voxelwise T1 is underestimated (~800 ms vs ~1600 ms blood),
+        # which inflates S/K and log-clamps the AIF curve to tens of mM. Re-derive
+        # the concentration the AIF reads from using a fixed literature blood T1.
+        # Tissue conc (signal_to_conc) is unaffected — only the blood pool needs
+        # this. Disabled when aif_blood_t1_ms <= 0.
+        blood_t1_ms = float(getattr(ctx.config, "aif_blood_t1_ms", 0.0) or 0.0)
+        if blood_t1_ms > 0:
+            conv = CONVERTERS[ctx.config.signal_to_conc]
+            conv_opts = dict(ctx.config.options_for("signal_to_conc", ctx.config.signal_to_conc))
+            conv_opts.setdefault("flip_angle_deg", ctx.config.flip_angle_deg)
+            conv_opts.setdefault("tr_s", ctx.config.tr_s)
+            conv_opts.setdefault("r1_per_s_mM", ctx.config.r1_per_s_mM)
+            conv_opts.setdefault("prepulse_to_readout_s", ctx.config.prepulse_to_readout_s)
+            conv_opts.setdefault("baseline_frames", ctx.config.baseline_frames)
+            t1_blood = np.full(t1.shape, blood_t1_ms, dtype=float)
+            ct_blood = np.asarray(conv.convert(dce_signal, t1_blood, m0, **conv_opts),
+                                  dtype=np.float32)
+            if ct_blood.ndim == 3:
+                ct_blood = ct_blood[..., None]
+            if ct_blood.shape == ct_data.shape:
+                ct_data = ct_blood
+                _log.info("aif: converted AIF curve with fixed blood T1 = %.0f ms "
+                          "(flow correction)", blood_t1_ms)
+
         opts = dict(ctx.config.options_for("aif", plugin_key))
         opts.setdefault("baseline_frames", ctx.config.baseline_frames)
 
@@ -358,7 +405,42 @@ class TissueROIStage:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         opts = dict(ctx.config.options_for("tissue_roi", plugin_key))
-        roi = provider.extract(t1_vol, t1_aff, out_dir=out_dir, **opts)
+        wmh_flair = opts.pop("wmh_flair", None)   # optional: add a WMH region from FLAIR
+        try:
+            roi = provider.extract(t1_vol, t1_aff, out_dir=out_dir, **opts)
+        except Exception as exc:                  # noqa: BLE001 — segmentation unavailable
+            # The segmentation provider (e.g. SynthSeg) could not run — typically a
+            # subject with no structural 3-D T1 (only IR+DCE), so there is no
+            # anatomy to parcellate. Degrade gracefully to a whole-brain ROI on
+            # the DCE grid: the subject still yields voxelwise + whole-brain-region
+            # perfusion instead of failing outright. The mask is the thresholded,
+            # largest-connected, hole-filled DCE baseline — no anatomy, no
+            # interpolation. (Detailed parcellation is impossible without a
+            # structural T1; whole-brain is the honest fallback.)
+            from pbrain.tissue_roi.base import TissueROI
+            _log.warning("tissue_roi: provider '%s' failed (%s: %s); falling back "
+                         "to a whole-brain DCE-space ROI (no structural T1)",
+                         plugin_key, type(exc).__name__,
+                         str(exc).splitlines()[0][:120] if str(exc) else "")
+            dce_img = nib.load(str(load_mf.outputs["dce"]))
+            dce = np.asarray(dce_img.dataobj, dtype=np.float32)
+            base = dce[..., :min(10, dce.shape[-1])].mean(-1) if dce.ndim == 4 else dce
+            p99 = float(np.nanpercentile(base, 99)) if np.isfinite(base).any() else 0.0
+            mask = (base > 0.1 * p99).astype(np.int16)
+            try:
+                from scipy import ndimage
+                lab, n = ndimage.label(mask)
+                if n > 1:                          # keep the largest blob (the head)
+                    sizes = ndimage.sum(np.ones_like(lab), lab, index=np.arange(1, n + 1))
+                    mask = (lab == int(np.argmax(sizes)) + 1).astype(np.int16)
+                mask = ndimage.binary_fill_holes(mask).astype(np.int16)
+            except Exception:                      # noqa: BLE001 — mask cleanup optional
+                pass
+            roi = TissueROI(parcellation=mask,
+                            affine=np.asarray(dce_img.affine, dtype=float),
+                            labels={1: "brain"}, region_map={"brain": [1]},
+                            meta={"fallback": "whole_brain_dce",
+                                  "reason": type(exc).__name__})
 
         # The parcellation must live on the DCE grid — that's where the kinetic
         # maps are aggregated. A provider that segments a high-res 3-D T1 (e.g.
@@ -379,6 +461,43 @@ class TissueROIStage:
             _log.info("tissue_roi: resampled %s parcellation %s → DCE grid %s",
                       plugin_key, roi.parcellation.shape, dce_shape)
 
+        # Optional WMH region: threshold the FLAIR within white matter and give
+        # those lesion voxels their own label (9000). They are thereby removed
+        # from WM (so the WM region becomes normal-appearing WM) and become a
+        # region "WMH" that the kinetic fit + aggregation treat like any other —
+        # enabling a WMH-vs-other-regions cohort comparison.
+        region_map = dict(roi.region_map or {})
+        if wmh_flair and Path(wmh_flair).exists():
+            from nibabel.processing import resample_from_to
+            from scipy import ndimage
+            wm_labels = region_map.get("WM", [2, 41, 77, 251, 252, 253, 254, 255])
+            # Detect WMH at the FLAIR's *native* resolution (lesions are
+            # partial-volumed away at the 9.5 mm DCE slice thickness), then map
+            # the lesion fraction down onto the DCE grid. The WM mask at FLAIR
+            # resolution comes from resampling the parcellation up.
+            flimg = nib.load(str(wmh_flair))
+            fl = np.asarray(flimg.dataobj, dtype=float)
+            if fl.ndim > 3:
+                fl = fl[..., 0]
+            wm_hr = np.isin(np.asarray(resample_from_to(
+                nib.Nifti1Image(parc, np.asarray(parc_affine, dtype=float)),
+                (fl.shape, flimg.affine), order=0).dataobj, dtype=np.int32), wm_labels)
+            wm_dce = np.isin(parc, wm_labels)
+            if wm_hr.sum() > 2000 and wm_dce.sum() > 500:
+                wv = fl[wm_hr]; med = float(np.median(wv))
+                mad = 1.4826 * float(np.median(np.abs(wv - med))) + 1e-6
+                wmh_hr = wm_hr & ((fl - med) / mad > 2.0) & ((fl - med) / mad < 12.0)
+                wmh_hr = ndimage.binary_opening(wmh_hr, iterations=1).astype(np.float32)
+                frac = np.asarray(resample_from_to(
+                    nib.Nifti1Image(wmh_hr, flimg.affine),
+                    (parc.shape, parc_affine), order=1).dataobj, dtype=float)
+                wmh = wm_dce & (frac > 0.2)        # ≥20 % of the DCE voxel is lesion
+                parc[wmh] = 9000
+                region_map["WMH"] = [9000]
+                roi.labels[9000] = "WM-hyperintensity"
+                _log.info("tissue_roi: added WMH region — %d DCE voxels "
+                          "(%d at FLAIR res)", int(wmh.sum()), int(wmh_hr.sum()))
+
         parc_out = ctx.path_scheme.output_path(
             ctx.subject_dir, self.name, plugin_key, None, "parcellation", "nii.gz"
         )
@@ -388,7 +507,7 @@ class TissueROIStage:
         )
         _save_json(
             {"labels": {str(k): v for k, v in roi.labels.items()},
-             "region_map": roi.region_map or {},
+             "region_map": region_map,
              "meta": roi.meta},
             labels_out,
         )
@@ -449,6 +568,7 @@ class SignalToConcStage:
         opts.setdefault("tr_s", float(tr_meta) if tr_meta is not None else ctx.config.tr_s)
         opts.setdefault("r1_per_s_mM", ctx.config.r1_per_s_mM)
         opts.setdefault("prepulse_to_readout_s", ctx.config.prepulse_to_readout_s)
+        opts.setdefault("baseline_frames", ctx.config.baseline_frames)
 
         # Per-voxel signal → mM. Each voxel uses its own (T1, M0); SSS / rICA
         # voxels keep their own relaxation parameters through this single
@@ -524,6 +644,47 @@ class NormalisationStage:
         )
 
 
+def _trailing_drop_frames(curves: list[np.ndarray], n: int, *,
+                          max_drop: int = 3, k_mad: float = 4.0,
+                          frac: float = 0.5) -> int:
+    """Count trailing frames to drop because the curve **crashes** at its end.
+
+    A final-frame motion / coil-removal artefact makes the last point(s) of a
+    DCE curve fall abruptly toward zero, far below the washout tail (the user's
+    "the single last point gets very, very low"). This generalises the legacy
+    ``identify_drop_points`` (fit the tail, flag samples that fall below it) but
+    is restricted to the **contiguous trailing run** and is deliberately
+    conservative — a frame is a drop only if, for the AIF or the mean tissue
+    curve, it lies both > ``k_mad`` robust-SDs *and* below ``frac``× the tail
+    median. Normal tail noise is never trimmed; interior frames are untouched.
+    Returns 0 when nothing crashes.
+    """
+    if n < 20:
+        return 0
+    tail_lo = max(int(n * 0.5), 3)
+    ndrop = 0
+    for k in range(1, int(max_drop) + 1):
+        idx = n - k                                  # candidate trailing frame
+        is_drop = False
+        for s in curves:
+            s = np.asarray(s, dtype=float)
+            tail = s[tail_lo:n - int(max_drop)]      # stable tail (excl. candidates)
+            tail = tail[np.isfinite(tail)]
+            if tail.size < 5:
+                continue
+            med = float(np.median(tail))
+            mad = float(np.median(np.abs(tail - med))) * 1.4826 + 1e-9
+            v = s[idx]
+            if np.isfinite(v) and v < med - k_mad * mad and v < frac * med:
+                is_drop = True
+                break
+        if is_drop:
+            ndrop = k
+        else:
+            break
+    return ndrop
+
+
 @dataclass
 class KineticStage:
     """Runs every configured model. Each model writes its own raw maps
@@ -550,6 +711,22 @@ class KineticStage:
         ca = np.load(norm_mf.outputs["aif_normalised"])
         t_s = np.load(load_mf.outputs["dce_time_s"])
         affine = np.asarray(C_img.affine, dtype=float)
+
+        # Trailing-drop guard: a final-frame motion / coil-removal artefact makes
+        # the last point(s) of the curves crash toward zero, biasing every fit.
+        # Detect it on the AIF and the mean tissue curve and DROP those trailing
+        # frames globally (t, Cₜ and Cₐ together stay aligned) so all models
+        # simply fit one frame less — never interior frames, never interpolation.
+        n_common = int(min(C.shape[-1], ca.shape[0], t_s.shape[0]))
+        ct_mean = np.nanmean(C.reshape(-1, C.shape[-1])[:, :n_common], axis=0)
+        n_drop = _trailing_drop_frames([ca[:n_common], ct_mean], n_common)
+        if n_drop > 0:
+            keep = n_common - n_drop
+            _log.info("kinetic: dropping %d trailing artefact frame(s) "
+                      "(abrupt final-point crash) before fitting", n_drop)
+            C = C[..., :keep]
+            ca = ca[:keep]
+            t_s = t_s[:keep]
 
         X, Y, Z, T = C.shape
         c_t = C.reshape(-1, T).T   # (T, V)
@@ -589,12 +766,30 @@ class KineticStage:
                 )
             model = MODELS[model_key]
             opts = dict(ctx.config.options_for("models", model_key))
+            # `--opt models.<key>.level=parcel` forces average-then-fit per
+            # parcel even for a voxelwise-capable model (faster, higher-SNR
+            # per-region curves — used for the region/WMH cohort comparison).
+            force_parcel = str(opts.pop("level", "")).lower() == "parcel"
+            # `also_parcel=true` keeps the full voxelwise maps AND additionally
+            # paints the parcel-level fit-of-average (higher-SNR per-region
+            # curves) — so you get spatial maps *and* the robust region/WMH
+            # comparison from one run.
+            also_parcel = str(opts.pop("also_parcel", "")).lower() in ("true", "1", "yes")
+            use_voxelwise = getattr(model, "supports_voxelwise", True) and not force_parcel
 
-            if getattr(model, "supports_voxelwise", True):
+            if use_voxelwise:
                 inputs = CurveInputs(
                     c_tissue=c_t, c_input=ca, t_s=t_s, mask=voxel_mask,
                 )
-                result = model.fit(inputs, **opts)
+                call_opts = dict(opts)
+                # Pin gamma's flow F to the pipeline's Tikhonov CBF (the two-stage
+                # design) by passing it as a per-voxel f_cbf (1/s), so gamma's
+                # VARPRO uses the pipeline CBF instead of recomputing its own.
+                if (pin_cbf_map is not None and "f_cbf" not in call_opts
+                        and (model_key == "gamma"
+                             or "f_cbf" in (getattr(model, "accepts", {}) or {}))):
+                    call_opts["f_cbf"] = np.asarray(pin_cbf_map, dtype=float).ravel() / 6000.0
+                result = model.fit(inputs, **call_opts)
             else:
                 # Average-then-fit per parcel, painted back to a map. For
                 # models too costly for voxelwise (e.g. gamma): fit each
@@ -648,13 +843,24 @@ class KineticStage:
             # ("voxelwise") vs an average-then-fit painted back per parcel
             # ("parcel") — so a parcel-painted map is never mislabelled as
             # voxelwise.
-            level = "voxelwise" if getattr(model, "supports_voxelwise", True) else "parcel"
+            level = "voxelwise" if use_voxelwise else "parcel"
             for name, arr in shaped.items():
                 p = ctx.path_scheme.output_path(
                     ctx.subject_dir, self.name, model_key, level, name, "nii.gz"
                 )
                 _save_nifti(arr, affine, p)
                 artefacts[f"{model_key}/{name}"] = p
+
+            # Additionally paint the parcel-level fit-of-average (region/WMH
+            # comparison), keeping the voxelwise maps above for spatial work.
+            if use_voxelwise and also_parcel and parc_arr is not None:
+                pr = _fit_parcel_painted(model, C, ca, t_s, parc_arr, opts, cbf_map=pin_cbf_map)
+                for name, arr in pr.maps.items():
+                    pp = ctx.path_scheme.output_path(
+                        ctx.subject_dir, self.name, model_key, "parcel", name, "nii.gz")
+                    _save_nifti(np.asarray(arr, dtype=float), affine, pp)
+                    artefacts[f"{model_key}/parcel/{name}"] = pp
+                _log.info("kinetic: %s also painted at parcel level (region comparison)", model_key)
 
             # Physiological-range QC on the brain-median of each scalar map.
             from pbrain.core.qc import check_maps
@@ -837,7 +1043,12 @@ class AggregationStage:
     a single pass — same code path, different source manifests.
     """
     name: str = "summary"
-    requires: tuple[str, ...] = ("kinetic", "tissue_roi")
+    # signal_to_conc/aif/load are needed only by the median_curve aggregator
+    # (it pools raw concentration curves + the AIF instead of reducing the
+    # voxelwise parameter maps); they are already upstream so requiring them
+    # is free.
+    requires: tuple[str, ...] = ("kinetic", "tissue_roi",
+                                 "load", "signal_to_conc", "aif")
     plugin_key: str = "multi"
 
     def run(self, ctx: StageContext) -> StageOutput:
@@ -858,6 +1069,21 @@ class AggregationStage:
                 ldata = json.load(f)
             labels = {int(k): v for k, v in ldata.get("labels", {}).items()}
             region_map = ldata.get("region_map") or None
+
+        # The median_curve aggregator fits pooled ROI curves rather than
+        # reducing voxelwise maps, so it needs the raw concentration 4-D, the
+        # (un-normalised) AIF curve and the time axis. Load them once, lazily.
+        curve_inputs: dict[str, Any] = {}
+        if "median_curve" in ctx.config.analysis_levels:
+            stc_mf = ctx.upstream_manifests["signal_to_conc"]
+            aif_mf = ctx.upstream_manifests["aif"]
+            load_mf = ctx.upstream_manifests["load"]
+            curve_inputs = {
+                "concentration_4d": np.asarray(
+                    nib.load(str(stc_mf.outputs["concentration"])).dataobj, dtype=float),
+                "c_a": np.load(aif_mf.outputs["aif_signal"]),
+                "t_s": np.load(load_mf.outputs["dce_time_s"]),
+            }
 
         artefacts: dict[str, Path] = {}
 
@@ -897,6 +1123,10 @@ class AggregationStage:
                 for agg_key in ctx.config.analysis_levels:
                     if agg_key == "voxelwise" and model_level != "voxelwise":
                         continue
+                    # median_curve fits a *kinetic* model on pooled curves;
+                    # it has no meaning for diffusion outputs.
+                    if agg_key == "median_curve" and namespace != "kinetic":
+                        continue
                     if agg_key not in AGGREGATORS:
                         raise RuntimeError(
                             f"Aggregator {agg_key!r} not in registry. "
@@ -908,6 +1138,11 @@ class AggregationStage:
                     )
                     out_dir.mkdir(parents=True, exist_ok=True)
                     opts = dict(ctx.config.options_for("aggregation", agg_key))
+                    if agg_key == "median_curve":
+                        opts.update(curve_inputs)
+                        opts["model"] = MODELS.get(model_key)
+                        opts["model_opts"] = dict(
+                            ctx.config.options_for("models", model_key))
                     res = agg.aggregate(
                         maps, units,
                         reference_affine=ref_affine,

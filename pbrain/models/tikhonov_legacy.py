@@ -52,5 +52,9 @@ class _TikhonovLegacy:
         opts.setdefault("mtt_cth_method",   "residue_integral")
         return _SMART.fit(inputs, **opts)
 
+    def predict(self, maps: dict[str, Any], c_input: np.ndarray,
+                t_s: np.ndarray) -> np.ndarray:
+        return _SMART.predict(maps, c_input, t_s)
+
 
 PLUGIN = _TikhonovLegacy()

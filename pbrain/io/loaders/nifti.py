@@ -49,10 +49,31 @@ class _NiftiLoader:
 
     def load(self, path: Path, **opts: Any) -> Series4D:
         import nibabel as nib
+        from nibabel.filebasedimages import ImageFileError
 
         path = Path(path)
-        img = nib.load(str(path))
-        data = np.asarray(img.dataobj, dtype=np.float32)
+        # Validate the file up front. A 0-byte / truncated NIfTI — from a failed
+        # or interrupted dcm2niix conversion, a disk-full write, an aborted
+        # download, or a bad copy — otherwise makes nibabel raise a cryptic error
+        # deep in the call stack (the infamous "Empty file"). Fail early with a
+        # message naming the file and the likely cause so it's obvious what to fix.
+        if not path.exists():
+            raise FileNotFoundError(f"Input image does not exist: {path}")
+        size = path.stat().st_size
+        if size < 2048:
+            raise ImageFileError(
+                f"Input NIfTI is empty or truncated ({size} bytes): {path} — "
+                f"likely a failed/interrupted conversion or a disk-full write. "
+                f"Re-generate or replace this file."
+            )
+        try:
+            img = nib.load(str(path))
+            data = np.asarray(img.dataobj, dtype=np.float32)
+        except Exception as e:                       # noqa: BLE001 — add file context
+            raise ImageFileError(
+                f"Unreadable NIfTI ({size} bytes): {path} — {type(e).__name__}: "
+                f"{e}. The file is corrupt or not a valid NIfTI; re-generate it."
+            ) from e
         affine = np.asarray(img.affine, dtype=float)
         zooms = img.header.get_zooms()
         voxel_size = tuple(float(z) for z in zooms[:3])  # type: ignore[assignment]

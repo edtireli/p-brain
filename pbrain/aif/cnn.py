@@ -257,6 +257,9 @@ def _curve_from_masks(
     *,
     curve_method: str,
     baseline_frames: int,
+    max_conc_mM: float = 0.0,
+    select_on: str = "signal",
+    signal_volume: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Extract the AIF curve from the union of per-slice ROIs.
 
@@ -268,6 +271,13 @@ def _curve_from_masks(
       Downstream signal→conc averages T1/M0 over this *tight* mask so
       the conversion uses pure-blood relaxation parameters rather than a
       partial-volume mean.
+
+    ``select_on`` controls how ``max_voxel`` ranks candidates: ``"signal"``
+    (default, reference behaviour) ranks by the raw DCE-signal peak supplied
+    in ``signal_volume`` — the actually-brightest blood voxel — while
+    ``"concentration"`` ranks by the converted mM peak (which lets a low
+    fitted-M0 voxel win). Either way the *returned* curve is the concentration
+    curve of the chosen voxel.
     """
     X, Y, Z, T = dce.shape
     mask3d_full = np.zeros((X, Y, Z), dtype=bool)
@@ -290,22 +300,53 @@ def _curve_from_masks(
         curve = np.median(roi_tc, axis=0)
         mask3d_curve = mask3d_full
     elif method in ("adaptive_max", "adaptive-max", "adaptivemax"):
-        curve = roi_tc.max(axis=0)
+        # Per-frame brightest voxel within the ROI (the "adaptive" bolus curve).
+        # Drop voxels with any NaN frame (failed T1/M0) so one bad voxel doesn't
+        # NaN-poison the whole curve; then take the per-frame max over the rest.
+        _valid = np.isfinite(roi_tc).all(axis=1)
+        curve = np.nanmax(roi_tc[_valid] if _valid.any() else roi_tc, axis=0)
         mask3d_curve = mask3d_full
     else:
-        # Default legacy: pick the single voxel with the highest peak
-        # over the whole time series, use its raw curve.
-        # NaN-aware: voxels with any NaN (failed T1 fit, etc.) are
-        # excluded from the max selection so they can't poison the AIF.
+        # Default: pick the single voxel with the highest baseline-corrected
+        # peak. Ranking is on the raw SIGNAL by default (the brightest blood
+        # voxel, matching the reference pipeline); ``select_on="concentration"``
+        # ranks on the mM curve instead. The returned curve is always the
+        # concentration curve of the chosen voxel.
+        # NaN-aware: voxels with any NaN frame are excluded from the max.
+        score_tc = roi_tc
+        if str(select_on).strip().lower() == "signal" and signal_volume is not None:
+            sv = np.asarray(signal_volume)
+            if sv.shape[:3] == mask3d_full.shape:
+                score_tc = sv[mask3d_full]
         with np.errstate(invalid="ignore"):
             bf = max(1, int(baseline_frames))
-            baseline = np.nanmean(roi_tc[:, :bf], axis=1, keepdims=True)
-            corrected = roi_tc - baseline
+            baseline = np.nanmean(score_tc[:, :bf], axis=1, keepdims=True)
+            corrected = score_tc - baseline
             # Voxels with any NaN frame → finite=False → score = -inf
             finite_voxel = np.isfinite(corrected).all(axis=1)
             peak_per_voxel = np.where(
                 finite_voxel, np.nanmax(corrected, axis=1), -np.inf,
             )
+            # Saturation-recovery DCE saturates in pure blood: at the AIF peak
+            # the signal is ~95 % recovered, so the log conversion is unstable
+            # and a single noisy bright frame tips S/K→1, clamping that voxel to
+            # tens of mM. Such clamps are non-physiological, so always reject
+            # candidates whose *concentration* peak exceeds a physiological blood
+            # ceiling — independent of how voxels are ranked.
+            if max_conc_mM and max_conc_mM > 0:
+                conc_peak = np.where(finite_voxel, np.nanmax(roi_tc, axis=1), np.inf)
+                physiological = conc_peak <= float(max_conc_mM)
+                if physiological.any():
+                    peak_per_voxel = np.where(physiological, peak_per_voxel, -np.inf)
+                else:
+                    # All candidates clamp — fall back to the most conservative
+                    # (least-saturated) voxel rather than the highest.
+                    finite_peaks = np.where(finite_voxel, conc_peak, np.inf)
+                    bv = int(np.argmin(finite_peaks))
+                    curve = roi_tc[bv].copy()
+                    bx, by, bz = coords[bv]
+                    mask3d_curve[bx, by, bz] = True
+                    return np.asarray(curve, dtype=np.float32), mask3d_full, mask3d_curve
         if not np.isfinite(peak_per_voxel).any():
             raise RuntimeError(
                 "CNN AIF: all candidate voxels in the ROI have NaN curves "
@@ -360,7 +401,14 @@ class _CnnAIF:
         frame_candidates: list[int] | None = None,
         baseline_frames: int = 5,
         curve_method: str = "max_voxel",
+        select_on: str = "signal",
+        max_conc_mM: float = 0.0,
         rot90_k: int = -1,
+        max_vessel_m0: bool = False,
+        aif_flip_deg: float = 30.0,
+        aif_tr_s: float = 0.00396,
+        aif_r1: float = 4.0,
+        aif_td: float = 0.120,
         **_: Any,
     ) -> InputFunction:
         """The CNN runs on ``dce_data`` (signal — its training distribution).
@@ -445,12 +493,49 @@ class _CnnAIF:
         if not masks:
             raise RuntimeError("CNN AIF: U-Net produced no usable masks.")
 
+        # Default: each vessel voxel keeps its own fitted M0 (per-voxel
+        # conversion, as in the reference pipeline). Opt-in ``max_vessel_m0``
+        # instead re-converts every vessel voxel with a single max(M0) over the
+        # ROI; enable only via ``--opt aif.<key>.max_vessel_m0=true``.
+        if (max_vessel_m0 and concentration_data is not None
+                and m0_map is not None and t1_map is not None):
+            m0_rot = (np.rot90(np.asarray(m0_map, float), k=rot_k, axes=(0, 1))
+                      if rot_k else np.asarray(m0_map, float))
+            t1_rot = (np.rot90(np.asarray(t1_map, float), k=rot_k, axes=(0, 1))
+                      if rot_k else np.asarray(t1_map, float))
+            X, Y, Z, _ = d.shape
+            union = np.zeros((X, Y, Z), dtype=bool)
+            for z, m in masks.items():
+                if m.shape == (X, Y):
+                    union[:, :, z] = m
+            mvox = m0_rot[union]
+            mvox = mvox[np.isfinite(mvox) & (mvox > 0)]
+            if union.any() and mvox.size:
+                max_m0 = float(np.max(mvox))
+                from pbrain.signal_to_conc import REGISTRY as _CONV
+                sig = d[union]                              # (n_vessel, T) signal
+                cc = _CONV["saturation_recovery"].convert(
+                    sig, t1_rot[union], np.full(sig.shape[0], max_m0),
+                    flip_angle_deg=float(aif_flip_deg), tr_s=float(aif_tr_s),
+                    r1_per_s_mM=float(aif_r1), prepulse_to_readout_s=float(aif_td),
+                    baseline_frames=int(baseline_frames),
+                )
+                c_rot = c_rot.copy()
+                c_rot[union] = np.asarray(cc, dtype=np.float32)
+
         # Curve extraction uses the concentration volume (mM) when provided,
         # so each voxel's own T1/M0 carries through into the curve units.
         curve, mask3d_full_rot, mask3d_curve_rot = _curve_from_masks(
             c_rot, masks,
             curve_method=curve_method,
             baseline_frames=int(baseline_frames),
+            # Only meaningful when the curve is read from concentration (mM);
+            # for raw-signal extraction the magnitudes aren't mM, so disable.
+            max_conc_mM=float(max_conc_mM) if concentration_data is not None else 0.0,
+            # Rank the max-voxel on the raw signal (brightest blood) by default;
+            # ``d`` is the rotated signal even when the curve is read from mM.
+            select_on=select_on,
+            signal_volume=d,
         )
 
         # Un-rotate masks back into native DCE indexing so downstream

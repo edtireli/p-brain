@@ -793,5 +793,19 @@ class TikhonovModel:
             aux={"cbv_vd": cbv_aux},
         )
 
+    def predict(self, maps: dict[str, Any], c_input: np.ndarray,
+                t_s: np.ndarray) -> np.ndarray:
+        """QC reconstruction of Cₜ from (cbf, mtt, cth) via a gamma-variate
+        residue proxy. Tikhonov's actual fit is a *non-parametric* residue whose
+        exact overlay is produced by ``diagnostics.tikhonov``; this proxy gives
+        the uniform predict() interface a sensible parametric curve."""
+        from .base import reconstruct_gamma_residue_ct
+        return reconstruct_gamma_residue_ct(
+            t_s, c_input,
+            cbf=float(maps.get("cbf", float("nan"))),
+            mtt=float(maps.get("mtt", float("nan"))),
+            cth=float(maps.get("cth", float("nan"))),
+        )
+
 
 PLUGIN = TikhonovModel()
