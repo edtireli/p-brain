@@ -143,7 +143,7 @@ def fit_patlak(
     single_bolus: bool = False,
     single_bolus_start_s: float = 60.0,
     aif_min_fraction: float = 0.05,
-    aif_floor_double_bolus: bool = True,
+    aif_floor_double_bolus: bool = False,
     detrend: DetrendMode = "none",
     detrend_tail_frac: float = 0.30,
     detrend_threshold: float = 5e-4,
@@ -214,9 +214,10 @@ def fit_patlak(
     # x by 1000× and creates a high-leverage outlier that OLS fits, blowing
     # Ki up to non-physical values (observed cohort-wide). Excluding
     # Cₐ < aif_min_fraction·peak removes the leverage without touching the
-    # well-conditioned bulk. Legacy applied this only in single-bolus mode (a
-    # bug for dual-bolus); ``aif_floor_double_bolus`` enables it always
-    # (default). Set False for byte-parity with the legacy dual-bolus fit.
+    # well-conditioned bulk. The floor is ON by default (robust); single-bolus
+    # always floors. The published method applies NO floor — for byte-parity
+    # with patlak_xy use the ``patlak_legacy`` model, which pins
+    # ``aif_floor_double_bolus=False``.
     if single_bolus or aif_floor_double_bolus:
         ca_peak = float(np.nanmax(c_a))
         if ca_peak > 0:
@@ -318,11 +319,48 @@ class PatlakModel:
         if c_t.ndim != 2:
             raise ValueError(f"c_tissue must be 1-D or 2-D; got shape {c_t.shape}")
 
-        # Vectorised voxelwise path: smart tail + Huber regression by default.
-        # Pass-through opts are split between vector tools and legacy single-curve
-        # opts (which still apply when the caller forces ``tail_mode='legacy'``).
-        from ._patlak_tools import fit_patlak_vectorised
+        # 2-D voxelwise path.
+        #
+        # ``baseline_shift`` selects the per-voxel baseline convention:
+        #   * False (DEFAULT) — MATLAB-exact: the signal→conc conversion already
+        #     subtracts the pre-bolus baseline MEAN and zeros the fixed baseline
+        #     window (``create_MR_concentration_deck.m`` / the 05 stage), and the
+        #     AIF stays RAW. No extra shift. Matches the supervisor MATLAB Patlak.
+        #   * True — additionally apply the legacy p-Brain per-voxel
+        #     ``find_baseline_point_advanced`` + ``custom_shifter`` (detect bolus
+        #     onset, zero pre-onset frames, subtract the post-onset MINIMUM). This
+        #     reproduces the published ``Ki_per_voxel.nii.gz`` exactly, but the
+        #     min-subtract lifts noisy tails and biases Ki vs the MATLAB value.
+        # Tunable per run: ``--opt models.patlak.baseline_shift=true``.
+        # ``tail_mode``: 'legacy' = exact per-voxel ``fit_patlak`` loop (slow
+        # reference); 'x_max_fraction'/'smart' = the older index-window path.
+        baseline_shift = bool(opts.get("baseline_shift", False))
+        ct2d = c_t
+        if baseline_shift:
+            from ._baseline_shift import baseline_shift_2d
+            ct2d = baseline_shift_2d(c_t)
 
+        tail_mode = str(opts.get("tail_mode", "legacy_vectorised")).lower()
+        w_start = float(opts.get("window_start_fraction", 1.0 / 3))
+
+        if tail_mode == "legacy_vectorised":
+            from ._baseline_shift import fit_patlak_legacy_vectorised
+            regression = str(opts.get("regression", "huber")).lower()
+            res = fit_patlak_legacy_vectorised(
+                ct2d, c_a, t_s, mask=inputs.mask, window_start_fraction=w_start,
+                regression=regression,
+                huber_delta=float(opts.get("huber_delta", 1.345)),
+                huber_max_iter=int(opts.get("huber_max_iter", 20)),
+            )
+            return ModelResult(
+                maps={"ki": res["ki_ml_per_100g_min"], "vb": res["vb_ml_per_100g"]},
+                units=dict(self.units),
+                aux={"sd_ki": res["sd_ki_ml_per_100g_min"],
+                     "baseline_shift": baseline_shift,
+                     "tail_mode": "legacy_vectorised", "regression": regression},
+            )
+
+        from ._patlak_tools import fit_patlak_vectorised
         vector_keys = {
             "tail_mode", "regression", "huber_delta", "huber_max_iter",
             "baseline_frames", "decay_threshold", "min_tail_frac",
@@ -330,32 +368,29 @@ class PatlakModel:
         }
         vector_opts = {k: opts[k] for k in list(opts.keys()) if k in vector_keys}
 
-        if opts.get("tail_mode", "smart") == "legacy":
-            # Bit-equal fallback: per-voxel ``fit_patlak`` loop (matches the
-            # legacy upper-2/3 ``x_max`` window exactly).
-            legacy_opts = {k: v for k, v in opts.items() if k not in vector_keys}
-            n_v = c_t.shape[1]
+        if tail_mode == "legacy":
+            # Exact per-voxel ``fit_patlak`` loop (slow reference path).
+            legacy_opts = {k: v for k, v in opts.items()
+                           if k not in vector_keys and k != "baseline_shift"}
+            n_v = ct2d.shape[1]
             ki = np.full(n_v, np.nan)
             vb = np.full(n_v, np.nan)
             sd = np.full(n_v, np.nan)
             voxels = (range(n_v) if inputs.mask is None
                       else np.flatnonzero(np.asarray(inputs.mask, dtype=bool)))
             for v in voxels:
-                fit = fit_patlak(c_t[:, v], c_a, t_s, **legacy_opts)
+                fit = fit_patlak(ct2d[:, v], c_a, t_s, **legacy_opts)
                 ki[v] = fit.ki_ml_per_100g_min
                 vb[v] = fit.vb_ml_per_100g
                 sd[v] = fit.sd_ki_ml_per_100g_min
             return ModelResult(
                 maps={"ki": ki, "vb": vb},
                 units=dict(self.units),
-                aux={"sd_ki": sd, "tail_mode": "legacy", "regression": "ols"},
+                aux={"sd_ki": sd, "baseline_shift": baseline_shift,
+                     "tail_mode": "legacy", "regression": "ols"},
             )
 
-        res = fit_patlak_vectorised(
-            c_t, c_a, t_s,
-            mask=inputs.mask,
-            **vector_opts,
-        )
+        res = fit_patlak_vectorised(ct2d, c_a, t_s, mask=inputs.mask, **vector_opts)
         return ModelResult(
             maps={"ki": res["ki_ml_per_100g_min"], "vb": res["vb_ml_per_100g"]},
             units=dict(self.units),
@@ -363,8 +398,9 @@ class PatlakModel:
                 "sd_ki": res["sd_ki_ml_per_100g_min"],
                 "tail_start": res["tail_start"],
                 "tail_end": res["tail_end"],
-                "tail_mode": vector_opts.get("tail_mode", "smart"),
-                "regression": vector_opts.get("regression", "huber"),
+                "baseline_shift": baseline_shift,
+                "tail_mode": vector_opts.get("tail_mode", "x_max_fraction"),
+                "regression": vector_opts.get("regression", "ols"),
             },
         )
 
@@ -392,6 +428,20 @@ class PatlakModel:
                 "good_mask": fit.good_mask,
             },
         )
+
+
+    def predict(self, maps: dict[str, Any], c_input: np.ndarray,
+                t_s: np.ndarray) -> np.ndarray:
+        """Reconstruct Cₜ = (Ki/6000)·∫₀ᵗCₐ + (vb/100)·Cₐ from the fitted maps."""
+        ca = np.asarray(c_input, dtype=float).ravel()
+        t = np.asarray(t_s, dtype=float).ravel()
+        n = int(min(ca.size, t.size))
+        ca, t = ca[:n], t[:n]
+        ki = float(maps.get("ki", float("nan"))) / 6000.0     # mL/100g/min → 1/s
+        vb = float(maps.get("vb", float("nan"))) / 100.0      # mL/100g → fraction
+        dt = np.diff(t)
+        cumint = np.concatenate(([0.0], np.cumsum(ca[:-1] * dt)))
+        return ki * cumint + vb * ca
 
 
 PLUGIN = PatlakModel()

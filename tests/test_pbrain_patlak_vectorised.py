@@ -119,14 +119,48 @@ def test_fit_patlak_vectorised_recovers_known_ki():
 
 
 def test_plugin_uses_vectorised_path_for_2d_input():
-    """PatlakModel.fit should route 2-D input through fit_patlak_vectorised."""
+    """PatlakModel.fit routes 2-D input through a vectorised path. The DEFAULT is
+    ``legacy_vectorised`` (bit-identical to the legacy per-voxel Ki map, OLS); the
+    older smart-tail vectorised path stays reachable via ``tail_mode``."""
     c_t1, c_a, t = _synth(ki_true=0.30, seed=10)
     c_t2, _, _ = _synth(ki_true=0.70, seed=11)
     c_t = np.stack([c_t1, c_t2], axis=1)
     res = REGISTRY["patlak"].fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t))
-    # aux should expose the vectorised metadata
-    assert "tail_start" in res.aux
-    assert res.aux["regression"] == "huber"
+    assert res.aux["tail_mode"] == "legacy_vectorised"
+    assert res.aux["regression"] == "huber"   # Huber-M is now the default fit
+    # MATLAB-exact convention is the default: no extra per-voxel custom_shifter
+    # (the conversion already mean-subtracts + zeros the baseline; AIF stays raw).
+    # Set baseline_shift=True to reproduce the published Ki_per_voxel.nii.gz.
+    assert res.aux.get("baseline_shift") is False
+    assert REGISTRY["patlak"].fit(
+        CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t), baseline_shift=True
+    ).aux.get("baseline_shift") is True
+    # OLS stays reachable for the bitwise gate against the OLS-fit dataset
+    res_ols = REGISTRY["patlak"].fit(
+        CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t), regression="ols")
+    assert res_ols.aux["regression"] == "ols"
+    # the older smart-tail vectorised path still works and exposes tail metadata
+    res2 = REGISTRY["patlak"].fit(
+        CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t),
+        tail_mode="x_max_fraction", baseline_shift=False,
+    )
+    assert "tail_start" in res2.aux
+
+
+def test_legacy_vectorised_ols_is_bit_identical_to_loop():
+    """The OLS vectorised path (``regression='ols'`` + ``baseline_shift``) must be
+    1:1 with the per-voxel ``fit_patlak`` loop — the guarantee that the fast
+    voxelwise Ki map equals the legacy ``Ki_per_voxel.nii.gz`` math everywhere.
+    (The DEFAULT is now Huber-M; OLS stays reachable for this bitwise gate.)"""
+    cols = [_synth(ki_true=0.05 + 0.03 * s, seed=200 + s)[0] for s in range(40)]
+    _, c_a, t = _synth(ki_true=0.3, seed=0)
+    c_t = np.stack(cols, axis=1)                       # (T, 40)
+    inp = CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t)
+    kv = np.asarray(REGISTRY["patlak"].fit(inp, regression="ols").maps["ki"])     # OLS vectorised
+    kl = np.asarray(REGISTRY["patlak"].fit(inp, tail_mode="legacy").maps["ki"])   # per-voxel OLS loop
+    g = np.isfinite(kv) & np.isfinite(kl)
+    assert int(g.sum()) >= 20
+    assert float(np.max(np.abs(kv[g] - kl[g]))) < 1e-9
 
 
 def test_legacy_tail_mode_falls_back_to_loop():

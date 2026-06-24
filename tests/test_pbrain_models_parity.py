@@ -95,7 +95,10 @@ def test_patlak_voxelwise_batch():
     c_t = np.stack([c_t1, c_t2, c_t3], axis=1)   # (T, 3)
 
     plugin = REGISTRY["patlak"]
-    res = plugin.fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t))
+    # baseline_shift (the legacy DCE ``custom_shifter``) is OFF by default
+    # (MATLAB-exact); baseline_shift=True reproduces old-pbrain ``Ki_per_voxel``
+    # but reshapes these idealised phantoms, so keep it off for pure-recovery here.
+    res = plugin.fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t), baseline_shift=False)
     assert res.maps["ki"].shape == (3,)
     assert res.maps["vb"].shape == (3,)
     # Each voxel recovers approximately the truth.

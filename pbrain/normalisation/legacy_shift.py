@@ -78,16 +78,24 @@ def _find_baseline_point(
     order: int = 3,
     peak_radius: int = 10,
     num_peaks: int = 2,
+    y_filtered: np.ndarray | None = None,
 ) -> int:
     """Forward-walk baseline-departure detection (legacy semantics).
 
     Returns the index of the last flat frame before bolus onset.
-    Falls back to ``10`` on any numerical failure.
+    Falls back to ``10`` on any numerical failure. ``y_filtered`` lets a caller
+    pass the low-pass-filtered curve in (e.g. from a single batched ``filtfilt``
+    over all voxels), skipping the per-voxel filter — bit-identical result.
     """
-    try:
-        y_f = _butter_lowpass_filter(y_data.astype(float), cutoff, fs, order)
-    except Exception:
-        return 10
+    if y_filtered is not None:
+        y_f = np.asarray(y_filtered, dtype=float)
+        if not np.all(np.isfinite(y_f)):     # matches the per-voxel filter's except→10
+            return 10
+    else:
+        try:
+            y_f = _butter_lowpass_filter(y_data.astype(float), cutoff, fs, order)
+        except Exception:
+            return 10
 
     n = int(y_f.size)
     if n < 12:
@@ -207,23 +215,43 @@ class _LegacyShift:
             return _custom_shift(c1, bp)
 
         if c.ndim == 2:
-            # (T, V) — process each voxel independently.
+            # (T, V) — same per-voxel algorithm, but the expensive Butterworth
+            # filtfilt (the bottleneck) is batched over all columns in one call;
+            # only the cheap peak-walk stays per-voxel. Bit-identical to the loop.
             T, V = c.shape
-            out = np.empty_like(c)
-            for v in range(V):
-                col = c[:, v]
-                if not np.any(np.isfinite(col)) or np.all(col == 0):
-                    out[:, v] = 0.0
-                    continue
-                col1 = _turboflash_baseline_subtract(col, turboflash_baseline_frames)
+            cf = c.astype(float)
+            out = np.zeros_like(cf)
+            valid = np.any(np.isfinite(cf), axis=0) & ~np.all(cf == 0, axis=0)
+
+            # vectorised turboflash baseline subtract (== _turboflash_baseline_subtract)
+            c1 = cf.copy()
+            bf = int(min(max(turboflash_baseline_frames, 3), T))
+            if bf > 2:
+                base = np.mean(c1[2:bf], axis=0)
+                base = np.where(np.isfinite(base), base, 0.0)
+                c1 = c1 - base[None, :]
+                c1[:bf] = 0.0
+
+            # single batched low-pass filter over all voxels (NaN columns → NaN,
+            # which _find_baseline_point maps to the legacy bp=10 fallback).
+            yf = None
+            try:
+                nyq = 0.5 * fs
+                b, a = butter(order, cutoff / nyq, btype="low", analog=False)
+                yf = filtfilt(b, a, c1, axis=0)
+            except Exception:
+                yf = None
+
+            for v in np.flatnonzero(valid):
                 try:
                     bp = _find_baseline_point(
-                        col1, fs=fs, cutoff=cutoff, order=order,
+                        c1[:, v], fs=fs, cutoff=cutoff, order=order,
                         peak_radius=peak_radius, num_peaks=num_peaks,
+                        y_filtered=(yf[:, v] if yf is not None else None),
                     )
                 except Exception:
                     bp = 10
-                out[:, v] = _custom_shift(col1, bp)
+                out[:, v] = _custom_shift(c1[:, v], int(bp))
             return out
 
         raise ValueError(f"curve must be 1-D or 2-D; got shape {c.shape}")

@@ -26,10 +26,10 @@ class Config:
     aif_extractor: str = "cnn_sss_shifted"
     tissue_roi_provider: str = "synthseg"
     signal_to_conc: str = "saturation_recovery"
-    normaliser: str = "legacy_shift"
+    normaliser: str = "identity"
     kinetic_models: tuple[str, ...] = ("patlak", "tikhonov")
     diffusion_models: tuple[str, ...] = ()                # opt-in via --diffusion
-    analysis_levels: tuple[str, ...] = ("voxelwise", "parcel", "region")
+    analysis_levels: tuple[str, ...] = ("median_curve", "voxelwise", "parcel", "region")
     path_scheme: str = "bids_like"
 
     # ── Compute device ───────────────────────────────────────────────
@@ -44,6 +44,13 @@ class Config:
     flip_angle_deg: float = 30.0     # DCE readout flip angle (paper protocol)
     r1_per_s_mM: float = 4.0     # relaxivity at 3 T
     prepulse_to_readout_s: float = 0.120
+    # Optional AIF flow correction (OFF by default = pure voxelwise pipeline).
+    # Flowing blood breaks the static saturation-recovery T1 fit (inflow → faster
+    # apparent recovery → underestimated T1), which can inflate / log-clamp the
+    # AIF for high-enhancement arterial voxels. Set to a literature blood T1
+    # (≈1600 ms at 3 T; Lu 2004) to convert the AIF curve with that instead of
+    # the per-voxel fit. 0 = use the voxelwise fitted T1 everywhere (default).
+    aif_blood_t1_ms: float = 0.0
     dt_s: float = 2.463          # DCE temporal sampling
     n_bolus: int = 2             # single- vs double-bolus
 

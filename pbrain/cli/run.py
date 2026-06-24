@@ -28,6 +28,64 @@ from pbrain.io.path_schemes import REGISTRY as PATH_SCHEMES
 from pbrain.stages import default_stages
 
 
+def _resolve_subject_input(value: str, subject_dir: Path, kind: str) -> Path | None:
+    """Resolve a ``--dce/--t1/--ir`` value that may not be a full path.
+
+    A researcher running many subjects shouldn't have to paste a different
+    absolute path per subject when the *protocol name* (or a converted
+    filename) is constant. ``value`` is tried, in order, as:
+
+    1. an existing path (back-compatible — full paths still work);
+    2. a filename relative to the subject dir or its parent
+       (e.g. ``ir_stack.nii.gz``);
+    3. ``"auto"`` → protocol-based discovery (DCE=``hperf*``, a 3-D T1
+       anatomical, or assemble the ``TI_*`` series for the IR);
+    4. otherwise a **protocol-name substring** (e.g. ``--dce hperf``,
+       ``--t1 T1W_3D_TFE``), matched against the raw PAR headers.
+
+    Searches the subject dir and its parent (so it works whether
+    ``--subject-dir`` is the raw scan folder or a ``…/pbrain`` output dir).
+    Returns the resolved path, or ``None`` if nothing matched.
+    """
+    from pbrain.io.subject_discovery import (
+        _pars, find_dce, find_t1_anatomical, protocol_name,
+    )
+
+    sval = str(value).strip()
+    is_auto = sval.lower() == "auto"
+    roots = [subject_dir, subject_dir.parent]
+
+    if not is_auto:
+        p = Path(sval).expanduser()
+        if p.exists():                                   # (1) explicit path
+            return p
+        for root in roots:                               # (2) filename in a root
+            if (root / sval).exists():
+                return root / sval
+
+    for root in roots:                                   # (3)/(4) discover / protocol
+        if not root.is_dir():
+            continue
+        if kind == "ir":
+            from pbrain.io.ir_assembly import assemble_ir, find_ir_files
+            if find_ir_files(root):
+                out = subject_dir / "ir_assembled.nii.gz"
+                if not out.exists():
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    assemble_ir(root, out)
+                return out
+            continue
+        if is_auto:
+            hit = find_dce(root) if kind == "dce" else find_t1_anatomical(root)
+        else:
+            sl = sval.lower()
+            hit = next((par for par in _pars(root)
+                        if sl in protocol_name(par).lower()), None)
+        if hit is not None:
+            return hit
+    return None
+
+
 def _parse_opts(opt_pairs: list[str]) -> dict[str, dict[str, str]]:
     """Parse ``--opt plug.point.key=value`` pairs into nested config."""
     out: dict[str, dict[str, str]] = {}
@@ -71,9 +129,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # Not required at the parser level — may be supplied by --config.
     p.add_argument("--subject-dir", type=Path, default=None,
                    help="Subject root directory (outputs land under here).")
-    p.add_argument("--dce", type=Path, default=None, help="DCE 4-D series.")
-    p.add_argument("--t1", type=Path, default=None, help="T1-weighted anatomical volume.")
-    p.add_argument("--ir", type=Path, default=None, help="Inversion-recovery series.")
+    p.add_argument("--dce", type=Path, default=None,
+                   help="DCE 4-D series: a path, a filename in the subject dir, a "
+                        "protocol-name substring (e.g. 'hperf'), or 'auto'.")
+    p.add_argument("--t1", type=Path, default=None,
+                   help="T1-weighted anatomical: path / filename / protocol substring "
+                        "(e.g. 'T1W_3D_TFE') / 'auto'.")
+    p.add_argument("--ir", type=Path, default=None,
+                   help="Inversion-recovery series: path / filename / 'auto' (assemble "
+                        "the TI_* saturation-recovery scans).")
     p.add_argument("--dwi", type=Path, default=None,
                    help="DWI 4-D series (NIfTI). Sidecars .bval / .bvec auto-detected; "
                         "override via --bvals / --bvecs. Required when --diffusion is set.")
@@ -89,8 +153,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Tissue ROI provider plug-in key.")
     p.add_argument("--signal-to-conc", default="saturation_recovery",
                    help="Signal-to-concentration plug-in key.")
-    p.add_argument("--normaliser", default="legacy_shift",
-                   help="Curve-normaliser plug-in key.")
+    p.add_argument("--normaliser", default="identity",
+                   help="Curve-normaliser plug-in key (identity = raw curves; the "
+                        "Patlak model does its own baseline shift and keeps the AIF raw).")
     p.add_argument("--models", default="patlak,tikhonov",
                    help="Comma-separated list of kinetic-model keys.")
     p.add_argument("--diffusion", default=None,
@@ -101,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         "(shell-aware: dti always; dki/dki_micro/csd/"
                         "fwdti added for multi-shell data). Empty string "
                         "explicitly disables the diffusion track.")
-    p.add_argument("--aggregations", default="voxelwise,parcel,region",
+    p.add_argument("--aggregations", default="median_curve,voxelwise,parcel,region",
                    help="Comma-separated list of aggregator keys.")
     p.add_argument("--path-scheme", default="bids_like",
                    choices=sorted(PATH_SCHEMES.keys()),
@@ -126,6 +191,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--r1-per-s-mM", type=float, default=4.0)
     p.add_argument("--baseline-frames", type=int, default=5)
     p.add_argument("--dt-s", type=float, default=2.463)
+    p.add_argument("--aif-blood-t1-ms", type=float, default=0.0,
+                   help="Optional AIF flow correction: convert AIF voxels with this "
+                        "fixed blood T1 (ms; 3 T ≈ 1600) instead of the per-voxel fit. "
+                        "Default 0 = voxelwise fitted T1 everywhere.")
     return p
 
 
@@ -228,6 +297,21 @@ def main(argv: list[str]) -> int:
         if v is not None and "{subject}" in str(v):
             setattr(args, dest, Path(str(v).replace("{subject}", subj_name)))
 
+    # Resolve researcher-friendly inputs: a full path still works, but --dce /
+    # --t1 / --ir may also be a filename, a protocol-name substring, or "auto"
+    # (constant across subjects, unlike the per-subject scan-numbered paths).
+    for dest, kind in (("dce", "dce"), ("t1", "t1"), ("ir", "ir")):
+        v = getattr(args, dest, None)
+        if v is None:
+            continue
+        resolved = _resolve_subject_input(str(v), args.subject_dir, kind)
+        if resolved is None:
+            raise SystemExit(
+                f"--{dest} {str(v)!r}: not an existing path, a filename in "
+                f"{args.subject_dir}/, or a protocol name found there."
+            )
+        setattr(args, dest, resolved)
+
     if args.dce is None:
         raise SystemExit("--dce is required (CLI or --config).")
 
@@ -281,6 +365,7 @@ def main(argv: list[str]) -> int:
         r1_per_s_mM=args.r1_per_s_mM,
         baseline_frames=args.baseline_frames,
         dt_s=args.dt_s,
+        aif_blood_t1_ms=args.aif_blood_t1_ms,
         subject_id=args.subject_dir.name,
         data_root=args.subject_dir.parent,
         device=resolved,
