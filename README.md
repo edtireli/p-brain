@@ -1,4 +1,4 @@
-# _p_-Brain — a modular framework for automated DCE-MRI & diffusion research
+# _p_-Brain — a modular framework for automated DCE-MRI & diffusion analysis
 
 [![CI](https://github.com/edtireli/p-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/edtireli/p-brain/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
