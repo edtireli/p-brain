@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/edtireli/p-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/edtireli/p-brain/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/edtireli/p-brain/blob/main/LICENSE)
 [![Platforms](https://img.shields.io/badge/os-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#install)
 
 <img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
@@ -73,8 +73,8 @@ orchestrator wires the stages together by those declarations — so:
   new deconvolution) by name on the command line.
 
 There are 12 such plug-points. The full contract and copy-paste templates live
-in **[`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md)**; the design rationale
-in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**. Read those two when you
+in **[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)**; the design rationale
+in **[`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md)**. Read those two when you
 want to extend the framework — the rest of this README gets you running first.
 
 ---
@@ -261,7 +261,7 @@ under [Models](#models).
 
 ## Add your own
 
-> **Step-by-step guide:** [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md) —
+> **Step-by-step guide:** [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md) —
 > templates for models, AIF methods, segmentation backends, diffusion models,
 > and whole pipeline stages. Start there.
 
@@ -305,7 +305,7 @@ to region and parcel level, and draws per-tissue fit plots — automatically.
 
 The **step-by-step guide** for this and the other 11 plug-points (AIF methods,
 segmentation backends, diffusion models, whole stages) is
-**[`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md)** — start there.
+**[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)** — start there.
 
 ---
 
@@ -448,13 +448,13 @@ Whole-brain parameter maps for one subject, masked to the brain segmentation
 (see the paper for the full set and quantitative validation):
 
 **Ki — blood–brain-barrier influx (Patlak)**
-![Ki](docs/img/ki_voxel_montage_patlak.png)
+![Ki](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/ki_voxel_montage_patlak.png)
 
 **CBF — cerebral blood flow (Tikhonov deconvolution)**
-![CBF](docs/img/cbf_montage.png)
+![CBF](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/cbf_montage.png)
 
 **FA — fractional anisotropy (DTI)**
-![FA](docs/img/fa_montage.png)
+![FA](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/fa_montage.png)
 
 These montages are produced by the pipeline itself (the `diagnostics` stage),
 with data-adaptive slice layout and brain-segmentation masking. Every map is
@@ -504,11 +504,11 @@ tests/             the test suite                validation/  cohort runners
   mkdocs build          # → ./site/   (or `mkdocs serve` for a live preview)
   ```
 
-  Entry points: [`docs/index.md`](docs/index.md) and the contributor
-  [architecture overview](docs/architecture-overview.md).
+  Entry points: [`docs/index.md`](https://github.com/edtireli/p-brain/blob/main/docs/index.md) and the contributor
+  [architecture overview](https://github.com/edtireli/p-brain/blob/main/docs/architecture-overview.md).
 - **Extending the framework** —
-  [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md) (copy-paste templates)
-  and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (full design rationale
+  [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md) (copy-paste templates)
+  and [`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md) (full design rationale
   and output layout).
 
 ---
@@ -516,4 +516,4 @@ tests/             the test suite                validation/  cohort runners
 ## Citation
 
 If _p_-Brain contributes to your work, please cite the accompanying paper
-(Tireli et al.) and this repository. See [`LICENSE`](LICENSE) for terms.
+(Tireli et al.) and this repository. See [`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
