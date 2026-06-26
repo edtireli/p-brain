@@ -984,6 +984,19 @@ class DiffusionStage:
                 _save_nifti(arr, dwi.affine, p)
                 artefacts[f"{model_key}/native/{nm}"] = p
 
+            # ---- non-NIfTI sidecars (e.g. tractography .tck) ----
+            # A plug-in may emit binary artefacts that aren't voxel maps by
+            # returning ``aux["sidecars"] = {name: (ext, bytes)}``. They are
+            # written next to the native maps and registered in the manifest
+            # but never resampled or aggregated (they aren't scalar volumes).
+            for nm, (ext, payload) in (result.aux.get("sidecars") or {}).items():
+                p = ctx.path_scheme.output_path(
+                    ctx.subject_dir, self.name, model_key, "native", nm, ext
+                )
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(bytes(payload))
+                artefacts[f"{model_key}/native/{nm}.{ext.lstrip('.')}"] = p
+
             # ---- DCE-grid (only if affines differ) ----
             voxelwise_paths: dict[str, Path] = {}
             if not same_grid:

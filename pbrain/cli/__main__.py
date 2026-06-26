@@ -104,6 +104,12 @@ def _check_deps() -> int:
 
 
 def main() -> int:
+    """Top-level ``pbrain`` entry point (the ``[project.scripts]`` target).
+
+    Dispatches the first CLI argument to the matching sub-command
+    (``run``, ``cohort``, ``list``, ``setup``, …). Returns the process
+    exit code.
+    """
     argv = sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help", "help"):
         return _help()

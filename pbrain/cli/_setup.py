@@ -39,6 +39,13 @@ def _pip_install(pkgs: list[str]) -> bool:
 
 
 def setup() -> int:
+    """Interactive ``pbrain setup`` — check/install runtime dependencies.
+
+    Probes the optional dependency groups (CNN, diffusion, DICOM, …) and
+    the ``dcm2niix`` binary, reporting what is present and offering to
+    install what is missing (only with the user's confirmation). Returns
+    the process exit code.
+    """
     from pbrain.cli._deps import _DEPS
 
     print("p-Brain setup — checking everything needed to run.\n"

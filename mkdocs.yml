@@ -1,0 +1,49 @@
+site_name: p-Brain
+site_description: A modular, cross-platform framework for automated DCE-MRI and diffusion MRI research.
+repo_url: https://github.com/edtireli/p-brain
+repo_name: edtireli/p-brain
+docs_dir: docs
+# Source-tree docs that aren't part of the rendered site live alongside;
+# only the nav below is published.
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - Architecture (for contributors): architecture-overview.md
+  - API reference:
+      - Core: api/core.md
+      - Plug-in contracts: api/contracts.md
+      - Kinetic models: api/models.md
+      - Diffusion models: api/diffusion.md
+      - Pipeline stages: api/stages.md
+      - QC: api/qc.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            show_signature_annotations: true
+            members_order: source
+            separate_signature: true
+            merge_init_into_class: true
+            filters: ["!^_"]
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - toc:
+      permalink: true

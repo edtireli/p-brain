@@ -266,6 +266,12 @@ def _expand_diffusion_bundle(spec: str | None, dwi_path: Path | None) -> tuple[s
 
 
 def main(argv: list[str]) -> int:
+    """``pbrain run`` entry point — run the full pipeline on one subject.
+
+    Parses ``argv`` into a :class:`~pbrain.core.config.Config`, builds the
+    default stage pipeline, and runs it over the subject's scans. Returns
+    the process exit code.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
 

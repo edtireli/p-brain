@@ -38,10 +38,12 @@ class Series4D:
 
     @property
     def n_frames(self) -> int:
+        """Length ``N`` of the 4th axis (frames / TIs / flip angles)."""
         return int(self.data.shape[-1])
 
     @property
     def shape3d(self) -> tuple[int, int, int]:
+        """Spatial shape ``(X, Y, Z)`` ignoring the 4th axis."""
         return tuple(self.data.shape[:3])  # type: ignore[return-value]
 
 

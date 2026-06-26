@@ -41,4 +41,11 @@ class Diagnostic(Plugin, Protocol):
 
     model_key: ClassVar[str]                # which kinetic model this diagnoses
 
-    def plot(self, ctx: DiagnosticContext) -> None: ...
+    def plot(self, ctx: DiagnosticContext) -> None:
+        """Render the model-specific diagnostic for one curve.
+
+        Re-fits the model on ``ctx``'s single tissue curve and writes a
+        PNG to ``ctx.out_path``. Called once per representative voxel,
+        per tissue class, and per parcel by the diagnostics stage.
+        """
+        ...

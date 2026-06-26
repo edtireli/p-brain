@@ -25,4 +25,13 @@ class CurveNormaliser(Plugin, Protocol):
         baseline_frames: int = 5,
         reference_curve: np.ndarray | None = None,   # for shared-scale normalisers
         **opts: Any,
-    ) -> np.ndarray: ...
+    ) -> np.ndarray:
+        """Baseline-correct and scale a concentration curve.
+
+        ``curve`` is ``(T,)`` or ``(T, V)``; ``baseline_frames`` sets how
+        many leading frames define the pre-bolus baseline. A
+        ``reference_curve`` lets shared-scale normalisers rescale tissue
+        and AIF against a common reference. Returns the normalised curve
+        with the same shape as ``curve``.
+        """
+        ...

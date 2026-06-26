@@ -133,6 +133,12 @@ def _run_one(args_tuple) -> tuple[str, str, str]:
 
 
 def main(argv: list[str]) -> int:
+    """``pbrain cohort`` entry point — run the pipeline over many subjects.
+
+    Parses ``argv``, discovers subjects under the cohort root, runs each
+    through the pipeline, and writes a cohort-level summary. Returns the
+    process exit code.
+    """
     args = _build_parser().parse_args(argv)
     configure_logging(level_from_flags(args.quiet, args.verbose), log_file=args.log_file)
     log = get_logger("cohort")

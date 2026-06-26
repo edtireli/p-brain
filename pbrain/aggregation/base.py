@@ -20,6 +20,17 @@ from pbrain.core import Plugin
 
 @dataclass(frozen=True, slots=True)
 class AggregationResult:
+    """What an aggregator returns.
+
+    Attributes
+    ----------
+    files
+        Canonical artefact name → path on disk (NIfTI maps, CSV tables,
+        JSON summaries, …) written by the aggregator.
+    summary
+        Optional scalar summary folded into the stage manifest.
+    """
+
     files: dict[str, Path]                       # canonical artefact name → path
     summary: dict[str, Any] = field(default_factory=dict)
 
@@ -40,4 +51,12 @@ class Aggregator(Plugin, Protocol):
         slice_axis: int = 2,                     # superior-inferior axis (0/1/2)
         out_dir: Path = Path("."),
         **opts: Any,
-    ) -> AggregationResult: ...
+    ) -> AggregationResult:
+        """Reduce a model's voxel maps to this aggregator's level.
+
+        Consumes ``maps``/``units`` generically (it never hard-codes a
+        parameter name), using ``parcellation``/``labels``/``region_map``
+        as needed, and writes artefacts under ``out_dir``. Returns an
+        :class:`AggregationResult` listing the files produced.
+        """
+        ...

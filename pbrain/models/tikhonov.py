@@ -37,7 +37,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 from scipy.interpolate import PchipInterpolator
-from scipy.linalg import cho_factor, cho_solve, solve_triangular
+from scipy.linalg import cho_factor, cho_solve, qr, solve_triangular, svd
 
 from .base import CurveInputs, ModelResult
 
@@ -118,6 +118,142 @@ def _toeplitz_ca_matrix(ca: np.ndarray) -> np.ndarray:
     for j in range(n):
         Ca[j:, j] = ca[: n - j]
     return Ca
+
+
+def _stdform_gsvd(D: np.ndarray, L: np.ndarray) -> tuple:
+    """Eldén standard-form transformation of the general-form pair ``(D, L)``.
+
+    Computes — **once** — the factors that turn
+
+        x̂(λ) = argminₓ ‖D·x − b‖² + λ²‖L·x‖²
+
+    into a *separable* (varpro) filter-factor solve: a single SVD whose
+    singular values are reweighted by ``s/(s²+λ²)`` per λ, vectorised over
+    voxels by matrix-multiply. This reproduces MATLAB Hansen ``cgsvd`` +
+    ``tikhonov`` (overdetermined general-form, ``p = n−1 < n``) to machine
+    precision — the regularised minimiser is unique, so the standard-form
+    SVD route and MATLAB's GSVD filter factors compute byte-equal ``x̂(λ)``
+    (verified ``max|Δ| ≈ 8e-15``).
+
+    ``L`` must have full row rank ``p`` with a null space of dimension
+    ``nd = n − p`` (first-difference operator: ``nd = 1``).
+
+    Returns ``(LpA, x_null_coef, Us, ss, Vs)`` such that, for observation
+    matrix ``b`` (shape ``(n, n_vox)``)::
+
+        beta  = Us.T @ b                              # (p, n_vox)
+        xnull = x_null_coef @ b                       # (n, n_vox)  λ-independent
+        filt  = ss / (ss**2 + lam**2)                 # (p,)
+        x     = LpA @ (Vs @ (filt[:, None] * beta)) + xnull   # (n, n_vox)
+
+    where ``x`` equals MATLAB's ``V(:,1:p)·xi + x0``.
+    """
+    m, n = D.shape
+    p = L.shape[0]
+    nd = n - p
+    # Orthonormal basis for null(L) (n × nd).
+    Qn, _ = qr(L.T, mode="full")
+    W = Qn[:, p:]
+    # Right pseudo-inverse of L (L · Lp = I_p):  Lp = Lᵀ (L Lᵀ)⁻¹  (n × p).
+    Lp = L.T @ np.linalg.inv(L @ L.T)
+    # A-weighted generalised inverse (Eldén): project out the D-image of null(L).
+    QQ, _ = qr(D @ W, mode="full")
+    Q1 = QQ[:, :nd]
+    Gw = Q1.T @ (D @ W)                       # (nd × nd), invertible
+    LpA = Lp - W @ np.linalg.solve(Gw, Q1.T @ D @ Lp)   # (n × p)
+    # Map b → null-space (unregularised) component x0  (n × n_vox when applied).
+    x_null_coef = W @ np.linalg.solve(Gw, Q1.T)          # (n × m)
+    # Single SVD of the standard-form operator  A_s = D · LpA  (m × p).
+    A_s = D @ LpA
+    Us, ss, Vst = svd(A_s, full_matrices=False)
+    Vs = Vst.T
+    return LpA, x_null_coef, Us, ss, Vs
+
+
+def _legacy_solve(
+    idx, Ct_mat, gsvd, D, Lreg, BT, dt, lambdas, lambda_unit, L1, L2,
+    f_win, cbf_scale, denom_sum, eps, cbf, cbv, mtt, cth, lam_opt, t,
+    mtt_cth_method,
+):
+    """Vectorised legacy-exact solve for the voxel group ``idx``.
+
+    GSVD computed once (``gsvd`` factors); λ swept by filter factors; L-curve
+    curvature exactly per MATLAB ``con2perf_tikonov1_4`` / ``legacy_fit_from_dump``.
+    Writes CBF/CBV/MTT/CTH/λ_opt in-place at the output indices ``idx``.
+    """
+    LpA, x_null_coef, Us, ss, Vs = gsvd
+    nl = int(lambdas.size)
+    ct = Ct_mat[:, idx]                       # (n, n_vox_g)
+    n_vox_g = ct.shape[1]
+
+    beta = Us.T @ ct                          # (p, n_vox_g)   project once
+    xnull = x_null_coef @ ct                  # (n_basis, n_vox_g)  λ-independent
+    ss2 = ss ** 2
+
+    # Sweep λ: res_norm = ‖D·x − cₜ‖², reg_norm = ‖L·x‖²  (MATLAB LL(:,3)/LL(:,2)).
+    res_norm = np.empty((n_vox_g, nl), dtype=float)
+    reg_norm = np.empty((n_vox_g, nl), dtype=float)
+    for li in range(nl):
+        filt = ss / (ss2 + lambdas[li] ** 2)
+        x = LpA @ (Vs @ (filt[:, None] * beta)) + xnull      # (n_basis, n_vox_g)
+        resid = D @ x - ct
+        res_norm[:, li] = np.sum(resid * resid, axis=0)
+        Lx = Lreg @ x
+        reg_norm[:, li] = np.sum(Lx * Lx, axis=0)
+
+    # MATLAB L-curve curvature (linear λ-unit, log coords, raw signed κ, first-max).
+    xlog = np.log(np.maximum(res_norm, eps))
+    ylog = np.log(np.maximum(reg_norm, eps))
+    d_x = (xlog @ L1.T) / lambda_unit
+    d_y = (ylog @ L1.T) / lambda_unit
+    dd_x = (xlog @ L2.T) / (lambda_unit ** 2)
+    dd_y = (ylog @ L2.T) / (lambda_unit ** 2)
+    num = d_x[:, : nl - 2] * dd_y - dd_x * d_y[:, : nl - 2]
+    den = (d_x[:, : nl - 2] ** 2 + d_y[:, : nl - 2] ** 2) ** 1.5
+    with np.errstate(divide="ignore", invalid="ignore"):
+        krum = num / den
+    idx_opt = np.argmax(krum, axis=1)         # first maximiser on ties (= MATLAB max)
+
+    # Final reconstruction at each voxel's λ_opt, grouped by index for vectorisation.
+    t_col = np.asarray(t, dtype=float).reshape(-1)
+    w = min(int(f_win), int(BT.shape[1]))
+    for u in np.unique(idx_opt):
+        sel = idx_opt == u
+        filt = ss / (ss2 + lambdas[u] ** 2)
+        x = LpA @ (Vs @ (filt[:, None] * beta[:, sel])) + xnull[:, sel]
+        rf = (BT @ x) / dt                    # (n, n_sel)
+        fp = np.max(rf[:w, :], axis=0)        # f = max(rf[1:f_win]) (MATLAB)
+        out_idx = idx[sel]
+        # CBF: abs, non-negative, scaled.
+        cbf_v = np.abs(fp) * cbf_scale
+        cbf_v[~np.isfinite(cbf_v)] = 0.0
+        cbf_v[cbf_v < 0] = 0.0
+        cbf[out_idx] = cbf_v
+        # CBV: Σcₜ/Σcₐ (MATLAB fast), abs.
+        vd = np.sum(ct[:, sel], axis=0) / denom_sum
+        vd = np.abs(vd)
+        vd[~np.isfinite(vd)] = 0.0
+        cbv[out_idx] = vd
+        lam_opt[out_idx] = float(lambdas[u])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if mtt_cth_method == "central_volume":
+                mtt_v = np.where(fp > 0, vd / fp, 0.0)
+            else:
+                mtt_v = np.where(fp > 0, vd / fp, 0.0)
+        mtt_v = np.abs(np.where(np.isfinite(mtt_v), mtt_v, 0.0))
+        mtt_v[mtt_v < 0] = 0.0
+        mtt[out_idx] = mtt_v
+        # CTH: residue moments (driver lines 128-143). R = rf/peak (peak=max rf[:10]),
+        # m0=Σ R·dt, m1=Σ t·R·dt, s2 = 2·m1 − m0², CTH = sqrt(max(s2,0)).
+        peak = np.max(rf[:10, :], axis=0)
+        Rn = np.where(peak[None, :] > 0, rf / np.where(peak == 0, 1.0, peak)[None, :], 0.0)
+        m0 = np.sum(Rn, axis=0) * dt
+        m1 = np.sum(t_col[:, None] * Rn, axis=0) * dt
+        s2 = 2.0 * m1 - m0 ** 2
+        cth_v = np.sqrt(np.clip(s2, 0.0, None))
+        cth_v = np.where(peak > 0, cth_v, 0.0)
+        cth_v = np.abs(np.where(np.isfinite(cth_v), cth_v, 0.0))
+        cth[out_idx] = cth_v
 
 
 def _shift_curve_pchip(time_s: np.ndarray, curve: np.ndarray, shift_s: float) -> np.ndarray:
@@ -282,6 +418,14 @@ def _residue_metrics_batch(
 
 @dataclass(frozen=True, slots=True)
 class TikhonovBatch:
+    """Voxel-batch deconvolution result (one array per perfusion metric).
+
+    ``cbf`` is mL/100g/min, ``cbv`` is the volume of distribution,
+    ``mtt``/``cth`` are seconds, ``lambda_opt`` is the per-voxel
+    regularisation weight. The ``*_sd`` fields are optional bootstrap
+    standard deviations (``None`` unless uncertainty was requested).
+    """
+
     cbf_ml_per_100g_min: np.ndarray
     cbv_vd: np.ndarray
     mtt_s: np.ndarray
@@ -310,6 +454,7 @@ def build_tikhonov_solver(
     compute_cbf_sd: bool = False,
     uncertainty_samples: int = 0,
     uncertainty_seed: int = 0,
+    legacy_exact: bool = False,
 ):
     """Pre-factor the Tikhonov system; return a callable ``solve_ct``.
 
@@ -327,10 +472,27 @@ def build_tikhonov_solver(
         collapse to ``λ_min``.
       * ``"lcurve"`` — legacy Hansen L-curve max-curvature picker
         (provided for parity with the original ``models/tikhonov.py``).
+      * ``"matlab_gsvd"`` — **legacy-exact** mode. Reproduces the
+        supervisor's MATLAB ``con2perf_tikonov1_4`` ("perffit") bit-for-bit
+        (``max|Δ| ≈ 1e-14`` at matched λ). Forces ``legacy_exact=True``
+        semantics: MATLAB knot vector ``K = 0:5·timeunit:frame_no``, the
+        Eldén standard-form GSVD filter-factor solve (GSVD computed once,
+        λ swept by ``s/(s²+λ²)`` reweighting, vectorised over voxels — no
+        per-voxel linear solve), MATLAB-exact L-curve curvature
+        (``log‖res‖²``/``log‖Lx‖²``, linear λ-unit, raw signed κ, first-max
+        ``argmax``), ``f = max(rf[:f_win])``, ``CBV = Σcₜ/Σcₐ`` and
+        ``abs``-clamped non-negative outputs.
+
+    ``legacy_exact`` (bool): independent switch for the MATLAB knot vector
+    and standard-form GSVD solve; implied by ``lambda_selection="matlab_gsvd"``.
     """
     lambda_selection = (lambda_selection or "gcv").strip().lower()
-    if lambda_selection not in {"gcv", "lcurve", "evidence"}:
-        raise ValueError("lambda_selection must be 'gcv', 'lcurve' or 'evidence'")
+    if lambda_selection not in {"gcv", "lcurve", "evidence", "matlab_gsvd"}:
+        raise ValueError(
+            "lambda_selection must be 'gcv', 'lcurve', 'evidence' or 'matlab_gsvd'"
+        )
+    if lambda_selection == "matlab_gsvd":
+        legacy_exact = True
     lambda_spacing = (lambda_spacing or "log").strip().lower()
     if lambda_spacing not in {"log", "linear"}:
         raise ValueError("lambda_spacing must be 'log' or 'linear'")
@@ -365,7 +527,15 @@ def build_tikhonov_solver(
         raise ValueError("lambda grid must contain >= 2 finite values")
 
     M = 4
-    K = np.arange(0.0, float(t[-1]) + 1e-12, 5.0 * dt, dtype=float)
+    if legacy_exact:
+        # MATLAB legacy_fit_from_dump.m:58 — knots run to the FRAME COUNT
+        # (frame_no = n), NOT time(end). Replicates the colon
+        # ``K = 0:5*timeunit:frame_no`` exactly (last knot ≤ frame_no).
+        step = 5.0 * dt
+        n_knots = int(np.floor(float(n) / step)) + 1
+        K = step * np.arange(n_knots, dtype=float)
+    else:
+        K = np.arange(0.0, float(t[-1]) + 1e-12, 5.0 * dt, dtype=float)
     if K.size < 3:
         K = np.array([0.0, 5.0 * dt, 10.0 * dt], dtype=float)
     length_K = int(K.size - 2)
@@ -384,9 +554,10 @@ def build_tikhonov_solver(
     # The L-curve curvature picker uses finite differences in the λ-parameter.
     # On a log-spaced grid we parametrise by log(λ) (uniformly spaced), so the
     # curvature in log(res) / log(reg) coordinates is well defined.
-    if lambda_spacing == "log":
+    if lambda_spacing == "log" and not legacy_exact:
         lambda_unit = float(np.log(lambdas[1]) - np.log(lambdas[0]))
     else:
+        # legacy_exact always uses the linear λ-step (MATLAB lambda(2)-lambda(1)).
         lambda_unit = float(lambdas[1] - lambdas[0])
     if not np.isfinite(lambda_unit) or lambda_unit == 0.0:
         raise ValueError("lambda grid must be uniformly spaced")
@@ -406,6 +577,16 @@ def build_tikhonov_solver(
         ca_shift = _shift_curve_pchip(t, ca0, off_s)
         Ca_mat = _toeplitz_ca_matrix(ca_shift)
         D = Ca_mat @ B.T
+
+        if legacy_exact:
+            # Standard-form GSVD computed ONCE; λ swept by filter factors. No
+            # Cholesky list, no GCV/evidence pieces — this is the legacy path.
+            LpA, x_null_coef, Us_g, ss_g, Vs_g = _stdform_gsvd(D, Lreg)
+            out = (ca_shift, D, None, None, None, None,
+                   (LpA, x_null_coef, Us_g, ss_g, Vs_g))
+            design_cache[off_s] = out
+            return out
+
         DTD = D.T @ D
         cholA = [cho_factor(DTD + (float(lam) ** 2) * LTL, lower=True, check_finite=False)
                  for lam in lambdas]
@@ -432,7 +613,7 @@ def build_tikhonov_solver(
                 cfac = np.asarray(cholA[li][0])
                 logdetA[li] = 2.0 * float(np.sum(np.log(np.abs(np.diag(cfac)))))
 
-        out = (ca_shift, D, DTD, cholA, gcv_denom, logdetA)
+        out = (ca_shift, D, DTD, cholA, gcv_denom, logdetA, None)
         design_cache[off_s] = out
         return out
 
@@ -447,8 +628,22 @@ def build_tikhonov_solver(
         Ct_mat = np.asarray(Ct_mat, dtype=float)
         if Ct_mat.ndim == 1:
             Ct_mat = Ct_mat.reshape(-1, 1)
-        if Ct_mat.shape[0] != n:
-            raise ValueError("Ct_mat first dimension must match time_s")
+        # Short-AIF guard: the solver was pre-factored on ``n`` time points
+        # (``n = min(len(time_s), len(ca))`` — see build above). When the AIF
+        # is a few frames shorter than the DCE, callers may pass a Ct with more
+        # time rows than the AIF supports. Align defensively by dropping the
+        # extra TRAILING tissue frames so Ct/AIF/time share one length. This
+        # leaves equal-length inputs (``Ct_mat.shape[0] == n``) byte-identical —
+        # the slice is a no-op — and only kicks in for the mismatched case that
+        # previously raised "Ct_mat first dimension must match time_s".
+        if Ct_mat.shape[0] > n:
+            Ct_mat = Ct_mat[:n, :]
+        elif Ct_mat.shape[0] < n:
+            raise ValueError(
+                f"Ct_mat has {Ct_mat.shape[0]} time points but the solver was "
+                f"built for {n} (AIF/time length); the tissue series must be at "
+                f"least as long as the AIF. Align Ct/AIF/time before solving."
+            )
         n_vox = int(Ct_mat.shape[1])
 
         if offsets_s is None:
@@ -484,7 +679,20 @@ def build_tikhonov_solver(
             idx = np.where(offsets_q == off)[0]
             if idx.size == 0:
                 continue
-            ca_shift, D, DTD, cholA, gcv_denom, logdetA = _get_design(off)
+            ca_shift, D, DTD, cholA, gcv_denom, logdetA, gsvd = _get_design(off)
+
+            if legacy_exact:
+                # ── Legacy-exact MATLAB perffit path ───────────────────────
+                # CBV uses Σcₐ (MATLAB fast file ``vd = sum(c_t)/sum(c_a)``).
+                denom_sum = float(np.sum(ca_shift))
+                if denom_sum == 0.0 or not np.isfinite(denom_sum):
+                    denom_sum = 1.0
+                _legacy_solve(
+                    idx, Ct_mat, gsvd, D, Lreg, BT, dt, lambdas, lambda_unit,
+                    L1, L2, f_win, cbf_scale, denom_sum, eps,
+                    cbf, cbv, mtt, cth, lam_opt, t, mtt_cth_method,
+                )
+                continue
 
             denom = float(np.trapezoid(ca_shift))
             if denom == 0.0 or not np.isfinite(denom):
@@ -686,12 +894,24 @@ def build_tikhonov_solver(
 
 @dataclass(frozen=True, slots=True)
 class TikhonovModel:
+    """Tikhonov-deconvolution perfusion model (the ``tikhonov`` plug-in).
+
+    Model-free perfusion via B-spline-basis Tikhonov deconvolution of
+    the tissue residue (paper §4.6.2), with per-voxel L-curve / GCV
+    lambda selection. Outputs ``{"cbf", "cbv", "mtt", "cth", "lambda_opt"}``.
+    ``cbv`` is the cerebral blood volume in **mL/100 g** — the volume of
+    distribution ``v_d = ∫Cₜ/∫Cₐ`` scaled by 100 (consistent with the
+    validation; distinct from Patlak's ``v_b`` intercept blood volume).
+    Pass ``legacy_exact=True`` to :func:`build_tikhonov_solver` for the
+    MATLAB-bit-matching solver path.
+    """
+
     key: ClassVar[str] = "tikhonov"
     name: ClassVar[str] = "Tikhonov-regularised deconvolution"
     description: ClassVar[str] = (
         "Model-free perfusion via B-spline-basis Tikhonov deconvolution "
         "of the tissue residue (paper §4.6.2). Per-voxel L-curve λ "
-        "selection. Outputs CBF, MTT, CTH and the chosen λ."
+        "selection. Outputs CBF, CBV, MTT, CTH and the chosen λ."
     )
     accepts: ClassVar[dict[str, type]] = {
         "c_tissue": np.ndarray,
@@ -700,19 +920,28 @@ class TikhonovModel:
     }
     produces: ClassVar[dict[str, type]] = {
         "cbf": np.ndarray,
+        "cbv": np.ndarray,
         "mtt": np.ndarray,
         "cth": np.ndarray,
         "lambda_opt": np.ndarray,
     }
-    outputs: ClassVar[tuple[str, ...]] = ("cbf", "mtt", "cth", "lambda_opt")
+    outputs: ClassVar[tuple[str, ...]] = ("cbf", "cbv", "mtt", "cth", "lambda_opt")
     units: ClassVar[dict[str, str]] = {
         "cbf": "mL/100g/min",
+        "cbv": "mL/100g",
         "mtt": "s",
         "cth": "s",
         "lambda_opt": "(unitless)",
     }
 
     def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
+        """Deconvolve one curve or a voxel stack → CBF/MTT/CTH/lambda_opt.
+
+        Builds the shared Tikhonov solver from the time axis + AIF, then
+        solves per voxel. ``**opts`` are forwarded to
+        :func:`build_tikhonov_solver` (``n_lambdas``, ``lambda_selection``,
+        ``legacy_exact``, …).
+        """
         c_t = np.asarray(inputs.c_tissue, dtype=float)
         c_a = np.asarray(inputs.c_input, dtype=float)
         t_s = np.asarray(inputs.t_s, dtype=float)
@@ -759,9 +988,15 @@ class TikhonovModel:
         solver = build_tikhonov_solver(t_s, c_a, **solver_opts)
         batch = solver(c_t_keep, offsets_s=offsets_keep)
 
+        # CBV (mL/100 g): the volume of distribution v_d = ∫Cₜ/∫Cₐ scaled by
+        # 100 (validation convention). Promoted to a declared output so the
+        # kinetic stage writes cbv.nii.gz at every aggregation level, matching
+        # the paper/figures. ``aux["cbv_vd"]`` keeps the raw v_d for callers.
+        cbv_ml100g = batch.cbv_vd * 100.0
         # Core maps + any optional SD maps the solver produced.
-        core = {"cbf": batch.cbf_ml_per_100g_min, "mtt": batch.mtt_s,
-                "cth": batch.cth_s, "lambda_opt": batch.lambda_opt}
+        core = {"cbf": batch.cbf_ml_per_100g_min, "cbv": cbv_ml100g,
+                "mtt": batch.mtt_s, "cth": batch.cth_s,
+                "lambda_opt": batch.lambda_opt}
         sd_src = {"cbf_sd": batch.cbf_sd, "mtt_sd": batch.mtt_sd, "cth_sd": batch.cth_sd}
         sd_present = {k: v for k, v in sd_src.items() if v is not None}
 

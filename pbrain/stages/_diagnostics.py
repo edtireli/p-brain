@@ -80,6 +80,14 @@ def _pick_primary_map(model: Any, output_names: list[str]) -> str | None:
 
 @dataclass
 class DiagnosticsStage:
+    """Final stage — render per-model diagnostic plots.
+
+    For each fitted model, renders the model's diagnostic (single-file
+    ``diagnose``, a ``pbrain/diagnostics/<key>.py`` plug-in, or the
+    generic fallback) at the representative voxel, each tissue class, and
+    each parcel. Writes PNG montages alongside the maps.
+    """
+
     name: str = "diagnostics"
     requires: tuple[str, ...] = (
         "load", "t1_m0", "signal_to_conc", "normalisation", "aif", "kinetic",
@@ -88,6 +96,7 @@ class DiagnosticsStage:
     plugin_key: str = "multi"
 
     def run(self, ctx: StageContext) -> StageOutput:
+        """Render and write the diagnostic plots for every model/level."""
         import nibabel as nib
 
         norm_mf = ctx.upstream_manifests["normalisation"]

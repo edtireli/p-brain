@@ -19,6 +19,23 @@ from pbrain.core import Plugin
 
 @dataclass(frozen=True, slots=True)
 class TissueROI:
+    """A parcellation returned by a tissue-ROI provider.
+
+    Attributes
+    ----------
+    parcellation
+        ``(X, Y, Z)`` integer label volume.
+    affine
+        ``(4, 4)`` voxel-to-world affine of the parcellation grid.
+    labels
+        ``{label_id: name}``.
+    region_map
+        Optional ``{region_name: [label_id, …]}`` collapsing parcels
+        into broader regions (GM, WM, Cerebellum, Brainstem, …).
+    meta
+        Free-form provenance (backend, version, resampling, …).
+    """
+
     parcellation: np.ndarray                 # (X, Y, Z) int label volume
     affine: np.ndarray                       # (4, 4)
     labels: dict[int, str]                   # label id → name
@@ -39,4 +56,12 @@ class TissueROIProvider(Plugin, Protocol):
         target_affine: np.ndarray | None = None,   # DCE space, for resampling
         target_shape: tuple[int, int, int] | None = None,
         **opts: Any,
-    ) -> TissueROI: ...
+    ) -> TissueROI:
+        """Parcellate a T1-weighted volume.
+
+        Writes intermediate files under ``out_dir``. If
+        ``target_affine``/``target_shape`` are given (DCE space), the
+        label volume is resampled onto that grid. Returns a
+        :class:`TissueROI`.
+        """
+        ...

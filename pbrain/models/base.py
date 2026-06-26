@@ -52,7 +52,20 @@ class CurveInputs:
 
 @dataclass(frozen=True, slots=True)
 class ModelResult:
-    """What every kinetic model returns."""
+    """What every kinetic model returns.
+
+    Parameters
+    ----------
+    maps
+        Output parameter maps keyed by the model's own names (e.g.
+        ``{"ki", "vb"}`` for Patlak). Each value is ``(V,)`` for a
+        voxel-wise fit or a scalar array for an ROI-mean fit.
+    units
+        ``{map_name: unit_string}`` for every key in ``maps``.
+    aux
+        Free-form per-model diagnostics (residuals, fit quality, optimal
+        lambda, …). Aggregators may ignore it.
+    """
 
     maps: dict[str, np.ndarray]
     units: dict[str, str]
@@ -95,7 +108,25 @@ class KineticModel(Plugin, Protocol):
     outputs: ClassVar[tuple[str, ...]]
     units: ClassVar[dict[str, str]]
 
-    def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult: ...
+    def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
+        """Fit the model to one curve or a voxel stack.
+
+        Parameters
+        ----------
+        inputs
+            Tissue/input concentration curves and time axis; see
+            :class:`CurveInputs`. ``inputs.c_tissue`` may be ``(T,)``
+            (ROI-mean) or ``(T, V)`` (voxel-wise).
+        **opts
+            Per-plug-in options from
+            ``config.plugin_options["models.<key>"]``.
+
+        Returns
+        -------
+        ModelResult
+            ``maps`` keyed by this model's ``outputs``.
+        """
+        ...
 
 
 def reconstruct_gamma_residue_ct(

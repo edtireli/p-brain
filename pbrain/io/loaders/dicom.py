@@ -1,11 +1,25 @@
 """DICOM loader.
 
-Wraps ``dcm2niix`` (the same converter the paper uses for PAR/REC). Pass
-either a single ``.dcm`` file or a directory holding a DICOM series;
-dcm2niix discovers siblings automatically.
+Wraps ``dcm2niix`` (the same converter the paper uses for PAR/REC). It
+handles every DICOM flavour dcm2niix supports:
 
-Raises ``RuntimeError`` with a clear install hint if dcm2niix is not on
-``PATH``.
+* a **single classic DICOM file** (``.dcm`` / ``.ima`` / no extension);
+* a **directory holding a DICOM series** — dcm2niix discovers the sibling
+  slices automatically (``-r`` is implied for a directory argument);
+* **enhanced / multi-frame DICOM** — a single file whose frames are packed
+  into one object; dcm2niix unpacks it to a 3-D/4-D NIfTI like any other.
+
+Output selection: dcm2niix may emit several NIfTIs (e.g. a multi-frame
+object that splits by echo/phase). We return the **largest** volume — for a
+DCE series this is the full 4-D dynamic. If a specific sub-series is needed,
+pre-convert with ``dcm2niix`` manually and pass the resulting ``.nii.gz``
+to the NIfTI loader instead.
+
+Errors are explicit and actionable:
+
+* dcm2niix not on ``PATH`` → install hint (conda-forge / brew / apt);
+* dcm2niix runs but yields no NIfTI (unsupported/secondary-capture/private
+  enhanced object) → a clear message recommending manual pre-conversion.
 """
 
 from __future__ import annotations
@@ -69,7 +83,13 @@ class _DicomLoader:
 
         with tempfile.TemporaryDirectory(prefix="pbrain_dicom_") as tmp:
             tmp_dir = Path(tmp)
-            cmd = ["dcm2niix", "-z", "y", "-o", str(tmp_dir), "-f", "out", str(path)]
+            # ``-z y`` gzip; ``-f out`` fixed stem. For a directory we add
+            # ``-r y`` so dcm2niix recurses into a nested series tree; a single
+            # (incl. enhanced/multi-frame) file converts in place.
+            cmd = ["dcm2niix", "-z", "y", "-o", str(tmp_dir), "-f", "out"]
+            if path.is_dir():
+                cmd += ["-r", "y"]
+            cmd.append(str(path))
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
                 raise RuntimeError(
@@ -78,7 +98,17 @@ class _DicomLoader:
                 )
             niftis = sorted(tmp_dir.glob("out*.nii.gz")) or sorted(tmp_dir.glob("out*.nii"))
             if not niftis:
-                raise RuntimeError(f"dcm2niix produced no NIfTI output in {tmp_dir}")
+                raise RuntimeError(
+                    f"dcm2niix produced no NIfTI for {path}. This usually means "
+                    "an unsupported object (secondary capture, a private/"
+                    "non-image enhanced-DICOM SOP class, or a non-DICOM file). "
+                    "Pre-convert manually with `dcm2niix -z y -o <dir> <input>` "
+                    "and load the resulting .nii.gz, or check the dcm2niix log:\n"
+                    f"{result.stdout.strip()}"
+                )
+            # dcm2niix can split one input into several NIfTIs (echoes, phases,
+            # a multi-frame object that fans out). The full DCE dynamic is the
+            # largest volume; return it. (Pre-convert manually to pick another.)
             largest = max(niftis, key=lambda p: p.stat().st_size)
             return _NIFTI.load(largest)
 

@@ -54,6 +54,21 @@ def _provenance(config: Config) -> dict[str, Any]:
 
 @dataclass
 class StageRunRecord:
+    """One stage's result within a :class:`Pipeline` run.
+
+    Attributes
+    ----------
+    name
+        The stage name.
+    output
+        The :class:`StageOutput` the stage returned.
+    manifest_path
+        Path to the ``manifest.json`` written for the stage.
+    skipped
+        ``True`` if the stage was skipped (e.g. up-to-date / not
+        applicable to this subject).
+    """
+
     name: str
     output: StageOutput
     manifest_path: Path

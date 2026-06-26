@@ -407,6 +407,12 @@ def _montage(maps_dir: Path, subject_dir: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """``python -m pbrain.demo`` entry point — weights-free smoke test.
+
+    Synthesises a small phantom subject and runs the full pipeline on it
+    (using a from-file AIF so no CNN weights are needed), writing montages
+    and a CNR map. Used as the CI smoke test. Returns the exit code.
+    """
     p = argparse.ArgumentParser(prog="python -m pbrain.demo")
     p.add_argument("--out", type=Path, default=DEMO_ROOT,
                    help="root output directory (default: <repo>/demo).")

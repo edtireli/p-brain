@@ -172,3 +172,65 @@ def test_legacy_tail_mode_falls_back_to_loop():
     )
     assert res.aux["tail_mode"] == "legacy"
     assert res.aux["regression"] == "ols"
+
+
+def _patlak3_reference(c_t_2d, c_a, t):
+    """Independent re-implementation of MATLAB ``patlak3.m`` (per-voxel loop)
+    for the bitwise test — mirrors lines 30-66 verbatim."""
+    c_t_2d = np.asarray(c_t_2d, float)
+    c_a = np.asarray(c_a, float)
+    t = np.asarray(t, float)
+    n = c_t_2d.shape[0]
+    dt = t[1] - t[0]
+    V = c_t_2d.shape[1]
+    ki = np.full(V, np.nan)
+    vb = np.full(V, np.nan)
+    for v in range(V):
+        c_t = c_t_2d[:, v]
+        y = np.zeros(n)
+        x = np.zeros(n)
+        for i in range(n):
+            if c_a[i] != 0:
+                y[i] = c_t[i] / c_a[i]
+                x[i] = np.sum(c_a[: i + 1]) * dt / c_a[i]
+        x_max = x.max()
+        x_min = x_max / 3.0
+        idx = np.where((x >= x_min) & (x <= x_max))[0]
+        xx = x[idx]
+        yy = y[idx]
+        xm = xx.mean()
+        ym = yy.mean()
+        ki[v] = ((xx - xm) * (yy - ym)).sum() / ((xx - xm) * (xx - xm)).sum()
+        vb[v] = ym - ki[v] * xm
+    return ki * 6000.0, vb * 100.0
+
+
+def test_patlak3_legacy_exact_matches_matlab_reference():
+    """``tail_mode='patlak3'`` reproduces the MATLAB ``patlak3.m`` math
+    (right-inclusive rectangular integration, x_max/3 window, OLS) to machine
+    precision — the bitwise gate for the automated supervisor driver."""
+    cols = [_synth(ki_true=0.05 + 0.04 * s, vb_true=1.0 + 0.2 * s, seed=300 + s)[0]
+            for s in range(30)]
+    _, c_a, t = _synth(ki_true=0.3, seed=0)
+    c_t = np.stack(cols, axis=1)                       # (T, 30)
+    inp = CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t)
+    res = REGISTRY["patlak"].fit(inp, tail_mode="patlak3")
+    assert res.aux["tail_mode"] == "patlak3"
+    ki_pb = np.asarray(res.maps["ki"])
+    vb_pb = np.asarray(res.maps["vb"])
+    ki_ref, vb_ref = _patlak3_reference(c_t, c_a, t)
+    g = np.isfinite(ki_pb) & np.isfinite(ki_ref)
+    assert int(g.sum()) >= 20
+    assert float(np.max(np.abs(ki_pb[g] - ki_ref[g]))) < 1e-9
+    assert float(np.max(np.abs(vb_pb[g] - vb_ref[g]))) < 1e-9
+
+
+def test_patlak3_recovers_known_ki():
+    """On noiseless synthetic data with a known Ki, the patlak3 slope recovers
+    the truth (right-inclusive integration → small, bounded discretisation
+    bias)."""
+    ki_true, vb_true = 0.5, 2.0
+    c_t, c_a, t = _synth(ki_true=ki_true, vb_true=vb_true, noise_sd=0.0)
+    inp = CurveInputs(c_tissue=c_t.reshape(-1, 1), c_input=c_a, t_s=t)
+    res = REGISTRY["patlak"].fit(inp, tail_mode="patlak3")
+    assert abs(float(res.maps["ki"][0]) - ki_true) < 0.05

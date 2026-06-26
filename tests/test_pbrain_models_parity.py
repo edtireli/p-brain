@@ -150,6 +150,30 @@ def test_tikhonov_voxelwise_batch_shape():
     assert res.maps["cth"].shape == (2,)
 
 
+def test_tikhonov_emits_cbv_map_in_ml_per_100g():
+    """CBV is a declared default output (paper + figures), in mL/100 g, equal
+    to the volume of distribution v_d = ∫Cₜ/∫Cₐ × 100 (validation convention).
+    It is distinct from Patlak's v_b intercept blood volume."""
+    plugin = REGISTRY["tikhonov"]
+    assert "cbv" in plugin.outputs and plugin.units["cbv"] == "mL/100g"
+
+    c_t, c_a, t = _synthetic_phantom(ki_true=0.20, vb_true=2.0, seed=7)
+    res = plugin.fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t))
+    assert "cbv" in res.maps
+    cbv = float(res.maps["cbv"])
+    # cbv == raw v_d × 100, and v_d here is ∫Cₜ/∫Cₐ on a log-grid GCV solve.
+    vd = float(np.asarray(res.aux["cbv_vd"]))
+    assert cbv == pytest.approx(vd * 100.0, rel=1e-12, abs=1e-12)
+    assert np.isfinite(cbv) and cbv > 0
+
+    # Voxel-stack run also produces a same-shape cbv map.
+    c_t2, _, _ = _synthetic_phantom(ki_true=0.30, seed=11)
+    stack = np.stack([c_t, c_t2], axis=1)
+    res2 = plugin.fit(CurveInputs(c_tissue=stack, c_input=c_a, t_s=t))
+    assert res2.maps["cbv"].shape == (2,)
+    assert np.all(np.isfinite(res2.maps["cbv"]))
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Extended Tofts parity
 # ────────────────────────────────────────────────────────────────────────

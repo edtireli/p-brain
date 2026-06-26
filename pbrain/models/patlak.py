@@ -285,6 +285,13 @@ def fit_patlak(
 
 @dataclass(frozen=True, slots=True)
 class PatlakModel:
+    """Patlak graphical-analysis kinetic model (the ``patlak`` plug-in).
+
+    Estimates BBB influx ``ki`` and fractional blood volume ``vb`` by
+    linear regression over the late phase of the Patlak plot. See
+    :func:`fit_patlak` for the single-curve maths and all options.
+    """
+
     key: ClassVar[str] = "patlak"
     name: ClassVar[str] = "Patlak graphical analysis"
     description: ClassVar[str] = (
@@ -309,6 +316,12 @@ class PatlakModel:
     }
 
     def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
+        """Fit Patlak to one curve or a voxel stack → ``{"ki", "vb"}``.
+
+        Dispatches to a single-curve fit for ``(T,)`` input or a
+        vectorised voxel-wise fit for ``(T, V)``. ``**opts`` are forwarded
+        to :func:`fit_patlak` (window, detrend, single/double bolus, …).
+        """
         c_t = np.asarray(inputs.c_tissue, dtype=float)
         c_a = np.asarray(inputs.c_input, dtype=float)
         t_s = np.asarray(inputs.t_s, dtype=float)
@@ -342,6 +355,21 @@ class PatlakModel:
 
         tail_mode = str(opts.get("tail_mode", "legacy_vectorised")).lower()
         w_start = float(opts.get("window_start_fraction", 1.0 / 3))
+
+        if tail_mode in {"patlak3", "legacy_exact"}:
+            # Bit-for-bit MATLAB ``patlak3.m`` (automated supervisor driver):
+            # right-inclusive rectangular integration, x_max/3 window, OLS, no
+            # AIF floor / detrend / baseline-shift. Reproduces the stored
+            # legacyfit ``CBKi``/``CBV_p`` to machine precision. Opt-in only.
+            from ._baseline_shift import fit_patlak_patlak3
+            res = fit_patlak_patlak3(ct2d, c_a, t_s, mask=inputs.mask)
+            return ModelResult(
+                maps={"ki": res["ki_ml_per_100g_min"], "vb": res["vb_ml_per_100g"]},
+                units=dict(self.units),
+                aux={"sd_ki": res["sd_ki_ml_per_100g_min"],
+                     "baseline_shift": baseline_shift,
+                     "tail_mode": "patlak3", "regression": "ols"},
+            )
 
         if tail_mode == "legacy_vectorised":
             from ._baseline_shift import fit_patlak_legacy_vectorised

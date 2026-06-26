@@ -35,6 +35,102 @@ DEFAULT_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
+def voxelwise_cnr(
+    conc: np.ndarray,
+    *,
+    baseline_frames: int = 5,
+    mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Per-voxel contrast-to-noise ratio of a 4-D concentration series.
+
+    For each voxel the CNR is the *peak post-bolus concentration above the
+    pre-bolus baseline* divided by the *standard deviation of the pre-bolus
+    baseline window* (R3.7):
+
+        CNR = (max_t C(t) − mean(C[:baseline_frames]))
+              / std(C[:baseline_frames])
+
+    A voxel whose baseline noise is zero (perfectly flat — typically masked
+    background that has been zero-filled) yields ``0.0`` rather than ``inf``,
+    so the map stays finite and the low-CNR fraction below treats it as bad.
+
+    Parameters
+    ----------
+    conc
+        4-D concentration array ``(X, Y, Z, T)`` (mM, baseline ≈ 0).
+    baseline_frames
+        Number of leading frames defining the pre-bolus baseline window.
+        Defaults to 5 (the pipeline's ``baseline_frames``). Clamped to
+        ``[1, T-1]``.
+    mask
+        Optional 3-D boolean brain mask. Voxels outside the mask are set to
+        ``NaN`` in the returned map (so brain-fraction stats ignore them).
+
+    Returns
+    -------
+    np.ndarray
+        3-D CNR map ``(X, Y, Z)``; NaN outside the mask.
+    """
+    c = np.asarray(conc, dtype=float)
+    if c.ndim != 4:
+        raise ValueError(f"conc must be 4-D (X,Y,Z,T); got shape {c.shape}")
+    T = int(c.shape[-1])
+    nb = int(max(1, min(int(baseline_frames), T - 1)))
+
+    base = c[..., :nb]
+    base_mean = np.nanmean(base, axis=-1)
+    base_std = np.nanstd(base, axis=-1)
+    peak = np.nanmax(c, axis=-1)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cnr = (peak - base_mean) / base_std
+    # Flat-baseline voxels (std == 0) and any non-finite result → 0 (bad CNR).
+    cnr = np.where(np.isfinite(cnr), cnr, 0.0)
+
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        if m.shape != cnr.shape:
+            raise ValueError(
+                f"mask shape {m.shape} ≠ CNR map shape {cnr.shape}"
+            )
+        cnr = np.where(m, cnr, np.nan)
+    return cnr.astype(float)
+
+
+def cnr_summary(
+    cnr: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
+    threshold: float = 2.0,
+) -> dict:
+    """Summarise a voxel-wise CNR map for the QC manifest.
+
+    Returns the brain-masked median CNR, the fraction of brain voxels below
+    ``threshold`` (default CNR < 2), the voxel counts, and a ``pass``/``warn``
+    flag. ``warn`` triggers when more than half the brain falls below the
+    threshold (a coarse "this acquisition is too noisy to trust" gate).
+    """
+    c = np.asarray(cnr, dtype=float)
+    vals = c[np.asarray(mask, dtype=bool)] if mask is not None else c.ravel()
+    vals = vals[np.isfinite(vals)]
+    n = int(vals.size)
+    thr = float(threshold)
+    if n == 0:
+        return {"status": "warn", "median": None, "threshold": thr,
+                "fraction_below": None, "n_voxels": 0, "n_below": 0,
+                "reason": "no finite voxels"}
+    n_below = int(np.count_nonzero(vals < thr))
+    frac = n_below / n
+    return {
+        "status": "warn" if frac > 0.5 else "pass",
+        "median": float(np.median(vals)),
+        "threshold": thr,
+        "fraction_below": float(frac),
+        "n_voxels": n,
+        "n_below": n_below,
+    }
+
+
 def check_maps(maps: dict[str, np.ndarray], *,
                mask: np.ndarray | None = None,
                ranges: dict[str, tuple[float, float]] | None = None,

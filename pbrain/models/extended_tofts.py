@@ -85,6 +85,13 @@ _DEFAULT_BOUNDS_HI = (0.25, 1.0, 1.0)    # Ktrans ≤ 1500 mL/100g/min
 
 @dataclass(frozen=True, slots=True)
 class EToftsFit:
+    """Single-curve extended-Tofts fit result.
+
+    Carries the fitted parameters (``ktrans`` per-min and per-100g,
+    ``ve``, ``vp``, ``kep``), the fitted concentration curve, residuals,
+    final cost, and a ``success`` flag from the least-squares solver.
+    """
+
     ktrans_per_min: float
     ktrans_ml_100g: float
     ve: float
@@ -249,6 +256,13 @@ def _fit_varpro(Cp: np.ndarray, Ct: np.ndarray, t: np.ndarray,
 
 @dataclass(frozen=True, slots=True)
 class ExtendedToftsModel:
+    """Extended-Tofts compartment model (the ``extended_tofts`` plug-in).
+
+    Fits ``ktrans``, ``ve``, ``vp`` (and derived ``kep``) by constrained
+    Levenberg-Marquardt least-squares of the extended-Tofts model, with
+    optional Tikhonov regularisation. See :class:`EToftsFit`.
+    """
+
     key: ClassVar[str] = "extended_tofts"
     name: ClassVar[str] = "Extended Tofts model"
     description: ClassVar[str] = (
@@ -276,6 +290,11 @@ class ExtendedToftsModel:
     }
 
     def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
+        """Fit extended Tofts → ``{"ktrans", "ve", "vp", "kep"}``.
+
+        Handles ``(T,)`` and ``(T, V)`` input. ``**opts`` tune the
+        least-squares solver (bounds, regularisation, restarts).
+        """
         c_t = np.asarray(inputs.c_tissue, dtype=float)
         c_a = np.asarray(inputs.c_input, dtype=float)
         t_s = np.asarray(inputs.t_s, dtype=float)

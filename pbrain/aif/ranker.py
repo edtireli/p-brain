@@ -22,6 +22,23 @@ import numpy as np
 
 @dataclass
 class AIFCandidate:
+    """One candidate input-function curve considered by the ranker.
+
+    Attributes
+    ----------
+    name
+        Candidate label (vessel/source identifier).
+    curve
+        ``(T,)`` candidate concentration-time curve.
+    artery
+        Parent artery name, used to propagate the superior-sagittal-
+        sinus / contamination ("TSCC") veto across siblings.
+    is_tscc
+        ``True`` if this candidate is the TSCC reference curve.
+    meta
+        Free-form per-candidate scoring metadata.
+    """
+
     name: str
     curve: np.ndarray
     artery: str = ""          # parent artery name (for TSCC veto propagation)

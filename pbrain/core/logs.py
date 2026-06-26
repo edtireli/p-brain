@@ -65,6 +65,11 @@ def configure(level: int = logging.INFO, *, log_file: Path | str | None = None,
 
 
 def level_from_flags(quiet: bool = False, verbose: bool = False) -> int:
+    """Map ``--quiet``/``--verbose`` CLI flags to a ``logging`` level.
+
+    ``quiet`` → ``WARNING``, ``verbose`` → ``DEBUG``, neither → ``INFO``.
+    ``quiet`` wins if both are set.
+    """
     if quiet:
         return logging.WARNING
     if verbose:

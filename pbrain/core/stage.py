@@ -58,4 +58,12 @@ class Stage(Protocol):
     name: str
     requires: tuple[str, ...]   # upstream stage names this stage reads
 
-    def run(self, ctx: StageContext) -> StageOutput: ...
+    def run(self, ctx: StageContext) -> StageOutput:
+        """Execute the stage.
+
+        Reads upstream artefacts via ``ctx.upstream_manifests``, calls
+        the plug-in selected by ``ctx.config``, writes output files, and
+        returns a :class:`StageOutput`. The orchestrator turns that into
+        the stage's ``manifest.json``.
+        """
+        ...

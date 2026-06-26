@@ -1,6 +1,17 @@
 # _p_-Brain — a modular framework for automated DCE-MRI & diffusion research
 
+[![CI](https://github.com/edtireli/p-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/edtireli/p-brain/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/os-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#install)
+
 <img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
+
+**_p_-Brain is a cross-platform Python command-line tool.** Install it with
+`pip` on Linux, macOS, or Windows (Python 3.10–3.12), point `pbrain run` at a
+subject's scans, and it produces the full derivatives tree — no notebook, no
+GUI, no server required. The CLI is the product; an optional macOS desktop app
+is just one front-end on top of it (see [below](#optional-macos-app)).
 
 _p_-Brain takes raw dynamic-contrast-enhanced (and diffusion) MRI through the
 whole analysis — T1/M0 mapping, arterial-input-function extraction,
@@ -70,22 +81,71 @@ want to extend the framework — the rest of this README gets you running first.
 
 ## Install
 
+_p_-Brain is a normal `pip`-installable Python package. It runs on **Linux,
+macOS, and Windows** with **Python 3.10–3.12**.
+
+```bash
+pip install p-brain          # core install — installs the `pbrain` command
+pbrain --help
+```
+
+That gives you the `pbrain` command (and `python -m pbrain`) plus the light core
+dependencies — `numpy, scipy, matplotlib, nibabel`. Everything heavier is an
+**opt-in extra**, installed only if you select a plug-in that needs it:
+
+```bash
+pip install "p-brain[cnn]"        # TensorFlow — CNN arterial-input-function (default AIF)
+pip install "p-brain[diffusion]"  # dipy — the diffusion track (DTI/DKI/CSD/…)
+pip install "p-brain[dicom]"      # pydicom — DICOM input (see DICOM input below)
+pip install "p-brain[all]"        # everything in one go
+```
+
+The default AIF (`cnn_sss_shifted`) needs the CNN extra **and** its `.keras`
+weights, distributed separately on Zenodo. To run weights-free, pick a classical
+AIF (e.g. `--aif peak_scaled`) or try the demo, which needs none.
+
+**From source** (for development or the bleeding edge):
+
 ```bash
 git clone https://github.com/edtireli/p-brain.git
 cd p-brain
-pip install -r requirements.txt
-python -m pbrain setup          # checks every dependency, offers to install what's missing
+pip install -e ".[dev]"           # editable install + test tooling
+pytest -q                         # run the test suite
 ```
 
-`pbrain setup` is the friendly path: it inspects your environment (Python
-packages, `dcm2niix`, optionally FreeSurfer for segmentation, GPU support) and
-walks you through installing anything required for the plug-ins you intend to
-use. To only *check* without installing, use `python -m pbrain check-deps`.
+**Check your environment.** `python -m pbrain check-deps` verifies the
+third-party Python deps and offers to install any that are missing;
+`python -m pbrain setup` additionally inspects external tooling (`dcm2niix`,
+optionally FreeSurfer for segmentation, GPU support) and walks you through it.
 
-Core requirements are light — `numpy, scipy, matplotlib, nibabel`. Everything
-else is optional and only needed if you select a plug-in that uses it: `dipy`
-(diffusion), `tensorflow` (CNN AIF), `torch` (`--device mps/cuda`), `pydicom` /
-`dcm2niix` (DICOM & PAR/REC input), `pyyaml` (YAML config).
+### DICOM input
+
+_p_-Brain reads **NIfTI** (`.nii` / `.nii.gz`) and **Philips PAR/REC** natively.
+**DICOM** is supported through [`dcm2niix`](https://github.com/rordenlab/dcm2niix),
+the standard, well-validated DICOM→NIfTI converter: point `--dce` / `--ir` /
+`--dwi` at a DICOM file or a folder of DICOMs and _p_-Brain calls `dcm2niix`
+under the hood, picking up the reconstructed NIfTI (and, for diffusion, the
+`.bval` / `.bvec` gradient tables it writes).
+
+Install `dcm2niix` from its own channel — it is a compiled binary, not a pip
+package:
+
+```bash
+conda install -c conda-forge dcm2niix     # any OS (recommended)
+brew install dcm2niix                      # macOS
+sudo apt install dcm2niix                  # Debian / Ubuntu
+# Windows: download the release .zip from the dcm2niix GitHub and add it to PATH
+```
+
+`pip install "p-brain[dicom]"` adds `pydicom` for header inspection;
+`dcm2niix` must be on your `PATH` for the actual conversion. Run
+`python -m pbrain check-deps` to confirm it is found.
+
+### Optional macOS app
+
+A native macOS desktop app wraps this CLI in a point-and-click GUI for users who
+prefer not to touch a terminal. It is **entirely optional** — the Python CLI
+above is the product and the canonical interface; the app simply drives it.
 
 ---
 
@@ -416,9 +476,30 @@ pbrain/            the framework — everything lives here
   diagnostics/     per-model fit plots + the montage generator
   stages/          the pipeline steps (a discoverable, topologically-ordered plug-point)
   cli/  demo/
-docs/              ADDING_PLUGINS.md · ARCHITECTURE.md
+docs/              ADDING_PLUGINS.md · ARCHITECTURE.md · mkdocs API reference
 tests/             the test suite                validation/  cohort runners
 ```
+
+---
+
+## Documentation
+
+- **API reference** — a rendered reference generated from the package
+  docstrings (every public class, the plug-in contracts, the kinetic and
+  diffusion models, the pipeline stages, and the QC functions). Build it
+  locally with:
+
+  ```bash
+  pip install "p-brain[docs]"
+  mkdocs build          # → ./site/   (or `mkdocs serve` for a live preview)
+  ```
+
+  Entry points: [`docs/index.md`](docs/index.md) and the contributor
+  [architecture overview](docs/architecture-overview.md).
+- **Extending the framework** —
+  [`docs/ADDING_PLUGINS.md`](docs/ADDING_PLUGINS.md) (copy-paste templates)
+  and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (full design rationale
+  and output layout).
 
 ---
 

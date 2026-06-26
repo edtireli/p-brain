@@ -20,6 +20,16 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class Config:
+    """Immutable, frozen configuration for one pipeline run.
+
+    Holds every knob: which plug-in to use at each plug-point, the
+    acquisition constants (paper §4.2 defaults), the T1/M0 and
+    normalisation parameters, the data paths, and the free-form
+    ``plugin_options`` dict. Stages receive an instance explicitly —
+    there are intentionally no per-model fields baked in; model-specific
+    knobs go in ``plugin_options`` keyed ``"<plug-point>.<plugin-key>"``.
+    """
+
     # ── Plug-in selection ────────────────────────────────────────────
     loader: str = "nifti"
     t1_m0_fitter: str = "inversion_recovery"
@@ -80,4 +90,5 @@ class Config:
         return dict(self.plugin_options.get(f"{plug_point}.{plugin_key}", {}))
 
     def subject_dir(self) -> Path:
+        """Path to this subject's directory (``data_root / subject_id``)."""
         return self.data_root / self.subject_id

@@ -17,6 +17,18 @@ from pbrain.core import Plugin
 
 @dataclass(frozen=True, slots=True)
 class T1M0Result:
+    """Voxelwise T1/M0 maps returned by a fitter.
+
+    Attributes
+    ----------
+    t1_map_ms
+        ``(X, Y, Z)`` longitudinal relaxation time in milliseconds.
+    m0_map
+        ``(X, Y, Z)`` equilibrium magnetisation in signal units.
+    meta
+        Free-form provenance (sequence, fit method, masked fraction, …).
+    """
+
     t1_map_ms: np.ndarray            # (X, Y, Z)
     m0_map: np.ndarray               # (X, Y, Z)
     meta: dict[str, Any]
@@ -33,4 +45,12 @@ class T1M0Fitter(Plugin, Protocol):
         *,
         mask: np.ndarray | None = None,
         **opts: Any,
-    ) -> T1M0Result: ...
+    ) -> T1M0Result:
+        """Estimate voxelwise T1 (ms) and M0 from a signal stack.
+
+        ``signals`` is ``(X, Y, Z, N)`` with ``axis_values`` giving the
+        ``N`` inversion times (s) or flip angles (deg); both are
+        ``None`` for preloaded-style plug-ins that read maps off disk.
+        Returns a :class:`T1M0Result`.
+        """
+        ...

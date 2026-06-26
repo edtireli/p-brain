@@ -222,6 +222,34 @@ class _IRFitter:
         nph: int = 1,
         **_: Any,
     ) -> T1M0Result:
+        """Voxelwise T1/M0 fit (paper §4.3, Eq. 1).
+
+        **Bounds (both recovery models):** ``T1 ∈ [t1_lo_ms, t1_hi_ms]`` =
+        ``[100, 6000]`` ms by default; the amplitudes ``A, B ≥ 0``
+        (``M0 ≥ 0`` for the TurboFLASH model).
+
+        **Initial-guess strategy** (no numerics depend on these beyond the
+        usual local-optimum sensitivity — documented so the Supplement can
+        state them):
+
+        * ``recovery_model="turboflash"`` (default) — full variable-projection
+          grid: T1 is the only nonlinear unknown, so it is swept over a
+          log-spaced **T1 grid** spanning ``[t1_lo_ms, t1_hi_ms]`` (240 nodes)
+          and, for each grid T1, the equilibrium ``M0`` is the closed-form
+          non-negative least-squares solution of the shared TurboFLASH basis.
+          No scalar A/B/T1 seed is used — the grid is the initialisation, then
+          the per-voxel minimiser is parabolically refined in log-T1.
+        * The simple ``A − B·exp(−TI/T1)`` recovery path
+          (``recovery_model`` ≠ ``"turboflash"``):
+            - ``method="varpro"`` (vectorised) sweeps the same kind of
+              log-spaced **T1 grid** (200 nodes) with closed-form ``(A, B)``
+              per node — again grid-initialised, no scalar seed.
+            - ``method="trf"`` (per-voxel reference solve, :func:`_fit_one`)
+              uses the explicit seed: ``A0 = max(S)``, ``B0 = 2·A0``, and
+              ``T1_0`` from the **magnetisation zero-crossing** —
+              ``T1_0 = TI_zc / ln 2`` where ``TI_zc`` is the TI whose signal is
+              nearest ``½·A0`` — clamped to ``[50 ms, t1_hi_ms]``.
+        """
         signals = np.asarray(signals, dtype=float)
         if signals.ndim != 4:
             raise ValueError(f"signals must be 4-D (X,Y,Z,N); got {signals.shape}")

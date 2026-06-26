@@ -69,3 +69,7 @@ run_stieltjes.py
 pbrain/analysis/
 run_eikonal.py
 scripts/run_cohorts_fresh.py
+site/
+
+# Python build / editable-install artifacts
+*.egg-info/

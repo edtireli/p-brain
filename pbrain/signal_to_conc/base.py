@@ -29,4 +29,13 @@ class SignalToConcConverter(Plugin, Protocol):
         tr_s: float,
         r1_per_s_mM: float = 4.0,
         **opts: Any,
-    ) -> np.ndarray: ...             # concentration mM, same shape as signal
+    ) -> np.ndarray:                 # concentration mM, same shape as signal
+        """Convert DCE signal S(t) into gadolinium concentration C(t).
+
+        Uses the fitted ``t1_ms`` and ``m0`` maps, the readout
+        ``flip_angle_deg``/``tr_s``, and the contrast relaxivity
+        ``r1_per_s_mM`` (paper Eq. 2). ``signal`` may be ``(T,)``,
+        ``(T, V)`` or ``(X, Y, Z, T)``; the result is the concentration
+        in mM with the same shape.
+        """
+        ...

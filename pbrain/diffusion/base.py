@@ -89,4 +89,14 @@ class DiffusionModel(Plugin, Protocol):
     outputs: ClassVar[tuple[str, ...]]
     units: ClassVar[dict[str, str]]
 
-    def fit(self, inputs: DWIInputs, **opts: Any) -> DiffusionResult: ...
+    def fit(self, inputs: DWIInputs, **opts: Any) -> DiffusionResult:
+        """Fit the diffusion model to a DWI volume.
+
+        ``inputs`` carries the 4-D signal, bvals/bvecs, affine and an
+        optional brain mask (see :class:`DWIInputs`). ``**opts`` are the
+        per-plug-in options from
+        ``config.plugin_options["diffusion.<key>"]``. Returns a
+        :class:`DiffusionResult` whose ``maps`` match this model's
+        ``outputs``.
+        """
+        ...

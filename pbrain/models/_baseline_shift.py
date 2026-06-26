@@ -35,6 +35,11 @@ def _butter_coeffs(cutoff: float = 4.0, fs: float = 15.0, order: int = 3):
 
 
 def butter_lowpass_filter(data, cutoff: float = 4.0, fs: float = 15.0, order: int = 3):
+    """Zero-phase Butterworth low-pass filter (``scipy.signal.filtfilt``).
+
+    ``cutoff`` and ``fs`` are in Hz; ``order`` is the filter order.
+    Returns the filtered signal with the same shape as ``data``.
+    """
     from scipy.signal import filtfilt
     b, a = _butter_coeffs(cutoff, fs, order)
     return filtfilt(b, a, data)
@@ -258,6 +263,91 @@ def fit_patlak_legacy_vectorised(c_tissue, c_input, t_s, *, mask=None,
     }
 
 
+def fit_patlak_patlak3(c_tissue, c_input, t_s, *, mask=None):
+    """Bit-for-bit port of the legacy MATLAB ``patlak3.m`` (mfiles5_hl).
+
+    This reproduces the *automated* supervisor driver
+    (``legacy_fit_from_dump.m`` line ~113, ``patlak3(time, c_input_shift,
+    c_braindata, 0, 0)`` with ``inputshift3(..., 0)`` ≡ identity) exactly, with
+    no AIF floor, no detrend, no baseline shift, and OLS — i.e. the
+    deterministic path that is bitwise-reachable.
+
+    Differences from the published p-Brain ``fit_patlak``/``legacy_vectorised``
+    that matter for the bitwise match:
+
+    * **Integration.** ``patlak3`` uses a *right-inclusive rectangular* rule:
+      ``x[i] = (Σ_{k=1..i} Ca[k]) · (t[2]-t[1]) / Ca[i]`` — the cumulative sum
+      *includes* the current frame and multiplies by the constant first step
+      ``dt = t[1]-t[0]``. The p-Brain default uses a left/trapezoid-style
+      ``cumsum(Ca[:-1]·dt)`` that *excludes* the current frame. The inclusive
+      rule is what reproduces the stored ``CBKi``/``CBV_p`` to machine
+      precision.
+    * **Zeroing.** Where ``Ca[i] == 0`` both ``x[i]`` and ``y[i]`` are set to 0
+      (they then fall outside the window because ``x_min = x_max/3 > 0``).
+    * **Window.** ``x_min = max(x)/3``, ``x_max = max(x)``; the window is on the
+      *shared* per-frame ``x`` axis (identical across voxels, since ``x``
+      depends only on ``Ca``).
+    * **Fit.** Closed-form OLS slope/intercept (no Huber, no robustness).
+
+    Returns raw-physical units (mL/100g/min, mL/100g), matching the rest of the
+    module (legacy stores raw ``Ki``/``lamda``; ×6000 / ×100 → physical).
+    """
+    c_t = np.asarray(c_tissue, dtype=float)
+    if c_t.ndim == 1:
+        c_t = c_t[:, None]
+    c_a = np.asarray(c_input, dtype=float)
+    t = np.asarray(t_s, dtype=float)
+    n_common = int(min(c_t.shape[0], c_a.size, t.size))
+    c_t, c_a, t = c_t[:n_common], c_a[:n_common], t[:n_common]
+    n_t, V = c_t.shape
+    if n_t < 3:
+        nan = np.full(V, np.nan)
+        return {"ki_ml_per_100g_min": nan.copy(),
+                "vb_ml_per_100g": nan.copy(),
+                "sd_ki_ml_per_100g_min": nan.copy()}
+
+    # patlak3: dt = time(2)-time(1) (constant first step), right-inclusive sum.
+    dt = float(t[1] - t[0])
+    csum = np.cumsum(c_a) * dt              # Σ_{k=0..i} Ca[k] · dt  (inclusive)
+    nz = c_a != 0
+    x = np.zeros(n_t)
+    x[nz] = csum[nz] / c_a[nz]              # x[i]=0 where Ca[i]==0
+    y = np.zeros((n_t, V))
+    y[nz, :] = c_t[nz, :] / c_a[nz, None]   # y[i]=0 where Ca[i]==0
+
+    x_max = float(x.max())
+    x_min = x_max / 3.0
+    win = (x >= x_min) & (x <= x_max)       # shared frame window (x is per-frame)
+    nw = int(win.sum())
+    if nw < 2:
+        nan = np.full(V, np.nan)
+        return {"ki_ml_per_100g_min": nan.copy(),
+                "vb_ml_per_100g": nan.copy(),
+                "sd_ki_ml_per_100g_min": nan.copy()}
+
+    xw = x[win]                             # (nw,)
+    yw = y[win, :]                          # (nw, V)
+    xm = float(xw.mean())
+    ym = yw.mean(axis=0)                    # (V,)
+    dxm = xw - xm                           # (nw,)
+    sxx = float((dxm * dxm).sum())
+    # Ki = Σ(x-mx)(y-my) / Σ(x-mx)^2 ; lamda = my - Ki*mx  (patlak3 lines 65-66)
+    ki_raw = (dxm[:, None] * (yw - ym[None, :])).sum(axis=0) / sxx
+    vp_raw = ym - ki_raw * xm
+    # SD_Ki (patlak3 line 69)
+    resid = yw - (vp_raw[None, :] + ki_raw[None, :] * xw[:, None])
+    dof = nw - 2
+    sse = (resid * resid).sum(axis=0)
+    sd_raw = (np.sqrt(sse / sxx / dof) if dof > 0
+              else np.full(V, np.nan))
+
+    return {
+        "ki_ml_per_100g_min": ki_raw * 6000.0,
+        "vb_ml_per_100g": vp_raw * 100.0,
+        "sd_ki_ml_per_100g_min": sd_raw * 6000.0,
+    }
+
+
 __all__ = [
     "find_baseline_point_advanced",
     "custom_shifter",
@@ -265,4 +355,5 @@ __all__ = [
     "butter_lowpass_filter",
     "baseline_shift_2d",
     "fit_patlak_legacy_vectorised",
+    "fit_patlak_patlak3",
 ]

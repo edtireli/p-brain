@@ -20,6 +20,24 @@ from pbrain.core import Plugin
 
 @dataclass(frozen=True, slots=True)
 class InputFunction:
+    """The arterial/venous input function returned by an extractor.
+
+    Attributes
+    ----------
+    c_a
+        ``(T,)`` concentration-time curve fed to the kinetic models.
+    t_s
+        ``(T,)`` time axis in seconds.
+    mask
+        ``(X, Y, Z)`` boolean ROI mask of the voxels that were averaged.
+    source
+        Vessel/source label (``"rica"``, ``"lica"``, ``"sss"``,
+        ``"user"``, …).
+    meta
+        Free-form provenance (chosen vessel, shift applied, model
+        version, …).
+    """
+
     c_a: np.ndarray                    # (T,) concentration-time curve
     t_s: np.ndarray                    # (T,)
     mask: np.ndarray                   # (X, Y, Z) bool ROI mask
@@ -43,4 +61,14 @@ class AIFExtractor(Plugin, Protocol):
         t1w_affine: np.ndarray | None = None,
         concentration_data: np.ndarray | None = None,  # (X, Y, Z, T) mM volume; if given, curves come from here
         **opts: Any,
-    ) -> InputFunction: ...
+    ) -> InputFunction:
+        """Extract the input function from a DCE series.
+
+        ``dce_data`` is the 4-D ``(X, Y, Z, T)`` *signal* volume; the
+        CNN extractors expect the signal (their training distribution).
+        T1/M0 maps and a T1-weighted volume are optional anatomical
+        guidance. If ``concentration_data`` is supplied, the curve is
+        sampled from that mM volume instead of the signal. Returns an
+        :class:`InputFunction`.
+        """
+        ...

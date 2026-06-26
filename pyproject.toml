@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p-brain"
+description = "A modular, cross-platform framework for automated DCE-MRI and diffusion MRI research."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Edis Devin Tireli", email = "aizibuzi@gmail.com" },
+]
+keywords = ["MRI", "DCE-MRI", "diffusion", "pharmacokinetics", "neuroimaging", "Patlak", "Tikhonov"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+# Core runtime is deliberately light; everything heavier is an opt-in extra.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "nibabel>=5.0",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+# CNN arterial-input-function (default `cnn_sss_shifted`); weights on Zenodo.
+cnn = ["tensorflow>=2.13"]
+# Diffusion track (DTI/DKI/CSD/…): dipy provides the models + tractography.
+diffusion = ["dipy>=1.7"]
+# DICOM input. pydicom reads headers; the actual 4-D reconstruction uses the
+# external `dcm2niix` binary (install via conda-forge / apt / brew — not pip).
+dicom = ["pydicom>=2.4"]
+# YAML config files (TOML works with no extra dependency on Python >=3.11).
+yaml = ["pyyaml>=6.0"]
+# GPU device probing for --device mps/cuda.
+torch = ["torch>=2.0"]
+# Test + coverage tooling.
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+# Rendered API reference (mkdocs + mkdocstrings autodoc). Build: `mkdocs build`.
+docs = ["mkdocs>=1.5", "mkdocstrings[python]>=0.24", "mkdocs-material>=9.0"]
+# Everything (convenience meta-extra for a full local install).
+all = [
+    "tensorflow>=2.13",
+    "dipy>=1.7",
+    "pydicom>=2.4",
+    "pyyaml>=6.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/edtireli/p-brain"
+Repository = "https://github.com/edtireli/p-brain"
+Issues = "https://github.com/edtireli/p-brain/issues"
+
+[project.scripts]
+pbrain = "pbrain.cli.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pbrain.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["pbrain*"]
+exclude = ["tests*", "validation*", "docs*", "scripts*", "demo*", "AI*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
