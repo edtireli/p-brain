@@ -100,9 +100,19 @@ pip install "p-brain[dicom]"      # pydicom — DICOM input (see DICOM input bel
 pip install "p-brain[all]"        # everything in one go
 ```
 
-The default AIF (`cnn_sss_shifted`) needs the CNN extra **and** its `.keras`
-weights, distributed separately on Zenodo. To run weights-free, pick a classical
-AIF (e.g. `--aif peak_scaled`) or try the demo, which needs none.
+The default AIF (`cnn_sss_shifted`) needs the CNN extra **and** its trained
+`.keras` weights (~1.2 GB), archived on Zenodo. Download them once — they cache
+under `~/.p-brain/AI` and every later run finds them automatically:
+
+```bash
+pbrain setup            # interactive: installs extras + offers to fetch weights & data
+pbrain fetch-weights    # just the CNN weights        (Zenodo 10.5281/zenodo.15697443)
+pbrain fetch-data       # the example subject sub-01  (Zenodo 10.5281/zenodo.20826857)
+```
+
+To run weights-free, pick a model-free AIF (`--aif deterministic`, or `from_file`
+/ `manual` for your own ROIs/curves), or try `python -m pbrain.demo`, which needs
+no weights or data at all.
 
 **From source** (for development or the bleeding edge):
 

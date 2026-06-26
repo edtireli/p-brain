@@ -13,8 +13,10 @@ def _help() -> int:
         "  run-cohort          Run the pipeline over many subjects (parallel, resumable).\n"
         "  list                Overview of registered plug-ins (every plug-point).\n"
         "  list <plug-point>   Detailed contract for one plug-point (e.g. `list models`).\n"
-        "  setup               Get everything ready to run: check + install deps, dcm2niix, FreeSurfer, GPU.\n"
+        "  setup               Get everything ready to run: check + install deps, dcm2niix, FreeSurfer, GPU, Zenodo assets.\n"
         "  check-deps          Verify third-party Python deps; offer to pip-install missing ones.\n"
+        "  fetch-weights       Download the CNN AIF weights from Zenodo (for the default 'cnn_sss_shifted' AIF).\n"
+        "  fetch-data          Download the example test dataset from Zenodo.\n"
     )
     return 0
 
@@ -132,6 +134,9 @@ def main() -> int:
     if cmd == "setup":
         from pbrain.cli._setup import setup
         return setup()
+    if cmd in ("fetch-weights", "fetch-data"):
+        from pbrain.cli._fetch import _main as fetch_main
+        return fetch_main(rest, what=cmd)
     print(f"unknown command: {cmd}", file=sys.stderr)
     return 2
 
