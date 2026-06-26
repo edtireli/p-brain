@@ -236,13 +236,13 @@ class _MedianCurveAggregator:
             }
             payload["__unit__"] = {"unit": units.get(nm, getattr(model, "units", {}).get(nm, ""))}
             jpath = out_dir / f"{nm}.json"
-            with open(jpath, "w") as f:
+            with open(jpath, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
             files[f"{nm}_json"] = jpath
             summary[nm] = {r: v["value"] for r, v in payload.items() if r != "__unit__"}
 
             cpath = out_dir / f"{nm}.csv"
-            with open(cpath, "w", newline="") as f:
+            with open(cpath, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=["region", "value", "n_slices"])
                 w.writeheader()
                 for region, rec in per_region.items():

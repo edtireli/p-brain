@@ -84,7 +84,7 @@ class _NODDI:
             nib.save(nib.Nifti1Image(mask, affine), str(mask_p))
 
             # AMICO scheme file (FSL-like, columns bvec_x bvec_y bvec_z bval)
-            with scheme_p.open("w") as f:
+            with scheme_p.open("w", encoding="utf-8") as f:
                 f.write("VERSION: BVAL\n")
                 for v, b in zip(bvecs, bvals):
                     f.write(f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f} {b:.2f}\n")

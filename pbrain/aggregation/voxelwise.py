@@ -73,7 +73,7 @@ class _VoxelwiseAggregator:
             }
 
         summary_path = out_dir / "histogram_summary.json"
-        with summary_path.open("w") as f:
+        with summary_path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
         files["histogram_summary"] = summary_path
 

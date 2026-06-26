@@ -10,6 +10,11 @@ jobs:
   test:
     name: ${{ matrix.os }} · py${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Force CPython UTF-8 mode so console output (arrows, Greek, box rules) is
+      # encodable on Windows' legacy cp1252 code page as well as on POSIX UTF-8.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     strategy:
       fail-fast: false
       matrix:

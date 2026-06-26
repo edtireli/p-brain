@@ -139,6 +139,9 @@ def main(argv: list[str]) -> int:
     through the pipeline, and writes a cohort-level summary. Returns the
     process exit code.
     """
+    from pbrain._console import ensure_utf8_console
+    ensure_utf8_console()
+
     args = _build_parser().parse_args(argv)
     configure_logging(level_from_flags(args.quiet, args.verbose), log_file=args.log_file)
     log = get_logger("cohort")

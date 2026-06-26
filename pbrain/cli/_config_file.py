@@ -42,7 +42,7 @@ from typing import Any
 
 def _read(path: Path) -> dict[str, Any]:
     suffix = path.suffix.lower()
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if suffix in (".toml",):
         import tomllib
         return tomllib.loads(text)

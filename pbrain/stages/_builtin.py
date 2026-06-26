@@ -60,7 +60,7 @@ def _save_npy(arr: np.ndarray, path: Path) -> Path:
 def _save_json(payload: dict, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
+    with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=str)
     return path
 
@@ -556,7 +556,7 @@ class SignalToConcStage:
         dce_meta: dict[str, Any] = {}
         if dce_meta_path:
             try:
-                with open(dce_meta_path) as f:
+                with open(dce_meta_path, encoding="utf-8") as f:
                     dce_meta = json.load(f).get("meta", {}) or {}
             except Exception:
                 dce_meta = {}
@@ -744,7 +744,7 @@ class KineticStage:
                 voxel_mask = (parc_arr > 0).ravel()
             labels_path = roi_mf.outputs.get("labels")
             if labels_path:
-                blob = json.loads(Path(labels_path).read_text())
+                blob = json.loads(Path(labels_path).read_text(encoding="utf-8"))
                 region_map = blob.get("region_map") or {}
 
         artefacts: dict[str, Path] = {}
@@ -1078,7 +1078,7 @@ class AggregationStage:
             parc_img = nib.load(str(roi_mf.outputs["parcellation"]))
             parc = np.asarray(parc_img.dataobj, dtype=np.int32)
             ref_affine = np.asarray(parc_img.affine, dtype=float)
-            with open(roi_mf.outputs["labels"]) as f:
+            with open(roi_mf.outputs["labels"], encoding="utf-8") as f:
                 ldata = json.load(f)
             labels = {int(k): v for k, v in ldata.get("labels", {}).items()}
             region_map = ldata.get("region_map") or None

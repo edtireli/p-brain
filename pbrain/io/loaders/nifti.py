@@ -103,7 +103,7 @@ class _NiftiLoader:
             sidecar = Path(str(stem) + ".json")
             if sidecar.exists():
                 try:
-                    with sidecar.open() as f:
+                    with sidecar.open(encoding="utf-8") as f:
                         return json.load(f)
                 except Exception:
                     return {}

@@ -85,7 +85,7 @@ class _SliceWiseAggregator:
                 rows.append({"slice_idx": k, **_slice_stats(sl)})
 
             path = out_dir / f"{name}_slice.csv"
-            with path.open("w", newline="") as f:
+            with path.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(
                     f,
                     fieldnames=["slice_idx", "mean", "median", "p25", "p75", "n"],

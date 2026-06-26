@@ -112,7 +112,7 @@ class DiagnosticsStage:
         parc = np.asarray(
             nib.load(str(roi_mf.outputs["parcellation"])).dataobj, dtype=np.int32
         )
-        with open(roi_mf.outputs["labels"]) as f:
+        with open(roi_mf.outputs["labels"], encoding="utf-8") as f:
             labels_blob = json.load(f)
         labels = {int(k): v for k, v in labels_blob.get("labels", {}).items()}
         region_map = labels_blob.get("region_map") or {}

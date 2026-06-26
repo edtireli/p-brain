@@ -88,7 +88,7 @@ class _ParcelAggregator:
                     })
 
             path = out_dir / f"{name}.csv"
-            with path.open("w", newline="") as f:
+            with path.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(
                     f,
                     fieldnames=["label_id", "label_name", "mean", "median", "sd", "n"],
@@ -101,7 +101,7 @@ class _ParcelAggregator:
             # JSON: same rows keyed by label (uniform 3-format output).
             import json as _json
             jpath = out_dir / f"{name}.json"
-            with jpath.open("w") as f:
+            with jpath.open("w", encoding="utf-8") as f:
                 _json.dump({str(r["label_id"]): r for r in rows}
                            | {"__unit__": {"unit": units.get(name, "")}}, f, indent=2)
             files[f"{name}_json"] = jpath

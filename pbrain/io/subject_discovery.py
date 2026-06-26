@@ -32,7 +32,7 @@ def _pars(subject_dir: Path) -> list[Path]:
 def protocol_name(par: Path) -> str:
     """Read the Philips ``Protocol name`` header field (case/format tolerant)."""
     try:
-        with open(par, "r", errors="ignore") as f:
+        with open(par, "r", errors="ignore", encoding="utf-8") as f:
             for line in f:
                 m = _PROTO.search(line)
                 if m:

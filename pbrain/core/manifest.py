@@ -61,12 +61,12 @@ class Manifest:
         """Serialise to ``path`` as pretty-printed JSON (creating dirs)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as f:
+        with path.open("w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2, sort_keys=False, default=str)
 
     @classmethod
     def read(cls, path: Path) -> "Manifest":
         """Load a manifest previously written by :meth:`write`."""
-        with Path(path).open() as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
         return cls(**data)

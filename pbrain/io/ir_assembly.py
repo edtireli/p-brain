@@ -39,7 +39,7 @@ STANDARD_IR_TIS_MS = (120, 300, 600, 1000, 2000, 4000, 10000)
 def _ti_from_par(par: Path) -> int | None:
     """Read a PAR header's Protocol name and pull the TI (ms) out of it."""
     try:
-        head = par.read_text(errors="ignore")[:4000]
+        head = par.read_text(encoding="utf-8", errors="ignore")[:4000]
     except Exception:
         return None
     m = re.search(r"Protocol name\s*:\s*(.+)", head)
@@ -320,7 +320,8 @@ def assemble_ir(search_dir: Path | str, out_path: Path | str,
     # configured count-matched fallback — correct even when a TI was dropped.
     try:
         _sidecar_path(out_path).write_text(
-            json.dumps({"InversionTimes": [ti / 1000.0 for ti in tis]})
+            json.dumps({"InversionTimes": [ti / 1000.0 for ti in tis]}),
+            encoding="utf-8",
         )
     except Exception:                            # noqa: BLE001 — sidecar is best-effort
         pass

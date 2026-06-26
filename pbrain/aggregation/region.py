@@ -88,14 +88,14 @@ class _RegionAggregator:
 
             per_region["__unit__"] = {"unit": units.get(name, "")}  # type: ignore
             path = out_dir / f"{name}.json"
-            with path.open("w") as f:
+            with path.open("w", encoding="utf-8") as f:
                 json.dump(per_region, f, indent=2)
             files[name] = path
             summary[name] = {"unit": units.get(name, ""), "n_regions": len(per_region) - 1}
 
             # CSV: one row per region (uniform 3-format output).
             cpath = out_dir / f"{name}.csv"
-            with cpath.open("w", newline="") as f:
+            with cpath.open("w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=["region", "mean", "median", "sd", "n"])
                 w.writeheader()
                 for region, st in per_region.items():

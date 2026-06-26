@@ -272,6 +272,9 @@ def main(argv: list[str]) -> int:
     default stage pipeline, and runs it over the subject's scans. Returns
     the process exit code.
     """
+    from pbrain._console import ensure_utf8_console
+    ensure_utf8_console()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

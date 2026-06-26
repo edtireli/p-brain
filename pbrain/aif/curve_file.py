@@ -49,7 +49,7 @@ def _load_curve(path: Path) -> np.ndarray:
         arr = next(np.asarray(v) for k, v in d.items() if not k.startswith("__"))
     elif suffix == ".json":
         import json
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             arr = np.asarray(json.load(f), dtype=float)
     else:
         raise ValueError(f"Unsupported curve format: {suffix!r} ({path})")

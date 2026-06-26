@@ -46,11 +46,11 @@ def _acquire_synthseg_slot(limit: int, poll: float = 3.0):
     """Block until one of ``limit`` slots is free; return the held lock handle."""
     _SYNTHSEG_SLOTDIR.mkdir(parents=True, exist_ok=True)
     if fcntl is None:      # no POSIX flock (e.g. Windows); SynthSeg does not run here anyway
-        return open(_SYNTHSEG_SLOTDIR / "slot_0.lock", "w")
+        return open(_SYNTHSEG_SLOTDIR / "slot_0.lock", "w", encoding="utf-8")
     limit = max(1, int(limit))
     while True:
         for i in range(limit):
-            fh = open(_SYNTHSEG_SLOTDIR / f"slot_{i}.lock", "w")
+            fh = open(_SYNTHSEG_SLOTDIR / f"slot_{i}.lock", "w", encoding="utf-8")
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return fh

@@ -330,7 +330,7 @@ def _write_phantom(root: Path) -> tuple[Path, dict]:
     np.save(raw / "ca_truth.npy", ca)
     np.save(raw / "t_s.npy", t_s)
     np.save(raw / "ti_s.npy", ti_s)
-    (raw / "truth.json").write_text(json.dumps({"labels": label_map, "tissues": truth}, indent=2))
+    (raw / "truth.json").write_text(json.dumps({"labels": label_map, "tissues": truth}, indent=2), encoding="utf-8")
 
     print(f"  wrote phantom inputs to {raw}")
     return raw, label_map
@@ -423,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--clean", action="store_true",
                    help="wipe out the existing demo dir first.")
     args = p.parse_args(argv)
+
+    from pbrain._console import ensure_utf8_console
+    ensure_utf8_console()
 
     if args.clean and args.out.exists():
         print(f"removing {args.out}")
