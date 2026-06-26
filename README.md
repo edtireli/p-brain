@@ -11,10 +11,6 @@ Microvasculature, and Blood–Brain Barrier Permeability**
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/edtireli/p-brain/blob/main/LICENSE)
 [![Platforms](https://img.shields.io/badge/os-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#install)
 
-<br>
-
-<img src="https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_voxel.png" width="780" alt="p-Brain per-voxel parameter maps: Ki, vb, CBF, MTT, CBV"/>
-
 </div>
 
 
