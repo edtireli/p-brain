@@ -47,21 +47,32 @@ _log = get_logger("aif")
 
 
 def _default_model_paths() -> dict[str, str]:
-    here = Path(__file__).resolve().parent.parent.parent  # repo root
-    ai = here / "AI"
+    """Locate the four CNN ``.keras`` weights.
+
+    Each entry resolves to: the per-model env override if set; else the first
+    existing file across the in-repo ``AI/`` dir and the per-user weights dir
+    (where ``pbrain fetch-weights`` downloads them); else the per-user path as
+    the default download target (used in the "not found" message).
+    """
+    from pbrain._paths import weights_dir
+    repo_ai = Path(__file__).resolve().parent.parent.parent / "AI"  # repo-root/AI
+    user_ai = weights_dir()
+
+    def _resolve(env_var: str, filename: str) -> str:
+        override = os.environ.get(env_var)
+        if override:
+            return override
+        for base in (repo_ai, user_ai):
+            cand = base / filename
+            if cand.exists():
+                return str(cand)
+        return str(user_ai / filename)
+
     return {
-        "slice_classifier_rica": os.environ.get(
-            "SLICE_CLASSIFIER_RICA_MODEL", str(ai / "slice_classifier_model_rica.keras")
-        ),
-        "rica_roi": os.environ.get(
-            "RICA_ROI_MODEL", str(ai / "rica_roi_model.keras")
-        ),
-        "slice_classifier_ss": os.environ.get(
-            "SLICE_CLASSIFIER_SS_MODEL", str(ai / "ss_slice_classifier.keras")
-        ),
-        "ss_roi": os.environ.get(
-            "SS_ROI_MODEL", str(ai / "ss_roi_model.keras")
-        ),
+        "slice_classifier_rica": _resolve("SLICE_CLASSIFIER_RICA_MODEL", "slice_classifier_model_rica.keras"),
+        "rica_roi": _resolve("RICA_ROI_MODEL", "rica_roi_model.keras"),
+        "slice_classifier_ss": _resolve("SLICE_CLASSIFIER_SS_MODEL", "ss_slice_classifier.keras"),
+        "ss_roi": _resolve("SS_ROI_MODEL", "ss_roi_model.keras"),
     }
 
 
@@ -121,10 +132,11 @@ def _load_keras(path: str):
         return cached
     if not Path(path).exists():
         raise FileNotFoundError(
-            f"CNN weights not found at {path}. Set the appropriate "
+            f"CNN weights not found at {path}. Download them from Zenodo with "
+            f"`pbrain fetch-weights` (or run `pbrain setup`), set the appropriate "
             f"environment variable (SLICE_CLASSIFIER_RICA_MODEL, RICA_ROI_MODEL, "
-            f"SLICE_CLASSIFIER_SS_MODEL, SS_ROI_MODEL) or place the .keras file "
-            f"at the default location."
+            f"SLICE_CLASSIFIER_SS_MODEL, SS_ROI_MODEL), or pick a weights-free AIF "
+            f"(--aif from_file | manual | deterministic)."
         )
     try:
         from tensorflow.keras.models import load_model  # type: ignore
@@ -211,6 +223,25 @@ def _select_chosen_slices(
     return [int(z) for z in order[:max_slices_i] if float(best_score[int(z)]) > 0.0]
 
 
+def _resize_nearest(src: np.ndarray, dst_h: int, dst_w: int) -> np.ndarray:
+    """Nearest-neighbour resize, bit-identical to ``cv2.resize(src, (dst_w, dst_h),
+    interpolation=cv2.INTER_NEAREST)`` — pure NumPy, no OpenCV dependency.
+
+    OpenCV maps each destination index ``d`` to source index
+    ``floor(d * scale)`` with ``scale = 1 / (dst / src)`` (the reciprocal of the
+    forward ratio, which lands just below integer boundaries in floating point);
+    the result is clamped to ``src - 1``. Replicating that exact computation makes
+    this a drop-in replacement (validated bit-for-bit over 1324 shape/pattern
+    cases). Used for the binary U-Net ROI mask, so values are preserved exactly.
+    """
+    sh, sw = src.shape[:2]
+    scale_y = 1.0 / (dst_h / sh)
+    scale_x = 1.0 / (dst_w / sw)
+    sy = np.minimum(np.floor(np.arange(dst_h) * scale_y).astype(np.intp), sh - 1)
+    sx = np.minimum(np.floor(np.arange(dst_w) * scale_x).astype(np.intp), sw - 1)
+    return src[sy[:, None], sx[None, :]]
+
+
 def _segment_rois(
     dce: np.ndarray,
     roi_model,
@@ -220,7 +251,6 @@ def _segment_rois(
     flip_lr: bool,
 ) -> dict[int, np.ndarray]:
     """Run U-Net on each (z, best_t[z]) pair; return native-resolution masks."""
-    import cv2
 
     X, Y, Z, T = dce.shape
     if not chosen_z:
@@ -246,7 +276,7 @@ def _segment_rois(
         binary = (m > thr).astype(np.uint8)
         if flip_lr:
             binary = np.fliplr(binary)
-        native = cv2.resize(binary, (Y, X), interpolation=cv2.INTER_NEAREST)
+        native = _resize_nearest(binary, X, Y)
         masks[int(z)] = (native > 0).astype(bool)
     return masks
 

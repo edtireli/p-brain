@@ -38,6 +38,8 @@ dynamic = ["version"]
 cnn = ["tensorflow>=2.13"]
 # Diffusion track (DTI/DKI/CSD/…): dipy provides the models + tractography.
 diffusion = ["dipy>=1.7"]
+# NODDI microstructure model (optional diffusion plug-in) via the AMICO framework.
+noddi = ["dmri-amico>=2.0"]
 # DICOM input. pydicom reads headers; the actual 4-D reconstruction uses the
 # external `dcm2niix` binary (install via conda-forge / apt / brew — not pip).
 dicom = ["pydicom>=2.4"]
@@ -53,6 +55,7 @@ docs = ["mkdocs>=1.5", "mkdocstrings[python]>=0.24", "mkdocs-material>=9.0"]
 all = [
     "tensorflow>=2.13",
     "dipy>=1.7",
+    "dmri-amico>=2.0",
     "pydicom>=2.4",
     "pyyaml>=6.0",
     "pytest>=7.0",

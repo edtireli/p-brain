@@ -93,7 +93,23 @@ def setup() -> int:
               "DownloadAndInstall  (large; manual — follow the page, then "
               "`source $FREESURFER_HOME/SetUpFreeSurfer.sh`).")
 
-    # ── 4. GPU (optional acceleration) ────────────────────────────────
+    # ── 4. CNN AIF weights + example data (Zenodo, optional) ──────────
+    _hdr("Model weights & example data (Zenodo)")
+    from pbrain._paths import weights_dir
+    from pbrain.cli._fetch import WEIGHTS_FILES, fetch_data, fetch_weights
+    have_weights = sum((weights_dir() / n).exists() for n in WEIGHTS_FILES)
+    if have_weights == len(WEIGHTS_FILES):
+        _ok(f"CNN AIF weights present in {weights_dir()}.")
+    else:
+        _warn(f"CNN AIF weights not found ({have_weights}/{len(WEIGHTS_FILES)}). "
+              "Needed only for the default 'cnn_sss_shifted' AIF; weights-free "
+              "AIFs (from_file / manual / deterministic) need nothing.")
+        if _ask("Download the CNN AIF weights from Zenodo now (~1.2 GB)?"):
+            fetch_weights()
+    if _ask("Download the example test dataset (sub-01) from Zenodo (~99 MB)?"):
+        fetch_data()
+
+    # ── 5. GPU (optional acceleration) ────────────────────────────────
     _hdr("Acceleration (optional)")
     try:
         from pbrain.core import probe_devices
@@ -105,7 +121,7 @@ def setup() -> int:
     except Exception:
         _warn("Could not probe devices — CPU will be used.")
 
-    # ── 5. Readiness summary ──────────────────────────────────────────
+    # ── 6. Readiness summary ──────────────────────────────────────────
     _hdr("You can run")
     def have(m):
         try: __import__(m); return True
