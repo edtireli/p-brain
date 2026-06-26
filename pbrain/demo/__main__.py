@@ -346,7 +346,11 @@ def _run_pipeline(subject_dir: Path, raw: Path) -> None:
         link = subject_dir / f.name
         if link.exists() or link.is_symlink():
             link.unlink()
-        link.symlink_to(f)
+        try:
+            link.symlink_to(f)
+        except (OSError, NotImplementedError):   # Windows without symlink privilege: copy instead
+            import shutil
+            shutil.copy2(f, link)
 
     argv = [
         "--subject-dir", str(subject_dir),

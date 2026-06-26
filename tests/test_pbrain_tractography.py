@@ -16,6 +16,8 @@ import pytest
 
 from pbrain.diffusion import REGISTRY, DWIInputs
 
+pytest.importorskip("dipy")  # tractography needs the optional [diffusion] extra (dipy)
+
 
 def _synthetic_single_fibre_dwi(shape=(8, 8, 8), n_dirs=30, bval=1000.0):
     """A homogeneous single-fibre-along-x DWI on one b-value shell."""

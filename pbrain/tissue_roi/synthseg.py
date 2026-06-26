@@ -13,7 +13,10 @@ the standard FreeSurfer labelmap.
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:        # Windows has no fcntl; SynthSeg is POSIX-only (needs FreeSurfer) anyway
+    fcntl = None
 import os
 import shutil
 import subprocess
@@ -42,6 +45,8 @@ _SYNTHSEG_SLOTDIR = Path(tempfile.gettempdir()) / "pbrain_synthseg_slots"
 def _acquire_synthseg_slot(limit: int, poll: float = 3.0):
     """Block until one of ``limit`` slots is free; return the held lock handle."""
     _SYNTHSEG_SLOTDIR.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:      # no POSIX flock (e.g. Windows); SynthSeg does not run here anyway
+        return open(_SYNTHSEG_SLOTDIR / "slot_0.lock", "w")
     limit = max(1, int(limit))
     while True:
         for i in range(limit):
@@ -56,7 +61,8 @@ def _acquire_synthseg_slot(limit: int, poll: float = 3.0):
 
 def _release_synthseg_slot(fh) -> None:
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         fh.close()
     except Exception:        # noqa: BLE001
         pass
