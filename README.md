@@ -1,9 +1,17 @@
-# _p_-Brain — a modular framework for automated DCE-MRI & diffusion analysis
+<div align="center">
+
+# _p_-Brain
+
+**A Modular Open-Source Framework for<br>
+Automated Quantitative DCE-MRI of Cerebral Perfusion,<br>
+Microvasculature, and Blood–Brain Barrier Permeability**
 
 [![CI](https://github.com/edtireli/p-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/edtireli/p-brain/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/edtireli/p-brain/blob/main/LICENSE)
 [![Platforms](https://img.shields.io/badge/os-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#install)
+
+</div>
 
 
 **_p_-Brain is a cross-platform Python command-line tool.** Install it with
@@ -39,6 +47,26 @@ stay directly comparable.
 
 ---
 
+## Representative output
+
+The five default maps from a single automated run — Ki and vb (Patlak), plus
+CBF, MTT and CBV (Tikhonov deconvolution) — shown per-voxel and per-region, as
+in the paper. Both views come from one `pbrain run`, with no manual steps.
+
+**Per-voxel — within the brain-segmentation mask**
+![Voxelwise output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_voxel.png)
+
+**Per-region — projected onto the SynthSeg parcellation**
+![Parcellated output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_parcel.png)
+
+**FA — fractional anisotropy (optional DTI / diffusion track)**
+![FA](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/fa_montage.png)
+
+Every map is produced by the pipeline itself at voxel, tissue-class, and
+DKT-parcel level; see the paper for the full set and quantitative validation.
+
+---
+
 ## Contents
 
 1. [Why a framework](#why-a-framework) — the idea, and how the pieces fit
@@ -49,8 +77,7 @@ stay directly comparable.
 6. [Models](#models) — what's shipped, defaults, and every option
 7. [Diffusion & connectomics](#diffusion)
 8. [Outputs](#outputs) — the standardised result tree
-9. [Representative output](#representative-output)
-10. [Demo](#demo) · [Repository structure](#repository-structure) · [Citation](#citation)
+9. [Demo](#demo) · [Repository structure](#repository-structure) · [Citation](#citation)
 
 ---
 
@@ -438,26 +465,6 @@ levels. The T1 map, M0 map, and the **4-D concentration volume** are written as
 NIfTI so you can use them directly. Each stage writes a `manifest.json` with its
 provenance and a QC block (physiological-range flags). Per-model diagnostics —
 the same fit plots shown in the paper — render every run.
-
----
-
-## Representative output
-
-The five default maps from a single automated run — Ki and vb (Patlak), plus
-CBF, MTT and CBV (Tikhonov deconvolution) — shown both per-region and per-voxel,
-as in the paper. Both views come from one `pbrain run`, with no manual steps.
-
-**Per-region — projected onto the SynthSeg parcellation**
-![Parcellated output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_parcel.png)
-
-**Per-voxel — within the brain-segmentation mask**
-![Voxelwise output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_voxel.png)
-
-**FA — fractional anisotropy (optional DTI / diffusion track)**
-![FA](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/fa_montage.png)
-
-Every map is produced by the pipeline itself at voxel, tissue-class, and
-DKT-parcel level; see the paper for the full set and quantitative validation.
 
 ---
 
