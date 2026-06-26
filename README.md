@@ -5,7 +5,6 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/edtireli/p-brain/blob/main/LICENSE)
 [![Platforms](https://img.shields.io/badge/os-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#install)
 
-<img width="2500" height="549" alt="pbrainplatform_banner" src="https://github.com/user-attachments/assets/e0c55c26-5c31-468f-9380-3b045e3a495c" />
 
 **_p_-Brain is a cross-platform Python command-line tool.** Install it with
 `pip` on Linux, macOS, or Windows (Python 3.10–3.12), point `pbrain run` at a
@@ -444,21 +443,21 @@ the same fit plots shown in the paper — render every run.
 
 ## Representative output
 
-Whole-brain parameter maps for one subject, masked to the brain segmentation
-(see the paper for the full set and quantitative validation):
+The five default maps from a single automated run — Ki and vb (Patlak), plus
+CBF, MTT and CBV (Tikhonov deconvolution) — shown both per-region and per-voxel,
+as in the paper. Both views come from one `pbrain run`, with no manual steps.
 
-**Ki — blood–brain-barrier influx (Patlak)**
-![Ki](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/ki_voxel_montage_patlak.png)
+**Per-region — projected onto the SynthSeg parcellation**
+![Parcellated output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_parcel.png)
 
-**CBF — cerebral blood flow (Tikhonov deconvolution)**
-![CBF](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/cbf_montage.png)
+**Per-voxel — within the brain-segmentation mask**
+![Voxelwise output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_voxel.png)
 
-**FA — fractional anisotropy (DTI)**
+**FA — fractional anisotropy (optional DTI / diffusion track)**
 ![FA](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/fa_montage.png)
 
-These montages are produced by the pipeline itself (the `diagnostics` stage),
-with data-adaptive slice layout and brain-segmentation masking. Every map is
-also aggregated to tissue classes and DKT parcels.
+Every map is produced by the pipeline itself at voxel, tissue-class, and
+DKT-parcel level; see the paper for the full set and quantitative validation.
 
 ---
 
