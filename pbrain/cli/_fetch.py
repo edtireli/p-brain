@@ -148,19 +148,26 @@ def fetch_data(dest: Path | None = None, *, force: bool = False) -> int:
     hits = sorted(target.rglob("sub-01_dce.nii.gz"))
     if hits:
         sub = hits[0].parent
+        # Build the argument groups once, then join for the current shell. Windows
+        # PowerShell/cmd do not understand the POSIX "\" line-continuation, so we
+        # print a single line there; POSIX shells get the readable multi-line form.
+        parts = [
+            "python -m pbrain run",
+            f'--subject-dir "{sub}"',
+            f'--dce "{sub / "sub-01_dce.nii.gz"}" --relax "{sub / "sub-01_ir.nii.gz"}"',
+            f'--aif curve_file --opt aif.curve_file.curve_path="{sub / "sub-01_aif.npy"}"',
+            f'--tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path='
+            f'"{sub / "sub-01_parcellation.nii.gz"}"',
+            "--models patlak,tikhonov --aggregations region,parcel,voxelwise",
+        ]
         print("\nRun it now (weights-free: no CNN weights and no FreeSurfer/SynthSeg needed):\n")
-        print(f'  python -m pbrain run \\\n'
-              f'    --subject-dir "{sub}" \\\n'
-              f'    --dce "{sub / "sub-01_dce.nii.gz"}" --ir "{sub / "sub-01_ir.nii.gz"}" \\\n'
-              f'    --aif curve_file --opt aif.curve_file.curve_path="{sub / "sub-01_aif.npy"}" \\\n'
-              f'    --tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path='
-              f'"{sub / "sub-01_parcellation.nii.gz"}" \\\n'
-              f'    --models patlak,tikhonov --aggregations region,parcel,voxelwise')
+        if os.name == "nt":
+            print("  " + " ".join(parts))   # one line: safe for PowerShell and cmd
+        else:
+            print("  " + " \\\n    ".join(parts))
         exp = next(iter(target.rglob("expected_outputs")), None)
         if exp is not None:
             print(f'\nThen compare "{sub / "derivatives"}" against "{exp}".')
-        print("\n(Windows PowerShell: put the command on one line, or end each line "
-              "with a backtick ` instead of \\.)")
     return 0
 
 

@@ -6,7 +6,7 @@ Usage::
         --subject-dir <path>          \\
         --dce dce.nii.gz              \\
         --t1 t1.nii.gz                \\
-        --ir ir.nii.gz                \\
+        --relax ir.nii.gz             \\
         --aif deterministic           \\
         --tissue-roi voxelwise        \\
         --models patlak,tikhonov      \\
@@ -135,9 +135,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--t1", type=Path, default=None,
                    help="T1-weighted anatomical: path / filename / protocol substring "
                         "(e.g. 'T1W_3D_TFE') / 'auto'.")
-    p.add_argument("--ir", type=Path, default=None,
-                   help="Inversion-recovery series: path / filename / 'auto' (assemble "
-                        "the TI_* saturation-recovery scans).")
+    p.add_argument("--relax", "--ir", "--vfa", dest="ir", type=Path, default=None,
+                   help="Baseline relaxometry series for T1/M0 fitting: an inversion-recovery "
+                        "or variable-flip-angle acquisition (path / filename / 'auto'). "
+                        "Aliases: --ir (inversion recovery), --vfa (variable flip angle).")
     p.add_argument("--dwi", type=Path, default=None,
                    help="DWI 4-D series (NIfTI). Sidecars .bval / .bvec auto-detected; "
                         "override via --bvals / --bvecs. Required when --diffusion is set.")

@@ -93,7 +93,7 @@ def _cohort_argv(subject_root: Path, inputs: dict, *, models: str, aggregations:
             "--models", models,
             "--aggregations", aggregations]
     if inputs.get("ir"):
-        argv += ["--ir", str(inputs["ir"])]
+        argv += ["--relax", str(inputs["ir"])]
     if inputs.get("t1"):
         argv += ["--t1", str(inputs["t1"])]
     if parcel:

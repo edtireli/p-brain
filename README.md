@@ -200,7 +200,7 @@ you `pip`, and then install _p_-Brain with it.
 
    ```powershell
    pbrain run --subject-dir data\sub-01 `
-     --dce data\sub-01\dce.nii.gz --ir data\sub-01\ir.nii.gz `
+     --dce data\sub-01\dce.nii.gz --relax data\sub-01\ir.nii.gz `
      --models patlak,tikhonov --aggregations region,parcel,voxelwise
    ```
 
@@ -213,7 +213,7 @@ diffusion track, or the CNN weights, use the extras and notes above.
 _p_-Brain reads **NIfTI** (`.nii` or `.nii.gz`) and **Philips PAR/REC** natively.
 **DICOM** is supported through
 [`dcm2niix`](https://github.com/rordenlab/dcm2niix), the standard, well-validated
-DICOM-to-NIfTI converter. Point `--dce`, `--ir`, or `--dwi` at a DICOM file or a
+DICOM-to-NIfTI converter. Point `--dce`, `--relax`, or `--dwi` at a DICOM file or a
 folder of DICOMs, and _p_-Brain calls `dcm2niix` under the hood and picks up the
 reconstructed NIfTI, and, for diffusion, the `.bval` and `.bvec` gradient tables
 it writes.
@@ -246,13 +246,14 @@ pbrain fetch-data          # downloads sub-01 (about 99 MB), then prints the exa
 ```
 
 `pbrain fetch-data` locates the data and prints a ready-to-run, weights-free
-command with the correct paths for your machine. Copy, paste, and run it. It has
-the form:
+command with the correct paths for your machine, formatted for your shell (a
+single line on Windows, so it pastes into PowerShell as-is). Copy, paste, and run
+it. It has the form:
 
 ```bash
 python -m pbrain run \
   --subject-dir <data>/sub-01 \
-  --dce  <data>/sub-01/sub-01_dce.nii.gz  --ir <data>/sub-01/sub-01_ir.nii.gz \
+  --dce  <data>/sub-01/sub-01_dce.nii.gz  --relax <data>/sub-01/sub-01_ir.nii.gz \
   --aif  curve_file      --opt aif.curve_file.curve_path=<data>/sub-01/sub-01_aif.npy \
   --tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path=<data>/sub-01/sub-01_parcellation.nii.gz \
   --models patlak,tikhonov --aggregations region,parcel,voxelwise
@@ -279,12 +280,14 @@ A run takes one subject's raw data and produces its full derivatives tree. There
 are three choices to make.
 
 1. **Point at your data.** `--dce` is the 4-D DCE series (NIfTI, PAR/REC, or
-   DICOM, converted automatically). `--ir` is the inversion-recovery series used
-   to fit T1 and M0. `--dwi` is an optional diffusion scan. Each of `--dce`,
-   `--t1`, and `--ir` accepts a full path, a filename, a protocol-name substring,
-   or `auto`, so you can write `--dce hperf --t1 auto --ir auto` once and reuse
-   it across subjects whose scan numbers differ. Raw PAR/REC files are matched by
-   their Philips `Protocol name`, and `--ir auto` assembles the `TI_*` series.
+   DICOM, converted automatically). `--relax` is the baseline relaxometry series
+   used to fit T1 and M0, either an inversion-recovery or a variable-flip-angle
+   acquisition (aliases `--ir` and `--vfa`). `--dwi` is an optional diffusion scan.
+   Each of `--dce`, `--t1`, and `--relax` accepts a full path, a filename, a
+   protocol-name substring, or `auto`, so you can write `--dce hperf --t1 auto
+   --relax auto` once and reuse it across subjects whose scan numbers differ. Raw
+   PAR/REC files are matched by their Philips `Protocol name`, and `--relax auto`
+   assembles the `TI_*` series.
 2. **Choose your methods.** `--models patlak,tikhonov` selects the kinetic
    models. `--aif`, `--tissue-roi`, and `--t1m0` select how each upstream step is
    done. Sensible defaults mean you can omit most of them.
@@ -298,11 +301,11 @@ are three choices to make.
 |---|---|---|
 | `--subject-dir` | where the derivatives tree is written | required |
 | `--dce` | 4-D DCE series (NIfTI, PAR/REC, or DICOM) | required |
-| `--ir` | inversion-recovery series for the T1/M0 fit | none |
+| `--relax` | baseline relaxometry series (IR or VFA) for the T1/M0 fit; aliases `--ir`, `--vfa` | none |
 | `--dwi` | diffusion series, for the diffusion track | none |
 | `--t1m0` | how T1 and M0 are obtained (`inversion_recovery`, `vfa_spgr`, and others) | `inversion_recovery` |
 | `--aif` | arterial-input-function method | `cnn_sss_shifted` |
-| `--tissue-roi` | parcellation source (`synthseg`, `fastsurfer`, `command`, `preloaded`, `voxelwise`) | `voxelwise` |
+| `--tissue-roi` | segmentation source (`synthseg`, `preloaded`, `command`, `voxelwise`) | auto: `synthseg` when a `--t1` scan and FreeSurfer are present, else `voxelwise` |
 | `--models` | comma-separated list of kinetic models to run | `patlak,tikhonov` |
 | `--diffusion` | comma-separated list of diffusion models, or `default` or `all` | auto when `--dwi` is given |
 | `--aggregations` | output levels: `voxelwise,region,parcel,slice_wise` | `voxelwise,parcel,region` |
@@ -317,17 +320,17 @@ to control logging.
 ### Quick start
 
 ```bash
-# Minimal: DCE and IR, the default models, all output levels
+# Minimal: DCE and the relaxometry series, the default models, all output levels
 python -m pbrain run \
     --subject-dir /data/sub-01 \
-    --dce dce.nii.gz --ir ir.nii.gz \
+    --dce dce.nii.gz --relax ir.nii.gz \
     --models patlak,tikhonov \
     --aggregations voxelwise,parcel,region
 
 # With diffusion (FA, MD, and tractography) in the same command
 python -m pbrain run \
     --subject-dir /data/sub-01 \
-    --dce dce.nii.gz --ir ir.nii.gz --dwi dwi.nii.gz \
+    --dce dce.nii.gz --relax ir.nii.gz --dwi dwi.nii.gz \
     --models patlak,tikhonov --diffusion default
 ```
 
