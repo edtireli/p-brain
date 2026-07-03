@@ -18,9 +18,7 @@ Microvasculature, and Blood-Brain Barrier Permeability**
 cross-platform Python command-line tool for quantitative DCE-MRI. Install it with
 `pip` on Linux, macOS, or Windows (Python 3.10 to 3.12), point `pbrain run` at a
 subject's scans, and it produces the full derivatives tree. No notebook, GUI, or
-server is required. The command-line tool is the product. An optional macOS
-desktop application is one front-end built on top of it (see
-[below](#optional-macos-app)).
+server is required.
 
 _p_-Brain takes raw dynamic-contrast-enhanced, and optionally diffusion, MRI
 through the complete analysis: T1/M0 mapping, arterial-input-function extraction,
@@ -106,7 +104,8 @@ gets you running first.
 ## Install
 
 _p_-Brain is a standard `pip`-installable Python package. It runs on **Linux,
-macOS, and Windows** with **Python 3.10 to 3.12**.
+macOS, and Windows** with **Python 3.10 to 3.12**. New to Python on Windows? Jump
+to [Windows, step by step](#windows-step-by-step).
 
 ```bash
 pip install p-brain
@@ -154,6 +153,61 @@ third-party Python dependencies and offers to install any that are missing.
 `python -m pbrain setup` additionally inspects external tooling (dcm2niix,
 optionally FreeSurfer for segmentation, and GPU support) and walks you through it.
 
+### Windows, step by step
+
+New to Python on Windows? Start here. You install Python first, which also gives
+you `pip`, and then install _p_-Brain with it.
+
+1. **Install Python.** Download Python 3.12 from the
+   [official Windows downloads](https://www.python.org/downloads/windows/) and run
+   the installer. On the first screen, tick **Add python.exe to PATH**, then choose
+   **Install Now**. The Microsoft Store build of Python 3.12 works too.
+
+2. **Open PowerShell** (press the Windows key, type `PowerShell`, and open it) and
+   confirm Python and pip are both found:
+
+   ```powershell
+   python --version
+   python -m pip --version
+   ```
+
+   If `python` is not recognised, close and reopen PowerShell, or reinstall Python
+   with **Add python.exe to PATH** ticked.
+
+3. **Create a virtual environment** (recommended, it keeps _p_-Brain isolated from
+   your other Python projects):
+
+   ```powershell
+   python -m venv pbrain-env
+   .\pbrain-env\Scripts\Activate.ps1
+   ```
+
+   If activation is blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+   once and then activate again.
+
+4. **Install and check _p_-Brain:**
+
+   ```powershell
+   python -m pip install --upgrade pip
+   python -m pip install p-brain
+   pbrain --help
+   ```
+
+5. **Run it.** Every command in this README works the same on Windows, with one
+   difference in how you split a command over several lines. PowerShell uses a
+   backtick at the end of a line where Linux and macOS use a backslash, or you can
+   put the whole command on one line:
+
+   ```powershell
+   pbrain run --subject-dir data\sub-01 `
+     --dce data\sub-01\dce.nii.gz --ir data\sub-01\ir.nii.gz `
+     --models patlak,tikhonov --aggregations region,parcel,voxelwise
+   ```
+
+To download the example subject and run a full end-to-end test, follow
+[Try it: the example subject](#try-it-the-example-subject). For DICOM input, the
+diffusion track, or the CNN weights, use the extras and notes above.
+
 ### DICOM input
 
 _p_-Brain reads **NIfTI** (`.nii` or `.nii.gz`) and **Philips PAR/REC** natively.
@@ -177,13 +231,6 @@ sudo apt install dcm2niix                  # Debian / Ubuntu
 `pip install "p-brain[dicom]"` adds `pydicom` for header inspection. `dcm2niix`
 must be on your `PATH` for the actual conversion. Run
 `python -m pbrain check-deps` to confirm it is found.
-
-### Optional macOS app
-
-A native macOS desktop application wraps this command-line tool in a
-point-and-click interface for users who prefer not to use a terminal. It is
-entirely optional. The Python command-line tool described here is the product
-and the canonical interface, and the application simply drives it.
 
 ---
 

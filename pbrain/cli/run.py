@@ -149,8 +149,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--aif", default="cnn_sss_shifted",
                    help="AIF extractor plug-in key (default reproduces paper §4.5.1: "
                         "CNN SSS time-shifted to rICA).")
-    p.add_argument("--tissue-roi", default="voxelwise",
-                   help="Tissue ROI provider plug-in key.")
+    p.add_argument("--tissue-roi", default=None,
+                   help="Tissue ROI provider plug-in key. Default (auto): SynthSeg "
+                        "parcellation when a --t1 scan and mri_synthseg are available, "
+                        "otherwise a dependency-free whole-brain mask.")
     p.add_argument("--signal-to-conc", default="saturation_recovery",
                    help="Signal-to-concentration plug-in key.")
     p.add_argument("--normaliser", default="identity",
@@ -359,10 +361,23 @@ def main(argv: list[str]) -> int:
     if resolved != "cpu":
         configure_tf_device(resolved)
 
+    # Tissue-ROI default: prefer a SynthSeg parcellation when it can actually run
+    # (a --t1 scan is supplied and mri_synthseg is on PATH); otherwise fall back to
+    # a dependency-free whole-brain mask. An explicit --tissue-roi is always honoured.
+    tissue_roi_provider = args.tissue_roi
+    if tissue_roi_provider is None:
+        import shutil
+        if args.t1 is not None and shutil.which("mri_synthseg"):
+            tissue_roi_provider = "synthseg"
+        else:
+            tissue_roi_provider = "voxelwise"
+            why = "no --t1 volume" if args.t1 is None else "mri_synthseg not on PATH"
+            log.info("tissue-roi: %s -> whole-brain mask (pass --tissue-roi synthseg to force)", why)
+
     config = Config(
         t1_m0_fitter=args.t1m0,
         aif_extractor=args.aif,
-        tissue_roi_provider=args.tissue_roi,
+        tissue_roi_provider=tissue_roi_provider,
         signal_to_conc=args.signal_to_conc,
         normaliser=args.normaliser,
         kinetic_models=tuple(s for s in args.models.split(",") if s),
