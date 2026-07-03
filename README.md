@@ -4,7 +4,7 @@
 
 **A Modular Open-Source Framework for<br>
 Automated Quantitative DCE-MRI of Cerebral Perfusion,<br>
-Microvasculature, and Blood–Brain Barrier Permeability**
+Microvasculature, and Blood-Brain Barrier Permeability**
 
 [![CI](https://github.com/edtireli/p-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/edtireli/p-brain/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
@@ -14,37 +14,41 @@ Microvasculature, and Blood–Brain Barrier Permeability**
 </div>
 
 
-**_p_-Brain** (the "_p_" for **p**erfusion and **p**ermeability) **is a
-cross-platform Python command-line tool.** Install it with
-`pip` on Linux, macOS, or Windows (Python 3.10–3.12), point `pbrain run` at a
-subject's scans, and it produces the full derivatives tree — no notebook, no
-GUI, no server required. The CLI is the product; an optional macOS desktop app
-is just one front-end on top of it (see [below](#optional-macos-app)).
+**_p_-Brain** (the "_p_" stands for **p**erfusion and **p**ermeability) is a
+cross-platform Python command-line tool for quantitative DCE-MRI. Install it with
+`pip` on Linux, macOS, or Windows (Python 3.10 to 3.12), point `pbrain run` at a
+subject's scans, and it produces the full derivatives tree. No notebook, GUI, or
+server is required. The command-line tool is the product. An optional macOS
+desktop application is one front-end built on top of it (see
+[below](#optional-macos-app)).
 
-_p_-Brain takes raw dynamic-contrast-enhanced (and diffusion) MRI through the
-whole analysis — T1/M0 mapping, arterial-input-function extraction,
-signal-to-concentration conversion, tissue parcellation, pharmacokinetic and
-diffusion modelling — and produces standardised voxel-, tissue-, and
-parcel-level results, fully automatically.
+_p_-Brain takes raw dynamic-contrast-enhanced, and optionally diffusion, MRI
+through the complete analysis: T1/M0 mapping, arterial-input-function extraction,
+signal-to-concentration conversion, tissue parcellation, and pharmacokinetic and
+diffusion modelling. It produces standardised voxel-, tissue-, and parcel-level
+results automatically.
 
-It is two things at once. **As shipped it is a validated, ready-to-run
-pipeline** you can point at real scanner data today and get publication-grade
-maps (Ki, CBF, MTT, CTH, FA, …). And it is a **template you extend**: each step
-is a self-contained plug-in, so adding your own kinetic model — or a different
-AIF, segmentation backend, or whole stage — is a single file and **no changes
-to the core**. Drop a model into `pbrain/models/`, call it with `--models
-yourmodel`, and it is run on every subject, aggregated to every anatomical
-level, written as NIfTI/CSV/JSON, and given diagnostics automatically.
+_p_-Brain serves two purposes. As shipped, it is a validated, ready-to-run
+pipeline that you can point at real scanner data to obtain quantitative maps
+(Ki, CBF, MTT, CTH, FA, and others). It is also a framework you extend. Each
+step is a self-contained plug-in, so adding your own kinetic model, a different
+AIF, a segmentation backend, or a whole stage means writing a single file with
+no changes to the core. Drop a model into `pbrain/models/`, call it with
+`--models yourmodel`, and it runs on every subject, is aggregated to every
+anatomical level, is written as NIfTI, CSV, and JSON, and is given diagnostics
+automatically.
 
-The aim is to let groups stop re-implementing the same plumbing: use it as-is,
-modify what you need, and extend it to go beyond — while everyone's outputs
-stay directly comparable.
+The goal is to let groups reuse a common, tested pipeline instead of
+re-implementing the same steps, so that outputs stay directly comparable across
+studies.
 
 > If you use _p_-Brain in your research, please **cite our paper** (Tireli et
-> al.; see [Citation](#citation)).
+> al., see [Citation](#citation)).
 
 > **Author:** Edis Devin Tireli, M.Sc., Ph.D. student
-> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital – Rigshospitalet; Department of Neuroscience and Department of Clinical Medicine, University of Copenhagen.
+> **Affiliations:** Functional Imaging Unit, Copenhagen University Hospital,
+> Rigshospitalet. Department of Neuroscience and Department of Clinical
+> Medicine, University of Copenhagen.
 
 ---
 
@@ -56,135 +60,147 @@ stay directly comparable.
 
 ## Contents
 
-1. [Why a framework](#why-a-framework) — the idea, and how the pieces fit
+1. [Why a framework](#why-a-framework)
 2. [Install](#install)
-3. [How to run](#how-to-run) — first steps, the flags explained, quick start
-4. [Add your own model — it's one file](#add-your-own) — the headline feature
-5. [Config files](#config-files)
-6. [Models](#models) — what's shipped, defaults, and every option
-7. [Diffusion & connectomics](#diffusion)
-8. [Outputs](#outputs) — the standardised result tree
-9. [Representative output](#representative-output)
-10. [Demo](#demo) · [Repository structure](#repository-structure) · [Citation](#citation)
+3. [Try it: the example subject](#try-it-the-example-subject)
+4. [How to run](#how-to-run)
+5. [Add your own model](#add-your-own)
+6. [Config files](#config-files)
+7. [Models](#models)
+8. [Diffusion and connectomics](#diffusion)
+9. [Outputs](#outputs)
+10. [Representative output](#representative-output)
+11. [Demo](#demo)
+12. [Repository structure](#repository-structure)
+13. [Documentation](#documentation)
+14. [Citation](#citation)
 
 ---
 
 ## Why a framework
 
-DCE-MRI analysis is a chain of stages — fit T1, find the artery, convert signal
-to contrast concentration, segment tissue, fit a kinetic model, summarise. In
-most labs each of these is bespoke code, so results are hard to compare and a
-new model means re-plumbing the whole pipeline.
+DCE-MRI analysis is a chain of stages: fit T1, find the artery, convert signal to
+contrast concentration, segment tissue, fit a kinetic model, and summarise. In
+most labs each of these is bespoke code, which makes results hard to compare and
+turns a new model into a rewrite of the whole pipeline.
 
-_p_-Brain makes each stage a **plug-in**: a single file that declares what it
-needs and what it produces, discovered automatically at runtime. The
-orchestrator wires the stages together by those declarations — so:
+_p_-Brain makes each stage a **plug-in**, a single file that declares what it
+needs and what it produces and is discovered automatically at runtime. The
+orchestrator wires the stages together from those declarations, so that:
 
-- **adding a method changes one file, never the core;**
-- **every model is run, aggregated, and reported the same way**, giving
-  standardised, directly-comparable outputs across groups;
-- you can **swap any step** (a different AIF, your lab's segmentation tool, a
-  new deconvolution) by name on the command line.
+- adding a method changes one file and never the core,
+- every model is run, aggregated, and reported the same way, which gives
+  standardised, directly comparable outputs across groups,
+- you can swap any step, such as a different AIF, your lab's segmentation tool,
+  or a new deconvolution, by name on the command line.
 
-There are 12 such plug-points. The full contract and copy-paste templates live
-in **[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)**; the design rationale
-in **[`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md)**. Read those two when you
-want to extend the framework — the rest of this README gets you running first.
+There are 12 such plug-points. The full contract and copy-paste templates are in
+**[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)**,
+and the design rationale is in
+**[`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md)**.
+Read those two when you want to extend the framework. The rest of this README
+gets you running first.
 
 ---
 
 ## Install
 
-_p_-Brain is a normal `pip`-installable Python package. It runs on **Linux,
-macOS, and Windows** with **Python 3.10–3.12**.
+_p_-Brain is a standard `pip`-installable Python package. It runs on **Linux,
+macOS, and Windows** with **Python 3.10 to 3.12**.
 
 ```bash
-pip install p-brain          # core install — installs the `pbrain` command
+pip install p-brain
 pbrain --help
 ```
 
-That gives you the `pbrain` command (and `python -m pbrain`) plus the light core
-dependencies — `numpy, scipy, matplotlib, nibabel`. Everything heavier is an
-**opt-in extra**, installed only if you select a plug-in that needs it:
+This installs the `pbrain` command, also available as `python -m pbrain`,
+together with the light core dependencies (numpy, scipy, matplotlib, nibabel).
+Everything heavier is an opt-in extra, installed only when you select a plug-in
+that needs it:
 
 ```bash
-pip install "p-brain[cnn]"        # TensorFlow — CNN arterial-input-function (default AIF)
-pip install "p-brain[diffusion]"  # dipy — the diffusion track (DTI/DKI/CSD/…)
-pip install "p-brain[dicom]"      # pydicom — DICOM input (see DICOM input below)
-pip install "p-brain[all]"        # everything in one go
+pip install "p-brain[cnn]"        # TensorFlow, for the CNN arterial-input-function (default AIF)
+pip install "p-brain[diffusion]"  # dipy, for the diffusion track (DTI, DKI, CSD, and others)
+pip install "p-brain[dicom]"      # pydicom, for DICOM input (see DICOM input below)
+pip install "p-brain[all]"        # all extras at once
 ```
 
-The default AIF (`cnn_sss_shifted`) needs the CNN extra **and** its trained
-`.keras` weights (~1.2 GB), archived on Zenodo. Download them once — they cache
-under `~/.p-brain/AI` and every later run finds them automatically:
+The default AIF (`cnn_sss_shifted`) needs the CNN extra and its trained `.keras`
+weights (about 1.2 GB), which are archived on Zenodo. Download them once. They
+cache under `~/.p-brain/AI`, and every later run finds them automatically:
 
 ```bash
-pbrain setup            # interactive: installs extras + offers to fetch weights & data
-pbrain fetch-weights    # just the CNN weights        (Zenodo 10.5281/zenodo.15697443)
+pbrain setup            # interactive: installs extras and offers to fetch weights and data
+pbrain fetch-weights    # the CNN weights only        (Zenodo 10.5281/zenodo.15697443)
 pbrain fetch-data       # the example subject sub-01  (Zenodo 10.5281/zenodo.20826857)
 ```
 
-To run weights-free, supply a file-based or model-free AIF (`--aif curve_file` for a saved curve as in the example, `from_file` / `manual` for your own ROIs, or `deterministic` for a DCE-only synthetic AIF), or try `python -m pbrain.demo`, which needs
-no weights or data at all.
+To run without any weights, supply a file-based or model-free AIF. Use
+`--aif curve_file` for a saved curve as in the example, `from_file` or `manual`
+for your own ROIs, or `deterministic` for a DCE-only synthetic AIF. You can also
+run `python -m pbrain.demo`, which needs no weights or data at all.
 
-**From source** (for development or the bleeding edge):
+**From source**, for development:
 
 ```bash
 git clone https://github.com/edtireli/p-brain.git
 cd p-brain
-pip install -e ".[dev]"           # editable install + test tooling
-pytest -q                         # run the test suite
+pip install -e ".[dev]"
+pytest -q
 ```
 
 **Check your environment.** `python -m pbrain check-deps` verifies the
-third-party Python deps and offers to install any that are missing;
-`python -m pbrain setup` additionally inspects external tooling (`dcm2niix`,
-optionally FreeSurfer for segmentation, GPU support) and walks you through it.
+third-party Python dependencies and offers to install any that are missing.
+`python -m pbrain setup` additionally inspects external tooling (dcm2niix,
+optionally FreeSurfer for segmentation, and GPU support) and walks you through it.
 
 ### DICOM input
 
-_p_-Brain reads **NIfTI** (`.nii` / `.nii.gz`) and **Philips PAR/REC** natively.
-**DICOM** is supported through [`dcm2niix`](https://github.com/rordenlab/dcm2niix),
-the standard, well-validated DICOM→NIfTI converter: point `--dce` / `--ir` /
-`--dwi` at a DICOM file or a folder of DICOMs and _p_-Brain calls `dcm2niix`
-under the hood, picking up the reconstructed NIfTI (and, for diffusion, the
-`.bval` / `.bvec` gradient tables it writes).
+_p_-Brain reads **NIfTI** (`.nii` or `.nii.gz`) and **Philips PAR/REC** natively.
+**DICOM** is supported through
+[`dcm2niix`](https://github.com/rordenlab/dcm2niix), the standard, well-validated
+DICOM-to-NIfTI converter. Point `--dce`, `--ir`, or `--dwi` at a DICOM file or a
+folder of DICOMs, and _p_-Brain calls `dcm2niix` under the hood and picks up the
+reconstructed NIfTI, and, for diffusion, the `.bval` and `.bvec` gradient tables
+it writes.
 
-Install `dcm2niix` from its own channel — it is a compiled binary, not a pip
+Install `dcm2niix` from its own channel. It is a compiled binary, not a pip
 package:
 
 ```bash
 conda install -c conda-forge dcm2niix     # any OS (recommended)
 brew install dcm2niix                      # macOS
 sudo apt install dcm2niix                  # Debian / Ubuntu
-# Windows: download the release .zip from the dcm2niix GitHub and add it to PATH
+# Windows: download the release .zip from the dcm2niix GitHub page and add it to PATH
 ```
 
-`pip install "p-brain[dicom]"` adds `pydicom` for header inspection;
-`dcm2niix` must be on your `PATH` for the actual conversion. Run
+`pip install "p-brain[dicom]"` adds `pydicom` for header inspection. `dcm2niix`
+must be on your `PATH` for the actual conversion. Run
 `python -m pbrain check-deps` to confirm it is found.
 
 ### Optional macOS app
 
-A native macOS desktop app wraps this CLI in a point-and-click GUI for users who
-prefer not to touch a terminal. It is **entirely optional** — the Python CLI
-above is the product and the canonical interface; the app simply drives it.
+A native macOS desktop application wraps this command-line tool in a
+point-and-click interface for users who prefer not to use a terminal. It is
+entirely optional. The Python command-line tool described here is the product
+and the canonical interface, and the application simply drives it.
 
 ---
 
 ## Try it: the example subject
 
-The fastest way to confirm _p_-Brain works end-to-end — on **Linux, macOS, or
-Windows**, with **no** CNN weights and **no** FreeSurfer/SynthSeg (the example
-ships its own AIF curve and parcellation, so nothing extra is downloaded):
+This is the quickest way to confirm _p_-Brain works end-to-end, on **Linux,
+macOS, or Windows**, with no CNN weights and no FreeSurfer or SynthSeg. The
+example ships its own AIF curve and parcellation, so nothing extra is downloaded.
 
 ```bash
 pip install p-brain
-pbrain fetch-data          # downloads sub-01 (~99 MB), then prints the exact run command
+pbrain fetch-data          # downloads sub-01 (about 99 MB), then prints the exact run command
 ```
 
-`pbrain fetch-data` locates the data and **prints a ready-to-run, weights-free
-command with the correct paths for your machine** — copy, paste, run. It is:
+`pbrain fetch-data` locates the data and prints a ready-to-run, weights-free
+command with the correct paths for your machine. Copy, paste, and run it. It has
+the form:
 
 ```bash
 python -m pbrain run \
@@ -195,131 +211,133 @@ python -m pbrain run \
   --models patlak,tikhonov --aggregations region,parcel,voxelwise
 ```
 
-Results land under `sub-01/derivatives/`; compare
-`07_kinetic/patlak/region/ki.csv` (BBB _K_ᵢ, _v_b) and
-`07_kinetic/tikhonov/region/cbf.json` (CBF, MTT) against the bundled
-`expected_outputs/`.
+Results are written under `sub-01/derivatives/`. Compare
+`07_kinetic/patlak/region/ki.csv` (BBB Ki and vb) and
+`07_kinetic/tikhonov/region/cbf.json` (CBF and MTT) against the bundled
+`expected_outputs/`. The values should agree to within about 2 percent.
 
-> **Windows:** the command is pure Python and runs identically in PowerShell or
-> `cmd` — just put it on **one line** (or replace each trailing `\` with a
-> backtick `` ` ``). You need neither dcm2niix, FreeSurfer, nor the CNN weights
-> to run the example.
+> **Windows.** The command is pure Python and runs the same way in PowerShell or
+> `cmd`. Put it on one line, or replace each trailing backslash with a backtick.
+> You do not need dcm2niix, FreeSurfer, or the CNN weights to run the example.
 
-**Zero download at all?** `python -m pbrain.demo` synthesises a small phantom and
-runs the entire pipeline in seconds — a self-contained smoke test that your
-install works, on any OS.
+**No download at all.** `python -m pbrain.demo` synthesises a small phantom and
+runs the entire pipeline in seconds, a self-contained check that your install
+works on any operating system.
 
 ---
 
 ## How to run
 
-A run takes one subject's raw data and produces its full derivatives tree.
-The first three steps:
+A run takes one subject's raw data and produces its full derivatives tree. There
+are three choices to make.
 
 1. **Point at your data.** `--dce` is the 4-D DCE series (NIfTI, PAR/REC, or
-   DICOM — converted automatically). `--ir` is the inversion-recovery series
-   used to fit T1/M0; `--dwi` is an optional diffusion scan. Each of `--dce`,
-   `--t1`, `--ir` accepts a **full path, a filename, a protocol-name substring,
-   or `auto`** — so you can write `--dce hperf --t1 auto --ir auto` once and
-   reuse it across subjects whose scan numbers differ (raw PAR/REC are matched
-   by their Philips `Protocol name`; `--ir auto` assembles the `TI_*` series).
+   DICOM, converted automatically). `--ir` is the inversion-recovery series used
+   to fit T1 and M0. `--dwi` is an optional diffusion scan. Each of `--dce`,
+   `--t1`, and `--ir` accepts a full path, a filename, a protocol-name substring,
+   or `auto`, so you can write `--dce hperf --t1 auto --ir auto` once and reuse
+   it across subjects whose scan numbers differ. Raw PAR/REC files are matched by
+   their Philips `Protocol name`, and `--ir auto` assembles the `TI_*` series.
 2. **Choose your methods.** `--models patlak,tikhonov` selects the kinetic
-   models; `--aif`, `--tissue-roi`, `--t1m0` select how each upstream step is
+   models. `--aif`, `--tissue-roi`, and `--t1m0` select how each upstream step is
    done. Sensible defaults mean you can omit most of them.
 3. **Choose your output levels.** `--aggregations voxelwise,region,parcel`
-   controls whether you get whole-brain maps, tissue-class summaries, and/or
+   controls whether you get whole-brain maps, tissue-class summaries, and
    per-parcel tables.
 
-### The flags, explained
+### The flags
 
 | flag | meaning | default |
 |---|---|---|
-| `--subject-dir` | where the derivatives tree is written | (required) |
-| `--dce` | 4-D DCE series (NIfTI / PAR-REC / DICOM) | (required) |
-| `--ir` | inversion-recovery series for the T1/M0 fit | — |
-| `--dwi` | diffusion series (for the diffusion track) | — |
-| `--t1m0` | how T1 & M0 are obtained (`inversion_recovery`, `vfa_spgr`, …) | `inversion_recovery` |
+| `--subject-dir` | where the derivatives tree is written | required |
+| `--dce` | 4-D DCE series (NIfTI, PAR/REC, or DICOM) | required |
+| `--ir` | inversion-recovery series for the T1/M0 fit | none |
+| `--dwi` | diffusion series, for the diffusion track | none |
+| `--t1m0` | how T1 and M0 are obtained (`inversion_recovery`, `vfa_spgr`, and others) | `inversion_recovery` |
 | `--aif` | arterial-input-function method | `cnn_sss_shifted` |
-| `--tissue-roi` | parcellation source (`synthseg`, `fastsurfer`, `command`, `preloaded`, …) | `voxelwise` |
-| `--models` | comma-list of kinetic models to run | `patlak,tikhonov` |
-| `--diffusion` | comma-list of diffusion models, or `default`/`all` | (auto when `--dwi` given) |
+| `--tissue-roi` | parcellation source (`synthseg`, `fastsurfer`, `command`, `preloaded`, `voxelwise`) | `voxelwise` |
+| `--models` | comma-separated list of kinetic models to run | `patlak,tikhonov` |
+| `--diffusion` | comma-separated list of diffusion models, or `default` or `all` | auto when `--dwi` is given |
 | `--aggregations` | output levels: `voxelwise,region,parcel,slice_wise` | `voxelwise,parcel,region` |
-| `--device` | `cpu` / `mps` / `cuda` / `auto` | `cpu` |
-| `--config` | read all of the above from a `.toml`/`.yaml` file | — |
+| `--device` | `cpu`, `mps`, `cuda`, or `auto` | `cpu` |
+| `--config` | read all of the above from a `.toml` or `.yaml` file | none |
 
-Two niceties: runs are **resumable** (a finished stage is skipped on re-run;
-`--force` recomputes), and every output carries **provenance** (the `pbrain`
-version and exact options that made it). Use `--quiet` / `--verbose` /
-`--log-file` to control logging.
+Runs are resumable. A finished stage is skipped on re-run, and `--force`
+recomputes it. Every output carries provenance, namely the `pbrain` version and
+the exact options that produced it. Use `--quiet`, `--verbose`, or `--log-file`
+to control logging.
 
 ### Quick start
 
 ```bash
-# Minimal: DCE + IR, the default models, all output levels
+# Minimal: DCE and IR, the default models, all output levels
 python -m pbrain run \
     --subject-dir /data/sub-01 \
     --dce dce.nii.gz --ir ir.nii.gz \
     --models patlak,tikhonov \
     --aggregations voxelwise,parcel,region
 
-# With diffusion (FA/MD + tractography) in the same command
+# With diffusion (FA, MD, and tractography) in the same command
 python -m pbrain run \
     --subject-dir /data/sub-01 \
     --dce dce.nii.gz --ir ir.nii.gz --dwi dwi.nii.gz \
     --models patlak,tikhonov --diffusion default
 ```
 
-**See what's available** — every plug-in, its inputs/outputs, its diagnostic:
+**See what is available**, including every plug-in with its inputs, outputs, and
+diagnostics:
 
 ```bash
 python -m pbrain list             # all plug-points at a glance
 python -m pbrain list models      # one plug-point in detail
 ```
 
-**Run a whole cohort** — parallel, resumable, error-isolated:
+**Run a whole cohort** in parallel, resumable and error-isolated:
 
 ```bash
-# ── one flag, raw scanner data: point --cohort at a folder of subjects ──
+# One flag on raw scanner data: point --cohort at a folder of subjects.
 # Each sub-directory is a subject of raw Philips PAR/REC. Inputs are
-# auto-discovered by protocol name (DCE = hperf*; the TI_* saturation-recovery
-# series is assembled into an IR; a 3-D T1 anatomical for SynthSeg), then the
-# full pipeline runs with ALL kinetic models at tissue (region) + parcel level.
-# No config needed. Add --force for a fresh re-run. Pass several roots to run
-# patients + controls + follow-ups in one go.
+# auto-discovered by protocol name (DCE from hperf*, the TI_* saturation-recovery
+# series assembled into an IR, and a 3-D T1 anatomical for SynthSeg). The full
+# pipeline then runs with all kinetic models at tissue (region) and parcel level.
+# No config is needed. Add --force for a fresh re-run. Pass several roots to run
+# patients, controls, and follow-ups in one go.
 python -m pbrain run-cohort --cohort /data/patients /data/controls --workers 4 --force
 
-#   pick models / levels, or skip known-bad subjects:
+# Pick models or levels, or skip known-bad subjects:
 python -m pbrain run-cohort --cohort /data/patients --workers 4 \
     --models tikhonov,inverse_gaussian --aggregations region,parcel \
-    --exclude 20221003x1            # --voxelwise to fit per-voxel (slower)
+    --exclude 20221003x1            # add --voxelwise to also fit per-voxel (slower)
 
-# ── config mode, pre-converted NIfTI cohorts: inputs from a shared config ──
+# Config mode for pre-converted NIfTI cohorts: inputs come from a shared config.
 python -m pbrain run-cohort --config study.toml --data-dir /data --workers 8
 python -m pbrain run-cohort --config study.toml --subjects-glob '/data/sub-*' --workers 8
 ```
 
-`--cohort` is the one-flag "do the whole study" path: it resolves each subject's
-DCE / IR / T1 itself (scan numbers vary between subjects, so they can't be
-templated by name) and fits every model at the parcel level by default
-(average-then-fit — exactly the resolution these models support, and tractable
-across hundreds of subjects). Use `--config` mode when inputs are already
-NIfTI and named consistently.
+`--cohort` is the one-flag path for a whole study. It resolves each subject's
+DCE, IR, and T1 itself, because scan numbers vary between subjects and cannot be
+templated by name, and it fits every model at the parcel level by default. That
+is average-then-fit, which is the resolution these models support and is
+tractable across hundreds of subjects. Use `--config` mode when inputs are
+already NIfTI and named consistently.
 
-**Override any option** with `--opt <plug-point>.<plugin>.<key>=<value>`, e.g.
-`--opt models.tikhonov.lambda_selection=evidence`. Every knob is documented
-under [Models](#models).
+**Override any option** with `--opt <plug-point>.<plugin>.<key>=<value>`, for
+example `--opt models.tikhonov.lambda_selection=evidence`. Every option is
+documented under [Models](#models).
 
 ---
 
 ## Add your own
 
-> **Step-by-step guide:** [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md) —
-> templates for models, AIF methods, segmentation backends, diffusion models,
+> **Step-by-step guide:**
+> [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)
+> has templates for models, AIF methods, segmentation backends, diffusion models,
 > and whole pipeline stages. Start there.
 
-A new kinetic model is one file and no core changes. You write the maths; the
-framework runs it on every voxel/curve, aggregates the result to tissue classes
-and parcels, writes NIfTI + CSV + JSON, and renders fit diagnostics.
+A new kinetic model is one file with no core changes. You write the mathematics,
+and the framework runs it on every voxel and curve, aggregates the result to
+tissue classes and parcels, writes NIfTI, CSV, and JSON, and renders fit
+diagnostics.
 
 `pbrain/models/two_cxm.py`:
 
@@ -339,32 +357,34 @@ class TwoCXM:
                                     "vp": "fraction", "ve": "fraction"}
 
     def fit(self, inputs: CurveInputs, **opts: Any) -> ModelResult:
-        ...                                            # your maths → fp, ps, vp, ve
+        ...                                            # your maths -> fp, ps, vp, ve
         return ModelResult(maps={"fp": fp, "ps": ps, "vp": vp, "ve": ve},
                            units=dict(self.units))
 
 PLUGIN = TwoCXM()
 ```
 
-That's the entire integration. Now:
+That is the entire integration. Now:
 
 ```bash
 python -m pbrain run --models two_cxm,patlak ...
 ```
 
-runs your model alongside Patlak, produces `fp/ps/vp/ve` maps, aggregates each
-to region and parcel level, and draws per-tissue fit plots — automatically.
+runs your model alongside Patlak, produces `fp`, `ps`, `vp`, and `ve` maps,
+aggregates each to region and parcel level, and draws per-tissue fit plots,
+all automatically.
 
-The **step-by-step guide** for this and the other 11 plug-points (AIF methods,
-segmentation backends, diffusion models, whole stages) is
-**[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)** — start there.
+The step-by-step guide for this and the other 11 plug-points (AIF methods,
+segmentation backends, diffusion models, and whole stages) is
+[`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md).
+Start there.
 
 ---
 
 ## Config files
 
-For reproducibility, put the whole run in a versioned file —
-`pbrain run --config study.toml` (CLI flags still override it):
+For reproducibility, put the whole run in a versioned file and call
+`pbrain run --config study.toml`. Command-line flags still override it.
 
 ```toml
 subject_dir = "/data/sub-01"
@@ -390,67 +410,69 @@ tr_s           = 0.01118
 "models.tikhonov.lambda_selection" = "evidence"
 ```
 
-TOML works out of the box; YAML needs `pip install pyyaml`.
+TOML works out of the box. YAML needs `pip install pyyaml`.
 
 ---
 
 ## Models
 
-Set any option with `--opt models.<key>.<opt>=<value>` (or in a config file).
+Set any option with `--opt models.<key>.<opt>=<value>`, or in a config file.
 Defaults are what you get without setting anything.
 
-**`patlak`** — blood–brain-barrier influx **Ki** and blood volume **vp** from
-the Patlak graphical analysis.
+**`patlak`** produces blood-brain-barrier influx **Ki** and blood volume **vp**
+from the Patlak graphical analysis.
 
 | option | default | what it does |
 |---|---|---|
-| `regression` | `huber` | slope fit: `huber` (robust to leverage points) or `ols`. |
-| `tail_mode` | `smart` | which late points enter the fit: `smart` (curvature-detected linear tail) or `legacy` (fixed upper-2⁄3 window). |
-| `aif_min_fraction` | `0.05` | drop AIF samples below this fraction of the peak (avoids a near-zero AIF blowing Ki up). |
+| `regression` | `huber` | slope fit. `huber` is robust to leverage points, `ols` is ordinary least squares. |
+| `tail_mode` | `smart` | which late points enter the fit. `smart` detects the linear tail from curvature, `legacy` uses a fixed upper two-thirds window. |
+| `aif_min_fraction` | `0.05` | drop AIF samples below this fraction of the peak, which avoids a near-zero AIF inflating Ki. |
 
-**`tikhonov`** — **CBF, MTT, CTH** by regularised deconvolution of the residue
-function.
+**`tikhonov`** produces **CBF, MTT, and CTH** by regularised deconvolution of the
+residue function.
 
 | option | default | what it does |
 |---|---|---|
-| `lambda_selection` | `gcv` | regularisation strength: `gcv` (cross-validation), `lcurve`, or `evidence` (marginal likelihood — most robust on smooth curves). |
-| `lambda_spacing` | `log` | λ grid spacing (`log`/`linear`). |
-| `n_lambdas` | `121` | number of λ values searched. |
-| `mtt_cth_method` | `residue_integral` | MTT/CTH from the residue integral or the central-volume theorem. |
+| `lambda_selection` | `gcv` | regularisation strength. `gcv` uses cross-validation, `lcurve` uses the L-curve, and `evidence` uses the marginal likelihood, which is the most robust on smooth curves. |
+| `lambda_spacing` | `log` | lambda grid spacing (`log` or `linear`). |
+| `n_lambdas` | `121` | number of lambda values searched. |
+| `mtt_cth_method` | `residue_integral` | MTT and CTH from the residue integral or the central-volume theorem. |
 
-**`extended_tofts`** — **Ktrans, ve, vp, kep** by constrained
-Levenberg–Marquardt (no tuning needed for the default fit).
+**`extended_tofts`** produces **Ktrans, ve, vp, and kep** by constrained
+Levenberg-Marquardt fitting, with no tuning needed for the default fit.
 
-You are meant to add to this list — see [Add your own](#add-your-own).
+This list is meant to be extended. See [Add your own](#add-your-own).
 
 ---
 
 ## Diffusion
 
-Give a diffusion scan with `--dwi` (NIfTI, PAR/REC, or DICOM — converted
-automatically, gradients extracted) and the diffusion track runs in native DWI
-space and resamples to your parcellation. Select models with `--diffusion`
-(`dti`, a comma-list, `default` = shell-aware, or `all`); options via
-`--opt diffusion.<key>.<opt>=<value>`.
+Give a diffusion scan with `--dwi` (NIfTI, PAR/REC, or DICOM, converted
+automatically with gradients extracted) and the diffusion track runs in native
+DWI space and resamples to your parcellation. Select models with `--diffusion`
+(`dti`, a comma-separated list, `default` for shell-aware selection, or `all`),
+and set options with `--opt diffusion.<key>.<opt>=<value>`.
 
-### Which model, when
+### Which model to use
 
-- **`dti`** — the workhorse: **FA, MD, AD, RD** (+ colour-FA). Any DWI with a
-  b0 and one shell. **Start here for FA/MD.**
-- **`dki`** — adds mean/axial/radial **kurtosis** and KFA. Needs ≥ 2 shells.
-- **`dki_micro`** — WMTI microstructure (axonal water fraction, tortuosity) and
-  **μFA**. Multi-shell.
-- **`fwdti`** — **free-water elimination**: tissue FA/MD with CSF/oedema removed
-  + the free-water fraction. Multi-shell.
-- **`csd`** — constrained spherical deconvolution: fibre orientations for
-  tractography + GFA. Multi-shell preferred.
-- **`rsi`** — restriction-spectrum fractions (restricted/hindered/free); needs a
-  high-b shell.
-- **`noddi`** — neurite density / orientation dispersion; needs AMICO + high-b.
+- **`dti`** produces **FA, MD, AD, and RD** and colour-FA. It works with any DWI
+  that has a b0 and one shell, and is the place to start for FA and MD.
+- **`dki`** adds mean, axial, and radial **kurtosis** and KFA. It needs at least
+  2 shells.
+- **`dki_micro`** produces WMTI microstructure (axonal water fraction,
+  tortuosity) and **μFA**. Multi-shell.
+- **`fwdti`** performs **free-water elimination**, giving tissue FA and MD with
+  CSF and oedema removed, plus the free-water fraction. Multi-shell.
+- **`csd`** performs constrained spherical deconvolution, giving fibre
+  orientations for tractography and GFA. Multi-shell is preferred.
+- **`rsi`** produces restriction-spectrum fractions (restricted, hindered,
+  free). It needs a high-b shell.
+- **`noddi`** produces neurite density and orientation dispersion. It needs
+  AMICO and a high-b shell.
 
-### Connectomics (tractography → connectome)
+### Connectomics: tractography and connectome
 
-With a fibre-orientation model (`csd` by default, or the `dti` tensor) the
+With a fibre-orientation model, `csd` by default or the `dti` tensor, the
 diffusion track can run **tractography** and build a **structural connectome**
 between parcels:
 
@@ -458,57 +480,58 @@ between parcels:
 python -m pbrain run --dwi dwi.nii.gz --diffusion csd --connectome ...
 ```
 
-This writes the streamlines (`.tck`, openable in MRtrix/TrackVis and rendered
-as a track-density NIfTI for 3-D exploration) and a parcel × parcel connectivity
-matrix (CSV/JSON) under `09_diffusion/`.
+This writes the streamlines (`.tck`, openable in MRtrix or TrackVis, and
+rendered as a track-density NIfTI for 3-D exploration) and a parcel-by-parcel
+connectivity matrix (CSV and JSON) under `09_diffusion/`.
 
 ---
 
 ## Outputs
 
-A BIDS-like derivatives tree under `<subject-dir>/derivatives/`, numbered for
-natural sort order:
+A BIDS-like derivatives tree is written under `<subject-dir>/derivatives/`,
+numbered for natural sort order:
 
 ```
-00_diagnostics/                 fit plots + whole-brain map montages
-01_load/                        loaded DCE/IR/DWI (+ timing)
-02_t1m0/                        T1 map + M0 map  (t1_map.nii.gz, m0_map.nii.gz)
+00_diagnostics/                 fit plots and whole-brain map montages
+01_load/                        loaded DCE/IR/DWI and timing
+02_t1m0/                        T1 map and M0 map  (t1_map.nii.gz, m0_map.nii.gz)
 03_aif/                         arterial input function
-04_tissue_roi/                  parcellation + tissue region map
+04_tissue_roi/                  parcellation and tissue region map
 05_signal_to_conc/              4-D contrast concentration  (concentration.nii.gz)
     <converter>/diagnostics/      conversion QC plot  (conversion_qc.png)
 06_normalisation/               normalised curves
 07_kinetic/<model>/             per model:
     voxelwise/                    whole-brain maps  (nii.gz)
-    region/  parcel/              tissue & parcel summaries  (nii.gz + csv + json)
-    diagnostics/{voxel,tissue,parcel,montage}/   fit plots & map montages
-08_summary/                     run summary + QC
-09_diffusion/<model>/           FA/MD/… maps, + tractography & connectome
+    region/  parcel/              tissue and parcel summaries  (nii.gz, csv, json)
+    diagnostics/{voxel,tissue,parcel,montage}/   fit plots and map montages
+08_summary/                     run summary and QC
+09_diffusion/<model>/           FA, MD, and other maps, plus tractography and connectome
 ```
 
-Every model output exists as **nii.gz, csv, and json** at the region/parcel
-levels. The T1 map, M0 map, and the **4-D concentration volume** are written as
+Every model output exists as **nii.gz, csv, and json** at the region and parcel
+levels. The T1 map, the M0 map, and the 4-D concentration volume are written as
 NIfTI so you can use them directly. Each stage writes a `manifest.json` with its
-provenance and a QC block (physiological-range flags). Per-model diagnostics —
-the same fit plots shown in the paper — render every run.
+provenance and a QC block of physiological-range flags. Per-model diagnostics,
+the same fit plots shown in the paper, are rendered on every run.
 
 ---
 
 ## Representative output
 
-The default maps from a single automated run — Ki and vb (Patlak), plus CBF,
-MTT and CBV (Tikhonov deconvolution) — summarised per anatomical region,
-alongside a diffusion metric (the per-voxel view is the poster at the top). All
-come from one `pbrain run`, with no manual steps.
+The default maps from a single automated run, namely Ki and vb from Patlak plus
+CBF, MTT, and CBV from Tikhonov deconvolution, summarised per anatomical region,
+alongside a diffusion metric. All come from one `pbrain run` with no manual
+steps. The per-voxel view of the same maps is shown in the banner at the top of
+this page.
 
-**Per-region — projected onto the SynthSeg parcellation**
+**Per-region, projected onto the SynthSeg parcellation**
 ![Parcellated output maps](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/output_maps_parcel.png)
 
-**FA — fractional anisotropy (optional DTI / diffusion track)**
+**FA, fractional anisotropy, from the optional DTI diffusion track**
 ![FA](https://raw.githubusercontent.com/edtireli/p-brain/main/docs/img/fa_montage.png)
 
-Every map is produced by the pipeline itself at voxel, tissue-class, and
-DKT-parcel level; see the paper for the full set and quantitative validation.
+Every map is produced by the pipeline at voxel, tissue-class, and DKT-parcel
+level. See the paper for the full set and the quantitative validation.
 
 ---
 
@@ -518,25 +541,25 @@ DKT-parcel level; see the paper for the full set and quantitative validation.
 python -m pbrain.demo --clean
 ```
 
-Synthesises a small phantom (no patient data), runs the **entire** pipeline
-end-to-end, and writes parameter-map montages to `demo/maps/` — a self-contained
-way to see the output format and confirm your install works.
+This synthesises a small phantom, using no patient data, runs the entire
+pipeline end-to-end, and writes parameter-map montages to `demo/maps/`. It is a
+self-contained way to see the output format and confirm your install works.
 
 ---
 
 ## Repository structure
 
 ```
-pbrain/            the framework — everything lives here
+pbrain/            the framework, everything lives here
   core/            Plugin/Stage contracts, discovery, Config, Pipeline, logging, QC
-  io/              loaders (nifti/parrec/dicom/dwi) + output path schemes
+  io/              loaders (nifti/parrec/dicom/dwi) and output path schemes
   t1_m0/  aif/  tissue_roi/  signal_to_conc/  normalisation/    upstream stages
   models/          kinetic models          diffusion/   diffusion models
   aggregation/     voxel/region/parcel/slice rollups
-  diagnostics/     per-model fit plots + the montage generator
-  stages/          the pipeline steps (a discoverable, topologically-ordered plug-point)
+  diagnostics/     per-model fit plots and the montage generator
+  stages/          the pipeline steps (a discoverable, topologically ordered plug-point)
   cli/  demo/
-docs/              ADDING_PLUGINS.md · ARCHITECTURE.md · mkdocs API reference
+docs/              ADDING_PLUGINS.md, ARCHITECTURE.md, mkdocs API reference
 tests/             the test suite                validation/  cohort runners
 ```
 
@@ -544,26 +567,29 @@ tests/             the test suite                validation/  cohort runners
 
 ## Documentation
 
-- **API reference** — a rendered reference generated from the package
-  docstrings (every public class, the plug-in contracts, the kinetic and
-  diffusion models, the pipeline stages, and the QC functions). Build it
-  locally with:
+- **API reference.** A rendered reference generated from the package docstrings,
+  covering every public class, the plug-in contracts, the kinetic and diffusion
+  models, the pipeline stages, and the QC functions. Build it locally with:
 
   ```bash
   pip install "p-brain[docs]"
-  mkdocs build          # → ./site/   (or `mkdocs serve` for a live preview)
+  mkdocs build          # output in ./site/   (or run `mkdocs serve` for a live preview)
   ```
 
-  Entry points: [`docs/index.md`](https://github.com/edtireli/p-brain/blob/main/docs/index.md) and the contributor
+  Entry points are
+  [`docs/index.md`](https://github.com/edtireli/p-brain/blob/main/docs/index.md)
+  and the contributor
   [architecture overview](https://github.com/edtireli/p-brain/blob/main/docs/architecture-overview.md).
-- **Extending the framework** —
-  [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md) (copy-paste templates)
-  and [`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md) (full design rationale
-  and output layout).
+- **Extending the framework.**
+  [`docs/ADDING_PLUGINS.md`](https://github.com/edtireli/p-brain/blob/main/docs/ADDING_PLUGINS.md)
+  has copy-paste templates, and
+  [`docs/ARCHITECTURE.md`](https://github.com/edtireli/p-brain/blob/main/docs/ARCHITECTURE.md)
+  has the full design rationale and output layout.
 
 ---
 
 ## Citation
 
-If _p_-Brain contributes to your work, please cite the accompanying paper
-(Tireli et al.) and this repository. See [`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
+If _p_-Brain contributes to your work, please cite the accompanying paper (Tireli
+et al.) and this repository. See
+[`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
