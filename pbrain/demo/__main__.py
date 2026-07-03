@@ -441,6 +441,13 @@ def main(argv: list[str] | None = None) -> int:
     subject_dir = args.out / "phantom"
     _run_pipeline(subject_dir, raw)
 
+    # R3.7 regression guard: the kinetic stage must emit the voxelwise CNR QC
+    # map. Asserting it here means CI fails loudly if the CNR wiring regresses.
+    cnr_maps = list(subject_dir.rglob("cnr.nii.gz"))
+    if not cnr_maps:
+        raise RuntimeError("demo: kinetic stage produced no CNR QC map (cnr.nii.gz)")
+    print(f"  CNR QC map written: {cnr_maps[0].name}")
+
     print("\n[3/3] montage maps")
     _montage(args.out / "maps", subject_dir)
 

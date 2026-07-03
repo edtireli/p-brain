@@ -127,12 +127,25 @@ class _Tractography:
             shell_tol = float(opts.get("shell_tol", 200.0))
 
             keep = (bvals <= 50) | (np.abs(bvals - fit_bval) <= shell_tol)
-            if int(np.sum(keep & (bvals > 50))) < 6:
+            n_dwi = int(np.sum(keep & (bvals > 50)))
+            if n_dwi < 6:
                 raise RuntimeError(
                     f"tractography(csd) needs ≥6 directions near "
-                    f"b={fit_bval}±{shell_tol}; got "
-                    f"{int(np.sum(keep & (bvals > 50)))}."
+                    f"b={fit_bval}±{shell_tol}; got {n_dwi}."
                 )
+            # Cap the spherical-harmonic order to what the direction count can
+            # support: a CSD fit needs (L+1)(L+2)/2 ≤ n_directions, else the
+            # fODF is under-determined and the peaks (hence the streamlines) are
+            # unstable/one-sided. Reduce to the largest even order that fits.
+            _supported = max([L for L in (2, 4, 6, 8)
+                              if (L + 1) * (L + 2) // 2 <= n_dwi] or [2])
+            if sh_order > _supported:
+                import logging
+                logging.getLogger("pbrain.diffusion.tractography").warning(
+                    "tractography(csd): %d directions support SH order ≤%d; "
+                    "reducing sh_order %d→%d (use recon='dti' for very few "
+                    "directions).", n_dwi, _supported, sh_order, _supported)
+                sh_order = _supported
             gtab = gradient_table(bvals[keep], bvecs=bvecs[keep])
             sub_signal = signal[..., keep]
             response, _ratio = auto_response_ssst(

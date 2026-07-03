@@ -160,7 +160,11 @@ def test_dicom_directory_series_roundtrip(tmp_path: Path):
         ds.PixelData = (np.full((rows, cols), i + 1, dtype=np.uint16)).tobytes()
         ds.is_little_endian = True
         ds.is_implicit_VR = False
-        ds.save_as(str(series_dir / f"slice{i:03d}.dcm"), enforce_file_format=True)
+        _dcm_out = str(series_dir / f"slice{i:03d}.dcm")
+        try:
+            ds.save_as(_dcm_out, enforce_file_format=True)      # pydicom >= 3
+        except TypeError:
+            ds.save_as(_dcm_out, write_like_original=False)     # pydicom 2.x
 
     series = load_4d(series_dir)
     # dcm2niix stacks the slices into a 3-D volume → promoted to (X, Y, Z, 1).

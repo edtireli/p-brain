@@ -37,7 +37,7 @@ dynamic = ["version"]
 # CNN arterial-input-function (default `cnn_sss_shifted`); weights on Zenodo.
 cnn = ["tensorflow>=2.13"]
 # Diffusion track (DTI/DKI/CSD/…): dipy provides the models + tractography.
-diffusion = ["dipy>=1.7"]
+diffusion = ["dipy>=1.7", "fury>=0.10"]
 # NODDI microstructure model (optional diffusion plug-in) via the AMICO framework.
 noddi = ["dmri-amico>=2.0"]
 # DICOM input. pydicom reads headers; the actual 4-D reconstruction uses the

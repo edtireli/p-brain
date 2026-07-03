@@ -39,8 +39,8 @@ jobs:
       - name: Verify CLI entry point
         run: pbrain --help
 
-      - name: Run test suite
-        run: pytest -q
+      - name: Run test suite (with coverage)
+        run: pytest -q --cov=pbrain --cov-report=term-missing
 
       - name: Weights-free pipeline smoke (synthetic phantom, no patient data)
         run: python -m pbrain.demo --clean

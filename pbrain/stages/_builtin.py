@@ -50,6 +50,37 @@ def _save_nifti(arr: np.ndarray, affine: np.ndarray, path: Path) -> Path:
     return path
 
 
+def _freesurfer_names(labels) -> list[str] | None:
+    """Map FreeSurfer/DKT label ids to names via FreeSurferColorLUT.txt, for
+    connectogram node labels. Located from ``$FREESURFER_HOME``, or derived from
+    ``mri_synthseg`` on PATH, or common install prefixes — so names appear even
+    when FREESURFER_HOME is not exported in the run shell. Returns ``None`` only
+    if no LUT is found (the plot then falls back to numeric ids)."""
+    import glob
+    import os
+    import shutil
+    cands: list[Path] = []
+    fs_home = os.environ.get("FREESURFER_HOME", "")
+    if fs_home:
+        cands.append(Path(fs_home) / "FreeSurferColorLUT.txt")
+    binary = shutil.which("mri_synthseg") or shutil.which("mri_synthseg.py")
+    if binary:
+        cands.append(Path(binary).resolve().parent.parent / "FreeSurferColorLUT.txt")
+    cands += [Path(p) for p in
+              glob.glob("/Applications/freesurfer/*/FreeSurferColorLUT.txt")]
+    cands += [Path("/usr/local/freesurfer/FreeSurferColorLUT.txt"),
+              Path("/opt/freesurfer/FreeSurferColorLUT.txt")]
+    lut_path = next((c for c in cands if c.exists()), None)
+    if lut_path is None:
+        return None
+    lut: dict[int, str] = {}
+    for line in lut_path.read_text(errors="ignore").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit():
+            lut[int(parts[0])] = parts[1]
+    return [lut.get(int(l), str(int(l))) for l in labels]
+
+
 def _save_npy(arr: np.ndarray, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -752,6 +783,36 @@ class KineticStage:
         per_model_qc: dict[str, Any] = {}
         pin_cbf_map: np.ndarray | None = None      # Tikhonov CBF to pin gamma's F
 
+        # ── Voxelwise CNR quality gate (R3.7) ───────────────────────────────
+        # Per-voxel contrast-to-noise = peak post-bolus concentration above the
+        # pre-bolus baseline / baseline SD. Written as a NIfTI beside the kinetic
+        # maps; the fraction of brain voxels below a configurable threshold
+        # (default CNR < 2) goes into the QC manifest, and low-CNR voxels can
+        # optionally be masked out of the fits so insufficient-SNR voxels do not
+        # bias regional/whole-brain statistics. Configure via
+        # ``--opt qc.cnr.threshold=<x>`` / ``qc.cnr.baseline_frames=<n>`` /
+        # ``qc.cnr.mask=true``.
+        from pbrain.core.qc import voxelwise_cnr, cnr_summary
+        cnr_opts = dict(ctx.config.options_for("qc", "cnr"))
+        cnr_baseline = int(float(cnr_opts.get("baseline_frames", 5)))
+        cnr_threshold = float(cnr_opts.get("threshold", 2.0))
+        cnr_mask_flag = str(cnr_opts.get("mask", "")).lower() in ("true", "1", "yes")
+        brain_mask_3d = voxel_mask.reshape(X, Y, Z) if voxel_mask is not None else None
+        cnr_map = voxelwise_cnr(C, baseline_frames=cnr_baseline, mask=brain_mask_3d)
+        cnr_path = ctx.path_scheme.output_path(
+            ctx.subject_dir, self.name, "qc", None, "cnr", "nii.gz"
+        )
+        _save_nifti(np.nan_to_num(cnr_map, nan=0.0), affine, cnr_path)
+        artefacts["qc/cnr"] = cnr_path
+        cnr_qc = cnr_summary(cnr_map, mask=brain_mask_3d, threshold=cnr_threshold)
+        cnr_qc["map"] = str(cnr_path)
+        if cnr_mask_flag and voxel_mask is not None:
+            keep = np.isfinite(cnr_map.ravel()) & (cnr_map.ravel() >= cnr_threshold)
+            n_before = int(voxel_mask.sum())
+            voxel_mask = voxel_mask & keep
+            _log.info("kinetic: CNR masking on — dropped %d/%d brain voxels below "
+                      "CNR %.1f", n_before - int(voxel_mask.sum()), n_before, cnr_threshold)
+
         # Run voxelwise models first so a CBF map (Tikhonov) is available to
         # pin parcel-level models (gamma) to the pipeline's own CBF.
         ordered_models = sorted(
@@ -882,12 +943,13 @@ class KineticStage:
                 "level": level,            # "voxelwise" or "parcel"
             }
 
-        overall = ("warn" if any(q["status"] == "warn" for q in per_model_qc.values())
+        overall = ("warn" if (cnr_qc.get("status") == "warn"
+                              or any(q["status"] == "warn" for q in per_model_qc.values()))
                    else "pass")
         return StageOutput(
             artefacts=artefacts,
             metadata={"models": list(ctx.config.kinetic_models), "per_model": per_model_meta},
-            qc={"status": overall, "per_model": per_model_qc},
+            qc={"status": overall, "cnr": cnr_qc, "per_model": per_model_qc},
         )
 
 
@@ -923,7 +985,7 @@ class DiffusionStage:
         _log.info("diffusion: DWI %s  shells=%s  n_b0=%d",
                   dwi.data.shape, dwi.shells, dwi.n_b0)
 
-        # Brain mask: parc>0 if grids match, else a simple b=0 percentile mask.
+        # Brain mask: parc>0 if grids match, else a proper b=0 skull-strip.
         roi_mf = ctx.upstream_manifests["tissue_roi"]
         parc_img = nib.load(str(roi_mf.outputs["parcellation"]))
         parc = np.asarray(parc_img.dataobj, dtype=np.int32)
@@ -932,14 +994,52 @@ class DiffusionStage:
             parc.shape == dwi.data.shape[:3]
             and np.allclose(parc_affine, dwi.affine, atol=1e-3)
         )
+        brain_mask = None
         if same_grid:
             brain_mask = (parc > 0)
         else:
-            b0 = dwi.data[..., dwi.bvals <= 50].mean(axis=-1)
-            thr = float(np.percentile(b0[b0 > 0], 25)) if (b0 > 0).any() else 0.0
-            brain_mask = b0 > thr
-        _log.info("diffusion: brain_mask n_voxels=%d  same_grid_as_dce=%s",
-                  int(brain_mask.sum()), same_grid)
+            # Constrain tracking/fits to the brain, not skull/scalp/eyes/neck.
+            # Prefer a supplied brain SEGMENTATION (e.g. SynthSeg on the b=0,
+            # which excludes the orbits) resampled to the DWI grid; otherwise a
+            # dipy median_otsu skull-strip; otherwise a percentile floor.
+            seg_path = dict(ctx.config.options_for("diffusion", "connectome")).get(
+                "parcellation_path")
+            if seg_path and Path(seg_path).exists():
+                try:
+                    from nibabel.processing import resample_from_to
+                    seg = resample_from_to(
+                        nib.load(str(seg_path)),
+                        (tuple(dwi.data.shape[:3]), dwi.affine), order=0)
+                    m = np.asarray(seg.dataobj) > 0
+                    if m.sum() > 0.03 * m.size:
+                        brain_mask = m
+                except Exception as exc:                   # noqa: BLE001
+                    _log.warning("diffusion: seg brain mask resample failed → %s", exc)
+            if brain_mask is None:
+                b0 = dwi.data[..., dwi.bvals <= 50].mean(axis=-1)
+                try:
+                    from dipy.segment.mask import median_otsu
+                    _, m = median_otsu(b0, median_radius=2, numpass=1)
+                    m = np.asarray(m, dtype=bool)
+                    if 0.03 * m.size < m.sum() < 0.6 * m.size:
+                        brain_mask = m
+                except Exception as exc:                   # noqa: BLE001
+                    _log.warning("diffusion: median_otsu brain mask failed → %s", exc)
+                if brain_mask is None:
+                    thr = float(np.percentile(b0[b0 > 0], 60)) if (b0 > 0).any() else 0.0
+                    brain_mask = b0 > thr
+        # Keep only the largest connected component — drops disconnected islands
+        # (isolated eye/orbit or neck blobs) that survive intensity masking.
+        try:
+            from scipy import ndimage
+            lab, nlab = ndimage.label(brain_mask)
+            if nlab > 1:
+                sizes = ndimage.sum(np.ones_like(lab), lab, index=range(1, nlab + 1))
+                brain_mask = lab == (1 + int(np.argmax(sizes)))
+        except Exception:                                  # noqa: BLE001
+            pass
+        _log.info("diffusion: brain_mask n_voxels=%d (%.0f%% of FOV)  same_grid_as_dce=%s",
+                  int(brain_mask.sum()), 100.0 * brain_mask.sum() / brain_mask.size, same_grid)
 
         diff_inputs = DWIInputs(
             signal=dwi.data, bvals=dwi.bvals, bvecs=dwi.bvecs,
@@ -1036,6 +1136,75 @@ class DiffusionStage:
                 "units": result.units,
                 "native_affine_matches_dce": bool(same_grid),
             }
+
+        # ── Streamline render + structural connectome (tractography track) ────
+        # When tractography produced streamlines, render them (direction-encoded)
+        # and, if a parcellation is available, build the structural connectome
+        # (parcel x parcel streamline-count matrix). Both are best-effort
+        # diagnostics: a failure here never fails the diffusion stage. The
+        # connectome parcellation defaults to the tissue-ROI segmentation but can
+        # be pointed at a DWI-space parcellation via
+        # ``--opt diffusion.connectome.parcellation_path=...`` (e.g. SynthSeg run
+        # on the b=0 volume, since SynthSeg is contrast-agnostic).
+        tck_path = artefacts.get("tractography/native/streamlines.tck")
+        if tck_path is not None and Path(tck_path).exists():
+            try:
+                streamlines = list(nib.streamlines.load(str(tck_path)).streamlines)
+            except Exception as exc:                       # noqa: BLE001
+                _log.warning("diffusion: could not load streamlines → %s", exc)
+                streamlines = []
+
+            if streamlines:
+                try:
+                    from pbrain.diagnostics.tractography_render import render_streamlines
+                    rpath = ctx.path_scheme.output_path(
+                        ctx.subject_dir, self.name, "tractography", "diagnostics",
+                        "tractography_render", "png")
+                    rpath.parent.mkdir(parents=True, exist_ok=True)
+                    if render_streamlines(streamlines, rpath):
+                        artefacts["tractography/render"] = rpath
+                        _log.info("diffusion: streamline render → %s", rpath)
+                except Exception as exc:                   # noqa: BLE001
+                    _log.warning("diffusion: streamline render failed → %s", exc)
+
+                con_opts = dict(ctx.config.options_for("diffusion", "connectome"))
+                con_parc_path = con_opts.get("parcellation_path") or str(
+                    roi_mf.outputs["parcellation"])
+                try:
+                    cpar_img = nib.load(str(con_parc_path))
+                    from pbrain.diffusion.connectome import (
+                        structural_connectome, plot_connectome,
+                        plot_connectome_circular, write_connectome_html)
+                    M, region_labels = structural_connectome(
+                        streamlines, np.asarray(cpar_img.affine, dtype=float),
+                        np.asarray(cpar_img.dataobj))
+                    base = ctx.path_scheme.output_path(
+                        ctx.subject_dir, self.name, "tractography", "diagnostics",
+                        "connectome", "npy")
+                    base.parent.mkdir(parents=True, exist_ok=True)
+                    np.save(base, M)
+                    np.savetxt(base.with_suffix(".csv"), M, fmt="%d", delimiter=",")
+                    # circular connectogram (default figure) + matrix heat-map +
+                    # a self-contained interactive HTML connectome
+                    names = _freesurfer_names(region_labels)
+                    plot_connectome_circular(M, region_labels, base.with_suffix(".png"),
+                                             names=names)
+                    plot_connectome(M, base.parent / "connectome_matrix.png")
+                    write_connectome_html(M, region_labels, base.parent / "connectome.html",
+                                          names=names)
+                    artefacts["tractography/connectome"] = base
+                    artefacts["tractography/connectome_png"] = base.with_suffix(".png")
+                    artefacts["tractography/connectome_matrix_png"] = base.parent / "connectome_matrix.png"
+                    artefacts["tractography/connectome_html"] = base.parent / "connectome.html"
+                    per_model_meta.setdefault("tractography", {})["connectome"] = {
+                        "n_regions": int(M.shape[0]),
+                        "n_edges": int((M > 0).sum() // 2),
+                        "parcellation": con_parc_path,
+                    }
+                    _log.info("diffusion: structural connectome %dx%d (%d edges)",
+                              M.shape[0], M.shape[1], int((M > 0).sum() // 2))
+                except Exception as exc:                   # noqa: BLE001
+                    _log.warning("diffusion: connectome failed → %s", exc)
 
         return StageOutput(
             artefacts=artefacts,

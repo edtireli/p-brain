@@ -14,7 +14,8 @@ Microvasculature, and Blood–Brain Barrier Permeability**
 </div>
 
 
-**_p_-Brain is a cross-platform Python command-line tool.** Install it with
+**_p_-Brain** (the "_p_" for **p**erfusion and **p**ermeability) **is a
+cross-platform Python command-line tool.** Install it with
 `pip` on Linux, macOS, or Windows (Python 3.10–3.12), point `pbrain run` at a
 subject's scans, and it produces the full derivatives tree — no notebook, no
 GUI, no server required. The CLI is the product; an optional macOS desktop app
@@ -123,8 +124,7 @@ pbrain fetch-weights    # just the CNN weights        (Zenodo 10.5281/zenodo.156
 pbrain fetch-data       # the example subject sub-01  (Zenodo 10.5281/zenodo.20826857)
 ```
 
-To run weights-free, pick a model-free AIF (`--aif deterministic`, or `from_file`
-/ `manual` for your own ROIs/curves), or try `python -m pbrain.demo`, which needs
+To run weights-free, supply a file-based or model-free AIF (`--aif curve_file` for a saved curve as in the example, `from_file` / `manual` for your own ROIs, or `deterministic` for a DCE-only synthetic AIF), or try `python -m pbrain.demo`, which needs
 no weights or data at all.
 
 **From source** (for development or the bleeding edge):
@@ -169,6 +169,45 @@ sudo apt install dcm2niix                  # Debian / Ubuntu
 A native macOS desktop app wraps this CLI in a point-and-click GUI for users who
 prefer not to touch a terminal. It is **entirely optional** — the Python CLI
 above is the product and the canonical interface; the app simply drives it.
+
+---
+
+## Try it: the example subject
+
+The fastest way to confirm _p_-Brain works end-to-end — on **Linux, macOS, or
+Windows**, with **no** CNN weights and **no** FreeSurfer/SynthSeg (the example
+ships its own AIF curve and parcellation, so nothing extra is downloaded):
+
+```bash
+pip install p-brain
+pbrain fetch-data          # downloads sub-01 (~99 MB), then prints the exact run command
+```
+
+`pbrain fetch-data` locates the data and **prints a ready-to-run, weights-free
+command with the correct paths for your machine** — copy, paste, run. It is:
+
+```bash
+python -m pbrain run \
+  --subject-dir <data>/sub-01 \
+  --dce  <data>/sub-01/sub-01_dce.nii.gz  --ir <data>/sub-01/sub-01_ir.nii.gz \
+  --aif  curve_file      --opt aif.curve_file.curve_path=<data>/sub-01/sub-01_aif.npy \
+  --tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path=<data>/sub-01/sub-01_parcellation.nii.gz \
+  --models patlak,tikhonov --aggregations region,parcel,voxelwise
+```
+
+Results land under `sub-01/derivatives/`; compare
+`07_kinetic/patlak/region/ki.csv` (BBB _K_ᵢ, _v_b) and
+`07_kinetic/tikhonov/region/cbf.json` (CBF, MTT) against the bundled
+`expected_outputs/`.
+
+> **Windows:** the command is pure Python and runs identically in PowerShell or
+> `cmd` — just put it on **one line** (or replace each trailing `\` with a
+> backtick `` ` ``). You need neither dcm2niix, FreeSurfer, nor the CNN weights
+> to run the example.
+
+**Zero download at all?** `python -m pbrain.demo` synthesises a small phantom and
+runs the entire pipeline in seconds — a self-contained smoke test that your
+install works, on any OS.
 
 ---
 

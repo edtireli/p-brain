@@ -141,6 +141,26 @@ def fetch_data(dest: Path | None = None, *, force: bool = False) -> int:
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(target)
     print(f"Example data ready in {target}")
+
+    # Locate the subject wherever it landed (the archive may nest it a folder
+    # deep) and print a ready-to-run, weights-free command so the user does not
+    # have to reconstruct the paths or flags.
+    hits = sorted(target.rglob("sub-01_dce.nii.gz"))
+    if hits:
+        sub = hits[0].parent
+        print("\nRun it now (weights-free: no CNN weights and no FreeSurfer/SynthSeg needed):\n")
+        print(f'  python -m pbrain run \\\n'
+              f'    --subject-dir "{sub}" \\\n'
+              f'    --dce "{sub / "sub-01_dce.nii.gz"}" --ir "{sub / "sub-01_ir.nii.gz"}" \\\n'
+              f'    --aif curve_file --opt aif.curve_file.curve_path="{sub / "sub-01_aif.npy"}" \\\n'
+              f'    --tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path='
+              f'"{sub / "sub-01_parcellation.nii.gz"}" \\\n'
+              f'    --models patlak,tikhonov --aggregations region,parcel,voxelwise')
+        exp = next(iter(target.rglob("expected_outputs")), None)
+        if exp is not None:
+            print(f'\nThen compare "{sub / "derivatives"}" against "{exp}".')
+        print("\n(Windows PowerShell: put the command on one line, or end each line "
+              "with a backtick ` instead of \\.)")
     return 0
 
 
