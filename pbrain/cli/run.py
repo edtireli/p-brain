@@ -126,6 +126,16 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Config file (.toml or .yaml) supplying any of the "
                         "flags below. CLI flags override the file. See "
                         "docs/ADDING_PLUGINS.md for the schema.")
+    from ._profiles import PROFILES
+    p.add_argument("--profile", default=None, choices=sorted(PROFILES),
+                   help="Bundled preset of plug-ins + acquisition params for a data "
+                        "class (e.g. 'mouse'). CLI flags and --config override it; the "
+                        "human default (no --profile) is unchanged.")
+    p.add_argument("--animal", default="human", choices=["human", "mouse"],
+                   help="Target species. 'human' (default) applies no overlay — the "
+                        "paper defaults are untouched. 'mouse' natively applies the "
+                        "mouse profile (equivalent to --profile mouse); the two flags "
+                        "are mutually exclusive.")
     # Not required at the parser level — may be supplied by --config.
     p.add_argument("--subject-dir", type=Path, default=None,
                    help="Subject root directory (outputs land under here).")
@@ -280,6 +290,32 @@ def main(argv: list[str]) -> int:
 
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # --animal is a species-level alias for --profile. 'mouse' selects the mouse
+    # profile natively; 'human' (default) selects nothing, so the paper defaults
+    # are untouched. The two flags are mutually exclusive to avoid a silent
+    # override of an explicit --profile.
+    if args.animal != "human":
+        if args.profile is not None:
+            raise SystemExit(
+                "--animal and --profile are mutually exclusive; pass only one."
+            )
+        args.profile = args.animal
+
+    # A --profile preset supplies defaults for a whole acquisition class (e.g.
+    # mouse). Same merge rule as --config: applied only where the CLI is silent,
+    # and BEFORE --config so precedence is CLI > --config > --profile > default.
+    # A human run (args.profile is None) never enters here, so paper defaults hold.
+    if args.profile is not None:
+        from ._profiles import resolve_profile
+        prof = resolve_profile(args.profile)
+        prof_opts = prof.pop("opt", [])
+        cli_dests = {tok.lstrip("-").replace("-", "_").split("=")[0]
+                     for tok in argv if tok.startswith("--")}
+        for dest, val in prof.items():
+            if dest not in cli_dests:
+                setattr(args, dest, val)
+        args.opt = list(prof_opts) + list(args.opt)
 
     # Config file supplies defaults; anything also given on the CLI wins.
     if args.config is not None:

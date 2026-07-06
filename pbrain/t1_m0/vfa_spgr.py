@@ -47,6 +47,7 @@ class _VfaFitter:
         *,
         mask: np.ndarray | None = None,
         tr_s: float = 0.01118,
+        b1_scale: float = 1.0,
         t1_lo_ms: float = 100.0,
         t1_hi_ms: float = 6000.0,
         **_: Any,
@@ -54,7 +55,10 @@ class _VfaFitter:
         signals = np.asarray(signals, dtype=float)
         if signals.ndim != 4:
             raise ValueError(f"signals must be 4-D (X,Y,Z,N); got {signals.shape}")
-        alpha_deg = np.asarray(axis_values, dtype=float).ravel()
+        # b1_scale: assumed transmit-field factor (actual flip = b1_scale * nominal).
+        # DESPOT1 has no B1 map here, so this is an explicit assumption; b1_scale<1
+        # raises the fitted T1 (7T mouse GM ~1800-2000 ms needs b1_scale~0.63-0.7).
+        alpha_deg = np.asarray(axis_values, dtype=float).ravel() * float(b1_scale)
         if alpha_deg.size != signals.shape[-1]:
             raise ValueError("axis_values length must match signals.shape[-1]")
         if alpha_deg.size < 2:
@@ -64,8 +68,12 @@ class _VfaFitter:
         sin_a = np.sin(alpha_rad)
         tan_a = np.tan(alpha_rad)
 
-        X = signals / sin_a                  # broadcast over voxels
-        Y = signals / tan_a
+        # DESPOT1 (Deoni) linearisation: S/sin(a) = E1·(S/tan(a)) + M0·(1−E1),
+        # so E1 is the SLOPE of y=S/sin(a) regressed on x=S/tan(a). (The regressor
+        # and response were previously swapped, giving slope≈1/E1>1 → clamp →
+        # T1≈7e7 ms → all-NaN for every physical voxel.)
+        X = signals / tan_a                  # regressor, broadcast over voxels
+        Y = signals / sin_a                  # response
         # OLS: x_v · slope + intercept = y_v across N flip angles, per voxel.
         mean_x = np.mean(X, axis=-1)
         mean_y = np.mean(Y, axis=-1)

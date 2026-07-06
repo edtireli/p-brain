@@ -282,6 +282,7 @@ class T1M0Stage:
                     ti_s = cfg_ti
 
         opts = dict(ctx.config.options_for("t1_m0", plugin_key))
+        opts.setdefault("tr_s", ctx.config.tr_s)  # forward global TR (as the conc/AIF stages do)
         result = fitter.fit(ir_data, ti_s, **opts)
 
         if ref_affine is None:
