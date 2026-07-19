@@ -44,7 +44,10 @@ def _read(path: Path) -> dict[str, Any]:
     suffix = path.suffix.lower()
     text = path.read_text(encoding="utf-8")
     if suffix in (".toml",):
-        import tomllib
+        try:
+            import tomllib                       # py3.11+ stdlib
+        except ModuleNotFoundError:              # py3.10 — same API
+            import tomli as tomllib
         return tomllib.loads(text)
     if suffix in (".yaml", ".yml"):
         try:

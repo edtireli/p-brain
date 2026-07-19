@@ -158,7 +158,10 @@ class FrozenLayout:
     name = "frozen"
 
     def _load(self, toml_path: Path) -> dict:
-        import tomllib
+        try:
+            import tomllib                       # py3.11+ stdlib
+        except ModuleNotFoundError:              # py3.10 — same API
+            import tomli as tomllib
         with open(toml_path, "rb") as f:
             return tomllib.load(f)
 

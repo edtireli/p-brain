@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/p-brain.gif" alt="p-Brain" width="680"/>
+  <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/p-brain.gif" alt="p-Brain" width="680"/>
 </p>
 
 <p align="center">
@@ -30,7 +30,7 @@
   <a href="#citation">Citation</a>
 </p>
 
-<p align="center"><img src="assets/divider.svg" width="520" alt=""/></p>
+<p align="center"><img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/divider.svg" width="520" alt=""/></p>
 
 **p-Brain** (the *p* is for **p**erfusion and **p**ermeability) is a
 cross-platform command-line tool for quantitative DCE-MRI. It serves two
@@ -43,7 +43,7 @@ into `pbrain/models/`, call it with `--models yourmodel`, and it runs on every
 subject, is aggregated to every anatomical level, is written as NIfTI/CSV/JSON,
 and is given diagnostics automatically.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Install
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Install
 
 ```bash
 pip install p-brain
@@ -70,7 +70,7 @@ cleanly falls back to CPU (identical results, only slower).
 Runs on Linux, macOS, and Windows with Python 3.10–3.12. From a clone,
 `pip install -e ".[dev]"` installs it in editable mode.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Quickstart
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Quickstart
 
 ```bash
 pbrain setup            # interactive: install extras, offer to fetch weights and data
@@ -89,7 +89,7 @@ pbrain run --subject-dir /data/20230403x2
 pbrain run-cohort --cohort /data/patients /data/controls --workers 4
 ```
 
-## <img src="assets/mark.svg" width="20" alt=""/> Example run
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Example run
 
 On an interactive terminal, `pbrain run` opens a live cockpit — the brain draws
 itself in, then an analysis panel tracks the pipeline while log lines scroll
@@ -118,7 +118,7 @@ Piped or redirected (`| tee`, `> log`, `--quiet`), the cockpit is suppressed and
 you get plain, greppable log lines instead — the numeric results are identical
 either way.
 
-## <img src="assets/mark.svg" width="20" alt=""/> How it works
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> How it works
 
 Ten self-contained stages, each cached to the derivatives tree and re-runnable in
 isolation:
@@ -149,7 +149,7 @@ canonical volume, so the analysis is source-format-agnostic.
 </p>
 <p align="center"><sub>Voxelwise K<sub>i</sub>, v<sub>b</sub>, CBF, MTT and CBV from a single automated <code>pbrain run</code>.</sub></p>
 
-## <img src="assets/mark.svg" width="20" alt=""/> Data layouts
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Data layouts
 
 `pbrain run <path>` works out **what you pointed it at** — one subject or a whole
 folder — and **which on-disk convention** it follows, then runs accordingly:
@@ -181,7 +181,7 @@ plain words ("the T1 is the MP-RAGE, not the FLAIR"). The confirmed layout is
 — point-at-anything convenience with a reproducible pipeline. More in
 [Assist](#assist).
 
-## <img src="assets/mark.svg" width="20" alt=""/> Commands
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Commands
 
 | command | description |
 |---|---|
@@ -197,7 +197,7 @@ plain words ("the T1 is the MP-RAGE, not the FLAIR"). The confirmed layout is
 | `pbrain theme <name>` · `tone <n>` | banner/log palette · one-, two-, or three-tone brain |
 | `pbrain check-deps` | verify the numeric core and report optional extras |
 
-## <img src="assets/mark.svg" width="20" alt=""/> Assist
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Assist
 
 Running a subject usually means knowing which series is the DCE, which is the T1,
 where the IR sits, and how your folders are arranged. **`--assist` lifts that
@@ -234,7 +234,7 @@ Two things keep it safe to leave on:
   off and the run is unchanged. First use walks you through installing Ollama and
   pulling a model sized to your hardware, and asks before it downloads anything.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Live controls
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Live controls
 
 During an interactive run:
 
@@ -264,7 +264,7 @@ During an interactive run:
 - **Ctrl-C** stops cleanly at any point; completed stages are cached, so the next
   run picks up where it left off.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Configuration
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Configuration
 
 Flags override a config file, which overrides defaults.
 
@@ -278,7 +278,7 @@ option is settable with `--opt <plugin>.<key>.<opt>=<value>` or in the file.
 Acquisition parameters (flip angle, TR) are read from the scan sidecar when
 present and can be overridden per run.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Add your own
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Add your own
 
 Every plug-point (kinetic models, AIF extractors, signal-to-concentration,
 segmentation backends, diffusion models, whole stages) is a single file that
@@ -297,7 +297,7 @@ class MyModel:
 It is then aggregated to every level, written in every format, and given
 diagnostics with no further wiring.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Models
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Models
 
 Set any option with `--opt models.<key>.<opt>=<value>`. Defaults are what you get
 without setting anything.
@@ -311,31 +311,31 @@ without setting anything.
 The list is meant to be extended — see [Add your own](#add-your-own). The
 diffusion track (`--diffusion`) adds FA, MD, and tractography via dipy.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Principles
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Principles
 
-<img src="assets/dot.svg" width="14" alt=""/> **Plug-in architecture.** Kinetic models, AIF extractors, signal-to-concentration methods, segmentation backends, and stages are self-registering modules. Adding one is a single file; the core is unchanged.
+<img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/dot.svg" width="14" alt=""/> **Plug-in architecture.** Kinetic models, AIF extractors, signal-to-concentration methods, segmentation backends, and stages are self-registering modules. Adding one is a single file; the core is unchanged.
 
-<img src="assets/dot.svg" width="14" alt=""/> **The optional model reads text, not data.** Input mapping, QC summaries, methods text, and error explanations come from scan headers and run provenance, not voxel values, and the model computes no result. A suggestion that would alter a run takes effect only once you confirm it, and is recorded in the manifest.
+<img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/dot.svg" width="14" alt=""/> **The optional model reads text, not data.** Input mapping, QC summaries, methods text, and error explanations come from scan headers and run provenance, not voxel values, and the model computes no result. A suggestion that would alter a run takes effect only once you confirm it, and is recorded in the manifest.
 
-<img src="assets/dot.svg" width="14" alt=""/> **Runs are reproducible.** Inputs, plug-in choices, and parameters are recorded per run; an `--assist`-resolved layout is written to `pbrain.layout.toml`. The same inputs and settings produce the same outputs.
+<img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/dot.svg" width="14" alt=""/> **Runs are reproducible.** Inputs, plug-in choices, and parameters are recorded per run; an `--assist`-resolved layout is written to `pbrain.layout.toml`. The same inputs and settings produce the same outputs.
 
-<img src="assets/dot.svg" width="14" alt=""/> **One input representation.** `load` converts PAR/REC, DICOM, or NIfTI to a 4-D NIfTI; every downstream stage operates on that volume.
+<img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/dot.svg" width="14" alt=""/> **One input representation.** `load` converts PAR/REC, DICOM, or NIfTI to a 4-D NIfTI; every downstream stage operates on that volume.
 
-<img src="assets/dot.svg" width="14" alt=""/> **Output is separable from computation.** The interactive cockpit is TTY-gated; a redirected or `--quiet` run emits plain text with identical numeric results.
+<img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/dot.svg" width="14" alt=""/> **Output is separable from computation.** The interactive cockpit is TTY-gated; a redirected or `--quiet` run emits plain text with identical numeric results.
 
-## <img src="assets/mark.svg" width="20" alt=""/> Requirements
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Requirements
 
 - Linux, macOS, or Windows with Python 3.10–3.12
 - `dcm2niix` on PATH for PAR/REC and DICOM conversion
 - Optional: TensorFlow (`[cnn]`), dipy (`[diffusion]`), Ollama (assist)
 
-## <img src="assets/mark.svg" width="20" alt=""/> Citation
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Citation
 
 If p-Brain contributes to your work, please cite the accompanying paper (Tireli
 et al.) and this repository. See
 [`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
 
-<p align="center"><img src="assets/divider.svg" width="520" alt=""/></p>
+<p align="center"><img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/divider.svg" width="520" alt=""/></p>
 
 <p align="center">
   MIT · Built by <b>Edis Devin Tireli</b> · Functional Imaging Unit, Rigshospitalet · University of Copenhagen
