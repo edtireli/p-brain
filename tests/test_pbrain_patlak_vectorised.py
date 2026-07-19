@@ -234,3 +234,26 @@ def test_patlak3_recovers_known_ki():
     inp = CurveInputs(c_tissue=c_t.reshape(-1, 1), c_input=c_a, t_s=t)
     res = REGISTRY["patlak"].fit(inp, tail_mode="patlak3")
     assert abs(float(res.maps["ki"][0]) - ki_true) < 0.05
+
+
+def test_legacy_vectorised_mask_subset_is_bit_exact():
+    """A partial brain mask triggers an internal column-subset for speed; because
+    the Patlak fit is per-voxel independent, the masked voxels must be BIT-identical
+    to the same voxels from a full (unmasked) run, with off-mask voxels NaN."""
+    from pbrain.models._baseline_shift import fit_patlak_legacy_vectorised as F
+    rng = np.random.default_rng(3)
+    V = 500
+    cols = [_synth(ki_true=rng.uniform(0.05, 1.0), vb_true=rng.uniform(0.5, 5.0),
+                   noise_sd=0.02, seed=i)[0] for i in range(V)]
+    _, c_a, t = _synth()
+    ct2d = np.stack(cols, axis=1)          # (T, V)
+    mask = rng.random(V) < 0.3             # partial → triggers the subset path
+    full = F(ct2d, c_a, t, mask=None)      # every voxel, no subset
+    part = F(ct2d, c_a, t, mask=mask)      # subset internally, scatter back
+    idx = np.flatnonzero(mask)
+    for key in ("ki_ml_per_100g_min", "vb_ml_per_100g", "sd_ki_ml_per_100g_min"):
+        assert np.array_equal(full[key][idx], part[key][idx], equal_nan=True), key
+        assert np.all(np.isnan(part[key][~mask])), f"off-mask not NaN: {key}"
+    allm = F(ct2d, c_a, t, mask=np.ones(V, bool))   # all-True must equal no-mask
+    assert np.array_equal(full["ki_ml_per_100g_min"],
+                          allm["ki_ml_per_100g_min"], equal_nan=True)

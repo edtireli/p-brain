@@ -52,6 +52,13 @@ class _TikhonovLegacy:
         opts.setdefault("mtt_cth_method",   "residue_integral")
         return _SMART.fit(inputs, **opts)
 
+    def review(self, inputs, result, **_kw):
+        """--mode verify view — mean tissue Cₜ + the gamma-residue fit + medians."""
+        from ._review import curve_fit_review
+        return curve_fit_review(self, inputs, result,
+                                title="Tikhonov (legacy) · residue", fit_label="gamma-residue fit",
+                                show=("cbf", "mtt", "cth"))
+
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:
         return _SMART.predict(maps, c_input, t_s)

@@ -20,6 +20,7 @@ e.g. ``--opt aif.deterministic.n_voxels=64``.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -138,7 +139,16 @@ def _build_parser() -> argparse.ArgumentParser:
                         "are mutually exclusive.")
     # Not required at the parser level — may be supplied by --config.
     p.add_argument("--subject-dir", type=Path, default=None,
-                   help="Subject root directory (outputs land under here).")
+                   help="Subject root directory (raw scans live here; outputs land "
+                        "under here unless --derivatives-subdir nests them).")
+    p.add_argument("--derivatives-subdir", default=None, metavar="SUBDIR",
+                   help="Nest the derivatives tree under <subject-dir>/SUBDIR/ "
+                        "instead of directly under <subject-dir>/. E.g. 'pbrain' "
+                        "writes <subject-dir>/pbrain/derivatives/, keeping pipeline "
+                        "outputs namespaced apart from the raw scans. Inputs are "
+                        "still discovered from the real --subject-dir. Also settable "
+                        "via the PBRAIN_DERIVATIVES_SUBDIR env var; unset (default) "
+                        "preserves <subject-dir>/derivatives/.")
     p.add_argument("--dce", type=Path, default=None,
                    help="DCE 4-D series: a path, a filename in the subject dir, a "
                         "protocol-name substring (e.g. 'hperf'), or 'auto'.")
@@ -194,6 +204,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--force", action="store_true",
                    help="Re-run all stages even if cached manifests exist.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show the resolved pipeline plan and exit without computing.")
+    p.add_argument("--mode", default="auto", choices=["auto", "verify", "manual"],
+                   help="auto: run through (default) · verify: open a browser review at each "
+                        "decision checkpoint (AIF, …) to confirm or nudge · manual: draw the "
+                        "ROIs yourself. Reject a review to stop; ⇥ cycles it live.")
+    p.add_argument("--assist", action="store_true",
+                   help="Optional local-LLM help (metadata only, never the numbers): propose the "
+                        "input series, explain a failure, summarise QC. Needs Ollama; no-ops without.")
+    p.add_argument("--vision", action="store_true",
+                   help="After the run, cross-check the AIF with the HF vision localiser "
+                        "(SSS / carotids from the DCE max-projection). Advisory QC only — never "
+                        "alters the run. Needs a vision backend; no-ops without.")
     p.add_argument("--quiet", action="store_true", help="Warnings/errors only.")
     p.add_argument("--verbose", action="store_true", help="Debug-level detail.")
     p.add_argument("--log-file", type=Path, default=None,
@@ -336,6 +359,127 @@ def main(argv: list[str]) -> int:
     if args.subject_dir is None:
         raise SystemExit("--subject-dir is required (CLI or --config).")
 
+    # Auto-detect scope: point `pbrain run` at a folder of subjects and it fans out
+    # as a cohort; at one subject and it runs that. Explicit inputs or --config force
+    # single-subject; the env guard stops a fanned-out child from re-detecting.
+    if (not getattr(args, "dry_run", False)
+            and getattr(args, "config", None) is None
+            and not os.environ.get("_PBRAIN_COHORT_CHILD")
+            and all(getattr(args, _k, None) in (None, "auto") for _k in ("dce", "t1", "ir"))):
+        from pbrain.io import layout as _layout
+        _res = _layout.resolve(args.subject_dir)
+        if _res.kind == "unknown" and getattr(args, "assist", False):
+            _res = _assist_layout(args.subject_dir)   # propose → confirm → freeze → re-resolve
+        if _res.kind == "cohort":
+            from pbrain.cli.cohort import run_layout as _run_layout
+            return _run_layout(_res, args)
+
+    # --dry-run / `pbrain plan`: show the resolved pipeline without touching scans.
+    # Runs before input discovery and config building, so a plan is cheap and needs
+    # no real data — just the flags that select each stage's plug-in.
+    if getattr(args, "dry_run", False):
+        from pbrain._ui import show_plan
+        from pbrain.stages import default_stages as _ds
+        diff = f" · diffusion {args.diffusion}" if args.diffusion else ""
+        header = [
+            ("subject", f"{args.subject_dir.name} · {args.subject_dir} · {args.animal}"),
+            ("pipeline", f"aif {args.aif} · models {args.models}{diff} · {args.device}"),
+        ]
+        chosen = {
+            "load": args.path_scheme, "t1_m0": args.t1m0,
+            "signal_to_conc": args.signal_to_conc, "aif": args.aif,
+            "tissue_roi": args.tissue_roi or "auto", "normalisation": args.normaliser,
+            "kinetic": args.models, "diffusion": args.diffusion or "—",
+            "summary": args.aggregations, "diagnostics": "auto",
+        }
+        show_plan(header, [(s.name, chosen.get(s.name, "")) for s in _ds()])
+        return 0
+
+    # --assist: a local model proposes the input-series mapping from the scan
+    # headers (metadata only, never computation). It SUGGESTS; you confirm on a
+    # TTY; the resolved paths get recorded in the manifest, so a re-run is
+    # deterministic. Fills only inputs you left unset or as "auto".
+    if getattr(args, "assist", False):
+        from pbrain import _assist
+        from pbrain.io.subject_discovery import series_table
+        from pbrain._ui import console as _con
+        _c = _con(stderr=False)
+        if not _assist.available():
+            from pbrain import _ollama
+            _ollama.guide(_c)          # first-time onboarding: install / start / pull
+        if not _assist.available():
+            _c.print("  [pb.dim]○ --assist: no model yet — continuing without it[/]")
+        else:
+            _rows = series_table(args.subject_dir)
+            if _rows:
+                _c.print(f"  [pb.accent]▸ assist[/]  [pb.mut]{_assist.model()} · reading {len(_rows)} series[/]")
+                _prop = _assist.identify_series(_rows)
+                # show the human-readable protocol name, not the PAR file id; keep the
+                # id + dynamics as a dim tag so it's still traceable
+                _proto = {r["id"]: (r.get("protocol") or r.get("file") or r["id"]) for r in _rows}
+                _by = {r["id"]: r["file"] for r in _rows}
+                _dyn = {r["id"]: r.get("dynamics", "") for r in _rows}
+
+                def _label(_id):
+                    if not _id or _id not in _proto:
+                        return "[pb.dim]— (none)[/]"
+                    _tag = f"{_id}" + (f" · {_dyn[_id]} dyn" if _dyn.get(_id) else "")
+                    return f"[pb.lite]{_proto[_id]}[/]  [pb.dim]{_tag}[/]"
+
+                def _show(p):
+                    _c.print(f"    [pb.ink]DCE[/]  [pb.accent]→[/]  {_label(p.get('dce'))}")
+                    _c.print(f"    [pb.ink]T1 [/]  [pb.accent]→[/]  {_label(p.get('t1_anatomical'))}")
+                    _irs = p.get("ir") or []
+                    _c.print(f"    [pb.ink]IR [/]  [pb.accent]→[/]  {_label(_irs[0]) if _irs else '[pb.dim]— (none)[/]'}")
+                    for _x in _irs[1:]:
+                        _c.print(f"          {_label(_x)}")
+                    if p.get("why"):
+                        _c.print(f"    [pb.dim]{p['why']}[/]")
+
+                _ok = True
+                while _prop:
+                    _show(_prop)
+                    if not sys.stdin.isatty():
+                        break
+                    _ans = input("    accept · [e]dit · [n]o  › ").strip().lower()
+                    if _ans in ("n", "no"):
+                        _ok = False
+                        break
+                    if _ans and _ans[0] == "e":
+                        _fb = input("    what's off? (e.g. 't1 should be the sagittal one; axt1w is a reformat')  › ").strip()
+                        if _fb:
+                            _c.print("    [pb.mut]re-reading with your correction…[/]")
+                            _rev = _assist.revise_series(_rows, _prop, _fb)
+                            if _rev:
+                                _prop = _rev
+                            else:
+                                _c.print("    [pb.dim]couldn't revise — keeping the last mapping[/]")
+                        continue
+                    break   # empty / y / anything else → accept
+
+                if _ok and _prop:
+                    _dce, _t1 = _prop.get("dce"), _prop.get("t1_anatomical")
+                    if (args.dce is None or str(args.dce).lower() == "auto") and _dce in _by:
+                        args.dce = args.subject_dir / _by[_dce]
+                    if (args.t1 is None or str(args.t1).lower() == "auto") and _t1 in _by:
+                        args.t1 = args.subject_dir / _by[_t1]
+                    if args.ir is None:
+                        args.ir = Path("auto")
+                else:
+                    _c.print("    [pb.dim]kept your inputs / heuristic auto[/]")
+
+    # Output nesting. By default the derivatives tree lands directly under
+    # <subject-dir>/derivatives/. --derivatives-subdir (or the
+    # PBRAIN_DERIVATIVES_SUBDIR env var) nests it under a subfolder, e.g.
+    # "pbrain" -> <subject-dir>/pbrain/derivatives/, so pipeline outputs stay
+    # namespaced apart from the raw scans. Inputs are still resolved against the
+    # real --subject-dir below, so raw-scan discovery is unaffected.
+    _subdir = args.derivatives_subdir
+    if _subdir is None:
+        _subdir = os.environ.get("PBRAIN_DERIVATIVES_SUBDIR", "")
+    _subdir = str(_subdir).strip().strip("/")
+    output_dir = args.subject_dir / _subdir if _subdir else args.subject_dir
+
     # ``{subject}`` in any input path is replaced with the subject dir name —
     # lets one config file drive a whole cohort whose inputs live elsewhere,
     # e.g. dce = "/data/{subject}/NIfTI/dce.nii.gz".
@@ -354,11 +498,25 @@ def main(argv: list[str]) -> int:
             continue
         resolved = _resolve_subject_input(str(v), args.subject_dir, kind)
         if resolved is None:
+            if str(v).strip().lower() == "auto":
+                setattr(args, dest, None)   # unresolved 'auto' → try the layout fallback below
+                continue
             raise SystemExit(
                 f"--{dest} {str(v)!r}: not an existing path, a filename in "
                 f"{args.subject_dir}/, or a protocol name found there."
             )
         setattr(args, dest, resolved)
+
+    # Layout fallback: fill still-unset inputs from the detected on-disk layout
+    # (flat-NIfTI / BIDS single subjects; PAR/REC 'auto' is resolved above).
+    if args.dce is None or args.t1 is None or args.ir is None:
+        from pbrain.io import layout as _layout
+        _lres = _layout.resolve(args.subject_dir)
+        if _lres.kind == "subject":
+            _linp = _layout.inputs_for(args.subject_dir, _lres.adapter)
+            for _k in ("dce", "t1", "ir"):
+                if getattr(args, _k) is None and _linp.get(_k):
+                    setattr(args, _k, _linp[_k])
 
     if args.dce is None:
         raise SystemExit("--dce is required (CLI or --config).")
@@ -390,11 +548,14 @@ def main(argv: list[str]) -> int:
     diffusion_models = _expand_diffusion_bundle(args.diffusion, args.dwi)
 
     # Resolve + configure the accelerator before any plug-in initialises.
-    from pbrain.core import resolve_device, configure_tf_device, probe_devices
-    resolved = resolve_device(args.device)
+    from pbrain.core import resolve_device, configure_tf_device
+    # auto_install: if a Metal backend can be provisioned *safely* (compatible TF),
+    # do it rather than just warning; a too-new TF is detected and left untouched.
+    resolved = resolve_device(args.device, auto_install=True,
+                              log=lambda m: log.info("device: %s", m))
     if args.device != resolved:
         log.info("device: requested=%r → resolved=%r", args.device, resolved)
-    log.info("device: using %r  (probe: %s)", resolved, probe_devices())
+    log.info("device: using %r", resolved)
     if resolved != "cpu":
         configure_tf_device(resolved)
 
@@ -430,20 +591,215 @@ def main(argv: list[str]) -> int:
         subject_id=args.subject_dir.name,
         data_root=args.subject_dir.parent,
         device=resolved,
+        mode=args.mode,
         plugin_options=plugin_options,
     )
 
-    pipeline = Pipeline(stages=default_stages(),
+    stages = default_stages()
+    pipeline = Pipeline(stages=stages,
                         path_scheme=PATH_SCHEMES[args.path_scheme])
 
-    log.info("Running pipeline on %s", args.subject_dir)
-    records = pipeline.run(args.subject_dir, config, force=args.force)
+    from pbrain._ui import make_run_reporter, RunReporter
+    import time as _time
 
-    log.info("Stage completion:")
-    for name, rec in records.items():
-        log.info("  %-18s %d artefacts -> %s",
-                 name, len(rec.output.artefacts), rec.manifest_path)
+    diff = f" · diffusion {args.diffusion}" if args.diffusion else ""
+    header = [
+        ("subject", f"{args.subject_dir.name} · {args.subject_dir} · {args.animal}"),
+        ("pipeline", f"{len(stages)} stages · aif {args.aif} · models {args.models}"
+                     f"{diff} · {resolved}"),
+        ("output", f"{output_dir}/derivatives"),
+    ]
+    reporter = make_run_reporter(header, mode=args.mode)
+    active = isinstance(reporter, RunReporter)
+    if not active:                       # plain (piped / --quiet) path, unchanged
+        if output_dir != args.subject_dir:
+            log.info("Running pipeline on %s  (outputs -> %s/derivatives)",
+                     args.subject_dir, output_dir)
+        else:
+            log.info("Running pipeline on %s", args.subject_dir)
+
+    t0 = _time.perf_counter()
+    try:
+        with reporter:
+            records = pipeline.run(output_dir, config, force=args.force,
+                                   reporter=reporter if active else None)
+    except Exception as exc:
+        # A stage failed. The cockpit already marked it ✗; show a clean, actionable
+        # error instead of dumping a traceback (pass --verbose for the full trace).
+        if getattr(args, "assist", False):
+            _assist_explain(exc, args)
+        from pbrain._ui import console as _console
+        con = _console(stderr=True)
+        con.print(f"\n  [pb.fail]✗ run failed[/]  [pb.ink]{exc}[/]")
+        if getattr(args, "verbose", False):
+            import traceback
+            con.print(f"[pb.dim]{traceback.format_exc()}[/]")
+        return 1
+
+    if active:
+        extras = [("models", args.models.replace(",", " · "))]
+        if args.diffusion:
+            extras.append(("diff", args.diffusion))
+        extras.append(("levels", args.aggregations.replace(",", " · ")))
+        from pbrain import _clock
+        reporter.summary(max(0.0, _time.perf_counter() - t0 - _clock.paused_total()),
+                         extras, str(output_dir))
+    else:
+        log.info("Stage completion:")
+        for name, rec in records.items():
+            log.info("  %-18s %d artefacts -> %s",
+                     name, len(rec.output.artefacts), rec.manifest_path)
+
+    if getattr(args, "assist", False):
+        _assist_qc(records)
+    if getattr(args, "vision", False):
+        _vision_qc(output_dir)
     return 0
+
+
+def _assist_layout(root):
+    """Unknown on-disk layout + ``--assist``: let a local model *propose* how the
+    folder maps to subjects and inputs (from names only), confirm/correct it, and
+    **freeze** the result to ``pbrain.layout.toml`` so re-runs are deterministic.
+    Returns the (re-)resolved layout."""
+    from pbrain.io import layout as _layout
+    from pbrain import _assist
+    from pbrain._ui import console
+    con = console(stderr=False)
+    if not _assist.available():
+        from pbrain import _ollama
+        _ollama.guide(con)
+    if not _assist.available():
+        con.print("  [pb.dim]○ --assist: no model — can't propose a layout[/]")
+        return _layout.resolve(root)
+
+    tree = _layout.gather_tree(root)
+    con.print(f"  [pb.accent]▸ assist[/]  [pb.mut]{_assist.model()} · reading the folder layout[/]")
+    prop = _assist.propose_layout(tree)
+
+    def _show(p):
+        subs = p.get("subjects", [])
+        con.print(f"    [pb.ink]{p.get('kind', 'subject')}[/]  [pb.mut]{len(subs)} subject(s)[/]")
+        for s in subs[:12]:
+            got = "  ".join(f"[pb.accent]{k}[/]" if s.get(k) else f"[pb.dim]{k}·—[/]"
+                            for k in ("dce", "t1", "ir"))
+            con.print(f"      [pb.lite]{s.get('dir', '.')}[/]   {got}")
+        if len(subs) > 12:
+            con.print(f"      [pb.dim]… and {len(subs) - 12} more[/]")
+        if p.get("why"):
+            con.print(f"    [pb.dim]{p['why']}[/]")
+
+    while prop and prop.get("subjects"):
+        _show(prop)
+        if not sys.stdin.isatty():
+            break
+        ans = input("    freeze & use · [e]dit · [n]o  › ").strip().lower()
+        if ans in ("n", "no"):
+            return _layout.resolve(root)
+        if ans and ans[0] == "e":
+            fb = input("    what's off? (e.g. 'these are 2 subjects; dce is the perf/ folder')  › ").strip()
+            if fb:
+                con.print("    [pb.mut]re-reading with your correction…[/]")
+                rev = _assist.revise_layout(tree, prop, fb)
+                if rev:
+                    prop = rev
+            continue
+        break
+
+    if prop and prop.get("subjects"):
+        dest = _layout.write_frozen(root, prop)
+        con.print(f"    [pb.accent]●[/] froze layout → [pb.ink]{dest}[/]  "
+                  f"[pb.dim](later runs read this — the model is not re-asked)[/]")
+    return _layout.resolve(root)
+
+
+def _assist_explain(exc: Exception, args) -> None:
+    from pbrain import _assist
+    if not _assist.available():
+        return
+    ctx = f"aif={args.aif} models={args.models} device={args.device} dce={args.dce}"
+    txt = _assist.explain_error(type(exc).__name__, str(exc)[:400], ctx)
+    if txt:
+        from rich.panel import Panel
+        from pbrain._ui import console
+        console(stderr=True).print(Panel(txt.strip(), title="[pb.accent]assist · what went wrong[/]",
+                                         title_align="left", border_style="pb.deep", padding=(0, 1)))
+
+
+def _vision_qc(output_dir) -> None:
+    """Advisory only: localise the AIF vessels from the DCE max-projection with the
+    HF vision model and cross-check the CNN AIF the run actually used. Never touches
+    the numbers or alters the run; silent no-op if no vision backend / no volume.
+
+    The SSS line reports agreement with the CNN AIF (the CNN marks the sinus). The
+    carotid lines report a confidence signal — peak enhancement relative to the SSS:
+    a true ICA enhances far harder than the venous sinus on first pass, so a ratio
+    near 1 means 'not clearly arterial, defer to manual review', not a confident hit."""
+    from pbrain import _ollama
+    from pbrain import aif_vision as V
+    from pbrain._ui import console
+    if not V.vlm_available():
+        return
+    conc = V.canonical_glob(output_dir, "concentration.nii.gz")
+    if not conc:
+        return
+    mask = V.canonical_glob(output_dir, "aif_mask.nii.gz")
+    repo = _ollama.recommend()["vision"]["repo"]
+    con = console(stderr=True)
+    con.print(f"  [pb.accent]▸ vision[/]  [pb.mut]{repo} · cross-checking AIF (advisory)…[/]")
+    res = V.find_aif(conc, repo, str(output_dir), cnn_mask=mask)
+    if not res:
+        con.print("  [pb.dim]vision: no localisation returned.[/]")
+        return
+    sss = res.get("sss")
+    sss_peak = sss["peak"] if sss else None
+    lines = []
+    for t in V.TARGETS:
+        r = res.get(t)
+        if not r:
+            lines.append(f"[pb.dim]{t:6s} not found[/]")
+            continue
+        if t == "sss":
+            d = r.get("dist_cnn")
+            agree = "" if d is None else (f" · [pb.accent]{d} vox from CNN AIF ✓[/]" if d <= 6
+                                          else f" · [pb.warn]{d} vox from CNN AIF[/]")
+            lines.append(f"[pb.ink]{t:6s}[/] voxel {r['voxel']} · peak {r['peak']}{agree}")
+        else:
+            ratio = (r["peak"] / sss_peak) if sss_peak else 0.0
+            tag = "[pb.accent]✓ arterial[/]" if ratio >= 2.0 else "[pb.warn]low-confidence (not clearly arterial)[/]"
+            lines.append(f"[pb.ink]{t:6s}[/] voxel {r['voxel']} · peak {r['peak']} · {ratio:.1f}× SSS · {tag}")
+    from rich.panel import Panel
+    con.print(Panel("\n".join(lines), title="[pb.accent]vision · AIF cross-check[/]",
+                    title_align="left", border_style="pb.deep", padding=(0, 1)))
+
+
+def _assist_qc(records) -> None:
+    import json
+    from pbrain import _assist
+    if not _assist.available():
+        return
+    facts = []
+    for name, rec in records.items():
+        try:
+            m = json.loads(Path(rec.manifest_path).read_text())
+        except Exception:
+            continue
+        qc = m.get("qc", {}) or {}
+        md = m.get("metadata", {}) or {}
+        bits = [f"status={qc.get('status', '?')}"]
+        for src in (md, qc):
+            for k, v in src.items():
+                if isinstance(v, (int, float, str)) and k not in ("status",) and len(str(v)) < 40:
+                    bits.append(f"{k}={v}")
+        for msg in (qc.get("messages") or [])[:1]:
+            bits.append("note=" + str(msg)[:80])
+        facts.append(f"{name}: " + ", ".join(bits[:8]))
+    txt = _assist.summarize_qc("\n".join(facts))
+    if txt:
+        from rich.panel import Panel
+        from pbrain._ui import console
+        console(stderr=True).print(Panel(txt.strip(), title="[pb.accent]assist · QC summary[/]",
+                                         title_align="left", border_style="pb.deep", padding=(0, 1)))
 
 
 if __name__ == "__main__":

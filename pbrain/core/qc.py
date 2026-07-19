@@ -41,23 +41,24 @@ def voxelwise_cnr(
     baseline_frames: int = 5,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Per-voxel contrast-to-noise ratio of a 4-D concentration series.
+    """Per-voxel contrast-to-noise ratio of a 4-D time series.
 
-    For each voxel the CNR is the *peak post-bolus concentration above the
-    pre-bolus baseline* divided by the *standard deviation of the pre-bolus
-    baseline window* (R3.7):
+    For each voxel the CNR is the *peak above the pre-bolus baseline* divided by
+    the *standard deviation of the pre-bolus baseline window* (R3.7):
 
-        CNR = (max_t C(t) − mean(C[:baseline_frames]))
-              / std(C[:baseline_frames])
+        CNR = (max_t S(t) − mean(S[:baseline_frames]))
+              / std(S[:baseline_frames])
 
-    A voxel whose baseline noise is zero (perfectly flat — typically masked
-    background that has been zero-filled) yields ``0.0`` rather than ``inf``,
-    so the map stays finite and the low-CNR fraction below treats it as bad.
+    A voxel whose baseline noise is zero (perfectly flat) yields ``0.0`` rather
+    than ``inf``, so the map stays finite and the low-CNR fraction treats it as
+    bad. **Pass the raw DCE signal, not the baseline-subtracted concentration:**
+    every signal→conc converter forces ``C(baseline)=0``, so the concentration's
+    baseline SD is 0 at *every* voxel and the CNR would collapse to 0 everywhere.
 
     Parameters
     ----------
     conc
-        4-D concentration array ``(X, Y, Z, T)`` (mM, baseline ≈ 0).
+        4-D series ``(X, Y, Z, T)`` — the raw DCE signal (real baseline noise).
     baseline_frames
         Number of leading frames defining the pre-bolus baseline window.
         Defaults to 5 (the pipeline's ``baseline_frames``). Clamped to

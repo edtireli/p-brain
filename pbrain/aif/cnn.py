@@ -600,6 +600,9 @@ class _CnnAIF:
                 "chosen_scores": chosen_scores,
                 "n_voxels": int(mask3d.sum()),
                 "n_voxels_full_roi": int(mask3d_full.sum()),
+                # full vessel ROI (all U-Net voxels) as [[x,y,z],…] so a review can
+                # highlight the whole vessel, not just the max voxel the curve used.
+                "full_roi_coords": np.argwhere(mask3d_full).astype(int).tolist(),
                 "flip_lr": bool(flip_lr),
                 "curve_method": curve_method,
                 "rot90_k": int(rot_k),

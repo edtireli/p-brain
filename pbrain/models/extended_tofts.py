@@ -353,6 +353,12 @@ class ExtendedToftsModel:
         )
 
 
+    def review(self, inputs, result, **_kw):
+        """--mode verify view — mean tissue Cₜ + the Tofts fit + median parameters."""
+        from ._review import curve_fit_review
+        return curve_fit_review(self, inputs, result,
+                                title="Extended Tofts · compartment fit", fit_label="Tofts fit")
+
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:
         """Reconstruct Cₜ from the extended-Tofts maps via the exact forward."""

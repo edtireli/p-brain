@@ -30,12 +30,21 @@ dependencies = [
     "scipy>=1.10",
     "matplotlib>=3.7",
     "nibabel>=5.0",
+    "rich>=13.7",
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
 # CNN arterial-input-function (default `cnn_sss_shifted`); weights on Zenodo.
 cnn = ["tensorflow>=2.13"]
+# Apple-Silicon GPU for the TensorFlow stages (CNN AIF + SynthSeg). Apple's Metal
+# plugin (`tensorflow-metal`) only loads on TF <= 2.16, so this pins the matched
+# pair — and only on arm64 macOS. On any other platform it installs nothing (Linux
+# GPU users use `cnn` with a CUDA build of TensorFlow). Opt in: `pip install p-brain[metal]`.
+metal = [
+    "tensorflow>=2.13,<2.17; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "tensorflow-metal>=1.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 # Diffusion track (DTI/DKI/CSD/…): dipy provides the models + tractography.
 diffusion = ["dipy>=1.7", "fury>=0.10"]
 # NODDI microstructure model (optional diffusion plug-in) via the AMICO framework.

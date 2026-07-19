@@ -24,6 +24,7 @@ Two input modes:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -132,6 +133,90 @@ def _run_one(args_tuple) -> tuple[str, str, str]:
         return (name, "failed", f"{type(exc).__name__}: {exc}")
 
 
+def _layout_argv(subject: str, adapter: str, params: dict) -> list[str]:
+    """`pbrain run` argv for one subject, inputs resolved by its layout adapter."""
+    from pbrain.io import layout as L
+    inp = L.inputs_for(subject, adapter)
+    argv = ["--subject-dir", str(subject)]
+    if inp.get("dce"):
+        argv += ["--dce", str(inp["dce"])]
+    if inp.get("t1"):
+        argv += ["--t1", str(inp["t1"])]
+    argv += ["--ir", str(inp["ir"]) if inp.get("ir") else "auto"]
+    for flag, key in (("--models", "models"), ("--aggregations", "aggregations"),
+                      ("--device", "device"), ("--derivatives-subdir", "derivatives_subdir")):
+        if params.get(key):
+            argv += [flag, str(params[key])]
+    if params.get("force"):
+        argv.append("--force")
+    argv.append("--quiet")     # children are quiet; the cohort reporter shows progress
+    return argv
+
+
+def _run_layout_one(args_tuple) -> tuple[str, str, str]:
+    subject, adapter, params = args_tuple
+    from pbrain.cli.run import main as run_main
+    name = Path(subject).name
+    try:
+        rc = run_main(_layout_argv(subject, adapter, params))
+        return (name, "ok" if rc == 0 else "failed", f"exit {rc}")
+    except SystemExit as exc:
+        return (name, "failed", f"SystemExit: {exc}")
+    except Exception as exc:  # noqa: BLE001 — isolate per-subject failures
+        return (name, "failed", f"{type(exc).__name__}: {exc}")
+
+
+def run_layout(resolution, args) -> int:
+    """Fan out an auto-detected ``pbrain run <folder>`` cohort over its subjects,
+    resolving each subject's inputs with the detected layout adapter (PAR/REC,
+    flat-NIfTI, BIDS). Same process pool + continue-on-failure as ``pbrain cohort``."""
+    from pbrain._ui import CohortReporter, make_cohort_reporter
+    configure_logging(level_from_flags(getattr(args, "quiet", False), getattr(args, "verbose", False)),
+                      log_file=getattr(args, "log_file", None))
+    log = get_logger("cohort")
+    subjects = resolution.subjects
+    workers = getattr(args, "workers", 1) or 1
+    params = {k: getattr(args, k, None) for k in ("models", "aggregations", "device",
+                                                  "derivatives_subdir", "force", "verbose")}
+    header = [("cohort", f"{len(subjects)} subjects · {resolution.adapter} · auto-detected · "
+                         f"{workers} worker(s)")]
+    reporter = make_cohort_reporter(len(subjects), header)
+    active = isinstance(reporter, CohortReporter)
+    if not active:
+        log.info("cohort: %d subjects (%s), %d worker(s)", len(subjects), resolution.adapter, workers)
+    work = [(str(s), resolution.adapter, params) for s in subjects]
+    results: list[tuple[str, str, str]] = []
+    t0 = time.time()
+
+    def _record(r):
+        results.append(r)
+        if active:
+            reporter.done(r[0], r[1], r[2] if len(r) > 2 else "")
+        else:
+            log.info("  [%d/%d] %-16s %s", len(results), len(subjects), r[0], r[1])
+
+    os.environ["_PBRAIN_COHORT_CHILD"] = "1"   # stop each fanned-out child re-detecting
+    try:
+        with reporter:
+            if workers <= 1:
+                for w in work:
+                    _record(_run_layout_one(w))
+            else:
+                with ProcessPoolExecutor(max_workers=workers) as ex:
+                    futs = {ex.submit(_run_layout_one, w): w[0] for w in work}
+                    for fut in as_completed(futs):
+                        _record(fut.result())
+    finally:
+        os.environ.pop("_PBRAIN_COHORT_CHILD", None)
+
+    ok = sum(1 for r in results if r[1] == "ok")
+    if active:
+        reporter.summary(time.time() - t0)
+    else:
+        log.info("cohort done in %.0fs — %d ok, %d failed", time.time() - t0, ok, len(results) - ok)
+    return 0 if ok == len(results) else 1
+
+
 def main(argv: list[str]) -> int:
     """``pbrain cohort`` entry point — run the pipeline over many subjects.
 
@@ -185,34 +270,46 @@ def main(argv: list[str]) -> int:
     if not subjects:
         raise SystemExit("no subjects matched")
 
-    log.info("cohort: %d subjects, %d worker(s), mode=%s%s", len(subjects), args.workers,
-             params["mode"],
-             f", models={params['models']}, aggs={params['aggregations']}, "
-             f"level={'parcel' if params['parcel'] else 'voxelwise'}"
-             if cohort_mode else f", config={args.config}")
+    from pbrain._ui import make_cohort_reporter, CohortReporter
+    detail = (f"models={params['models']}, level={'parcel' if params['parcel'] else 'voxelwise'}"
+              if cohort_mode else f"config={args.config}")
+    header = [("cohort", f"{len(subjects)} subjects · {args.workers} worker(s) · "
+                         f"{params['mode']} · {detail}")]
+    reporter = make_cohort_reporter(len(subjects), header)
+    active = isinstance(reporter, CohortReporter)
+    if not active:
+        log.info("cohort: %d subjects, %d worker(s), mode=%s, %s",
+                 len(subjects), args.workers, params["mode"], detail)
 
     work = [(s, params) for s in subjects]
     results: list[tuple[str, str, str]] = []
     t0 = time.time()
 
-    if args.workers <= 1:
-        for w in work:
-            r = _run_one(w)
-            results.append(r)
+    def _record(r):
+        results.append(r)
+        if active:
+            reporter.done(r[0], r[1], r[2] if len(r) > 2 else "")
+        else:
             log.info("  [%d/%d] %-16s %s", len(results), len(subjects), r[0], r[1])
-    else:
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            futs = {ex.submit(_run_one, w): w[0] for w in work}
-            for fut in as_completed(futs):
-                r = fut.result()
-                results.append(r)
-                log.info("  [%d/%d] %-16s %s", len(results), len(subjects), r[0], r[1])
+
+    with reporter:
+        if args.workers <= 1:
+            for w in work:
+                _record(_run_one(w))
+        else:
+            with ProcessPoolExecutor(max_workers=args.workers) as ex:
+                futs = {ex.submit(_run_one, w): w[0] for w in work}
+                for fut in as_completed(futs):
+                    _record(fut.result())
 
     ok = [r for r in results if r[1] == "ok"]
     bad = [r for r in results if r[1] != "ok"]
-    log.info("cohort done in %.0fs — %d ok, %d failed", time.time() - t0, len(ok), len(bad))
-    for name, _, msg in bad:
-        log.warning("  FAILED %-16s %s", name, msg)
+    if active:
+        reporter.summary(time.time() - t0)
+    else:
+        log.info("cohort done in %.0fs — %d ok, %d failed", time.time() - t0, len(ok), len(bad))
+        for name, _, msg in bad:
+            log.warning("  FAILED %-16s %s", name, msg)
     return 0 if not bad else 1
 
 

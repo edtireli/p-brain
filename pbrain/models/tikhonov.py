@@ -1047,6 +1047,15 @@ class TikhonovModel:
             aux={"cbv_vd": cbv_aux},
         )
 
+    def review(self, inputs: CurveInputs, result: ModelResult, **_kw) -> dict | None:
+        """`--mode verify` view: the whole-brain mean tissue curve with its
+        gamma-residue reconstruction (predict) and the model's endpoints
+        (CBF / MTT / CTH medians). Declarative spec → interactive plot."""
+        from ._review import curve_fit_review
+        return curve_fit_review(self, inputs, result,
+                                title="Tikhonov · residue deconvolution",
+                                fit_label="gamma-residue fit", show=("cbf", "mtt", "cth"))
+
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:
         """QC reconstruction of Cₜ from (cbf, mtt, cth) via a gamma-variate

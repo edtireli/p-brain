@@ -170,7 +170,11 @@ class LoadStage:
 
     def run(self, ctx: StageContext) -> StageOutput:
         dce_path = _resolve_input(ctx, "dce", required=True)
+        _log.info("load: reading DCE %s (dcm2niix converts PAR/REC)",
+                  Path(dce_path).name)
         dce = load_4d(dce_path)
+        _log.info("load: DCE %s · %d frames", "×".join(str(s) for s in dce.data.shape[:3]),
+                  dce.data.shape[-1])
 
         t1_path = _resolve_input(ctx, "t1_anatomical", required=False)
         ir_path = _resolve_input(ctx, "ir", required=False)
@@ -283,7 +287,22 @@ class T1M0Stage:
 
         opts = dict(ctx.config.options_for("t1_m0", plugin_key))
         opts.setdefault("tr_s", ctx.config.tr_s)  # forward global TR (as the conc/AIF stages do)
+        if ir_data is None:
+            raise ValueError(
+                "t1_m0 needs a relaxometry series (inversion-recovery or VFA) but none "
+                "was found. Pass --relax <file> (aliases --ir / --vfa), or --relax auto "
+                "to auto-discover it from the subject folder."
+            )
+        n_ti = int(np.asarray(ti_s).size) if ti_s is not None else 0
+        _log.info("t1_m0: fitting %s%s", plugin_key,
+                  f" from {n_ti} inversion times" if n_ti else "")
         result = fitter.fit(ir_data, ti_s, **opts)
+        try:
+            _t1 = np.asarray(result.t1_map_ms, dtype=float)
+            _med = float(np.nanmedian(_t1[np.isfinite(_t1) & (_t1 > 0)]))
+            _log.info("t1_m0: T1 map · median %.0f ms", _med)
+        except Exception:
+            pass
 
         if ref_affine is None:
             # Plugin (e.g. preloaded) supplied its own maps — derive affine from the DCE.
@@ -377,13 +396,29 @@ class AIFStage:
 
         opts = dict(ctx.config.options_for("aif", plugin_key))
         opts.setdefault("baseline_frames", ctx.config.baseline_frames)
+        # In a review, also extract left ICA (an extra CNN pass) so the AIF page
+        # can offer it alongside rICA / SSS.
+        if ctx.config.mode in ("verify", "manual") and plugin_key == "cnn_sss_shifted":
+            opts.setdefault("with_lica", True)
 
+        _log.info("aif: extracting input function (%s)", plugin_key)
         ifn = extractor.extract(
             dce_signal, t_s, dce_affine,
             t1_map=t1, m0_map=m0,
             concentration_data=ct_data,
             **opts,
         )
+        try:
+            _peak = float(np.nanmax(np.asarray(ifn.c_a, dtype=float)))
+            _log.info("aif: %s ROI · %d voxels · peak %.2f mM",
+                      ifn.source, int(np.asarray(ifn.mask).sum()), _peak)
+        except Exception:
+            pass
+
+        # Interactive review (--mode verify/manual): confirm the AIF, nudge the
+        # max voxel, or draw the ROI in the browser. No-op in auto / headless.
+        from pbrain import _checkpoints
+        ifn = _checkpoints.aif_checkpoint(ctx.config, ifn, dce_signal, ct_data, t_s, dce_affine)
 
         # Persist
         ca_out = ctx.path_scheme.output_path(
@@ -530,6 +565,16 @@ class TissueROIStage:
                 _log.info("tissue_roi: added WMH region — %d DCE voxels "
                           "(%d at FLAIR res)", int(wmh.sum()), int(wmh_hr.sum()))
 
+        # Interactive review (--mode verify/manual): show the segmentation on the DCE
+        # baseline, confirm it, or manually exclude artefact/mis-segmented voxels. The
+        # 4-D DCE is only loaded when a checkpoint is actually active.
+        from pbrain import _checkpoints as _cp
+        if _cp.active(ctx.config.mode):
+            _dce4 = np.asarray(dce_img.dataobj, dtype=np.float32)
+            _base = (_dce4[..., :min(10, _dce4.shape[-1])].mean(-1)
+                     if _dce4.ndim == 4 else _dce4)
+            parc = _cp.tissue_checkpoint(ctx.config, parc, _base, roi.labels, parc_affine)
+
         parc_out = ctx.path_scheme.output_path(
             ctx.subject_dir, self.name, plugin_key, None, "parcellation", "nii.gz"
         )
@@ -543,6 +588,7 @@ class TissueROIStage:
              "meta": roi.meta},
             labels_out,
         )
+        _log.info("tissue_roi: %s · %d regions", plugin_key, len(roi.labels))
 
         return StageOutput(
             artefacts={"parcellation": parc_out, "labels": labels_out},
@@ -565,6 +611,8 @@ class SignalToConcStage:
 
     def run(self, ctx: StageContext) -> StageOutput:
         import nibabel as nib
+        _log.info("signal_to_conc: converting DCE signal → [Gd] (%s, per-voxel T1/M0)",
+                  ctx.config.signal_to_conc)
 
         plugin_key = ctx.config.signal_to_conc
         self.plugin_key = plugin_key
@@ -598,6 +646,20 @@ class SignalToConcStage:
         tr_meta = dce_meta.get("RepetitionTimeExcitation") or dce_meta.get("RepetitionTime")
         opts.setdefault("flip_angle_deg", float(flip_meta) if flip_meta is not None else ctx.config.flip_angle_deg)
         opts.setdefault("tr_s", float(tr_meta) if tr_meta is not None else ctx.config.tr_s)
+
+        # Baseline review (--mode verify/manual): show how the pre-contrast baseline
+        # point was found (mean curve, bolus onset, half-max) before converting.
+        from pbrain import _checkpoints as _cp
+        _bt = (np.load(load_mf.outputs["dce_time_s"])
+               if load_mf.outputs.get("dce_time_s") else None)
+        _chosen_bf = _cp.baseline_checkpoint(
+            ctx.config, S,
+            method=str(opts.get("baseline_method", "auto")),
+            fallback=int(opts.get("baseline_frames", ctx.config.baseline_frames)),
+            t_s=_bt)
+        if _chosen_bf is not None:          # user set/confirmed the baseline point
+            opts["baseline_frames"] = int(_chosen_bf)
+            opts["baseline_method"] = "fixed"
         opts.setdefault("r1_per_s_mM", ctx.config.r1_per_s_mM)
         opts.setdefault("prepulse_to_readout_s", ctx.config.prepulse_to_readout_s)
         opts.setdefault("baseline_frames", ctx.config.baseline_frames)
@@ -634,6 +696,7 @@ class NormalisationStage:
         plugin_key = ctx.config.normaliser
         self.plugin_key = plugin_key
         norm = NORMALISERS[plugin_key]
+        _log.info("normalisation: %s", plugin_key)
 
         stc_mf = ctx.upstream_manifests["signal_to_conc"]
         aif_mf = ctx.upstream_manifests["aif"]
@@ -799,7 +862,16 @@ class KineticStage:
         cnr_threshold = float(cnr_opts.get("threshold", 2.0))
         cnr_mask_flag = str(cnr_opts.get("mask", "")).lower() in ("true", "1", "yes")
         brain_mask_3d = voxel_mask.reshape(X, Y, Z) if voxel_mask is not None else None
-        cnr_map = voxelwise_cnr(C, baseline_frames=cnr_baseline, mask=brain_mask_3d)
+        # CNR needs a series with REAL pre-bolus noise. The concentration C has its
+        # baseline forced to 0 by the converter, so its baseline SD is 0 at every
+        # voxel → CNR collapses to 0 everywhere and the gate misfires on every
+        # subject. Use the raw DCE signal instead, cropped to C's frame count so
+        # the trailing-drop stays aligned. (Fall back to C only if the raw grid
+        # somehow disagrees — should never happen.)
+        raw_sig = np.asarray(nib.load(str(load_mf.outputs["dce"])).dataobj, dtype=np.float32)
+        cnr_source = raw_sig[..., :T] if (raw_sig.shape[:3] == (X, Y, Z)
+                                          and raw_sig.shape[-1] >= T) else C
+        cnr_map = voxelwise_cnr(cnr_source, baseline_frames=cnr_baseline, mask=brain_mask_3d)
         cnr_path = ctx.path_scheme.output_path(
             ctx.subject_dir, self.name, "qc", None, "cnr", "nii.gz"
         )
@@ -840,6 +912,8 @@ class KineticStage:
             use_voxelwise = getattr(model, "supports_voxelwise", True) and not force_parcel
 
             if use_voxelwise:
+                n_vox = int(voxel_mask.sum()) if voxel_mask is not None else c_t.shape[1]
+                _log.info("kinetic: fitting %s · %s voxels", model_key, f"{n_vox:,}")
                 inputs = CurveInputs(
                     c_tissue=c_t, c_input=ca, t_s=t_s, mask=voxel_mask,
                 )
@@ -866,6 +940,13 @@ class KineticStage:
                 _log.info("kinetic: %s fitted at parcel level (average-then-fit)%s",
                           model_key,
                           " [F pinned to Tikhonov CBF]" if pin_cbf_map is not None else "")
+
+            # Per-model verification (--mode verify/manual): the model's own
+            # review() decides what to show; only-run models that define one appear.
+            from pbrain import _checkpoints as _cp
+            result = _cp.model_checkpoint(ctx.config, model_key, model,
+                                          CurveInputs(c_tissue=c_t, c_input=ca, t_s=t_s, mask=voxel_mask),
+                                          result)
 
             # Validate the model honoured its declared output contract.
             # Require declared ⊆ produced (every promised map exists); extra
@@ -1076,6 +1157,13 @@ class DiffusionStage:
                         f"declared {declared}, produced {produced} "
                         f"(missing={missing}, extra={extra})."
                     )
+
+            # Interactive review (--mode verify/manual): a scalar-map summary (medians
+            # + the primary map's central slice), or the model's own review(). View +
+            # confirm/reject — diffusion maps aren't hand-edited.
+            from pbrain import _checkpoints as _cp
+            _cp.diffusion_checkpoint(ctx.config, model_key, model, diff_inputs, result,
+                                     brain_mask=brain_mask, affine=dwi.affine)
 
             # ---- native space (always) ----
             for nm, arr in result.maps.items():

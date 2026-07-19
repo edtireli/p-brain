@@ -458,6 +458,21 @@ class PatlakModel:
         )
 
 
+    def review(self, inputs: CurveInputs, result: ModelResult, **_kw) -> dict | None:
+        """`--mode verify` view: the Patlak plot for the whole-brain mean curve —
+        the x=∫Cₐ/Cₐ vs y=Cₜ/Cₐ scatter with the fitted line, so you can eyeball
+        the linearity and the slope (Kᵢ). Full x trajectory for context, y scaled to
+        the fitted points (early high-leverage samples clipped). In ``--mode manual``
+        the fit-window start and the regression are editable → a live re-fit."""
+        from ._review import patlak_plot_review
+        controls = [
+            {"key": "window_start_fraction", "label": "fit-window start (× x_max)",
+             "value": 1.0 / 3.0, "min": 0.10, "max": 0.60, "step": 0.05},
+            {"key": "regression", "label": "regression",
+             "value": "huber", "options": ["huber", "ols"]},
+        ]
+        return patlak_plot_review(inputs, result, controls=controls)
+
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:
         """Reconstruct Cₜ = (Ki/6000)·∫₀ᵗCₐ + (vb/100)·Cₐ from the fitted maps."""
