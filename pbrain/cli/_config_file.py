@@ -86,7 +86,7 @@ def load_config_file(path: Path) -> dict[str, Any]:
         "signal_to_conc": "signal_to_conc", "normaliser": "normaliser",
         "models": "models", "diffusion": "diffusion",
         "aggregations": "aggregations", "path_scheme": "path_scheme",
-        "device": "device",
+        "device": "device", "derivatives_subdir": "derivatives_subdir",
     }
     for ck, dest in pmap.items():
         if ck in pipe:

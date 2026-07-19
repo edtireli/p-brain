@@ -93,10 +93,37 @@ def detect_baseline_derivative(signal: np.ndarray, *, fallback: int = 10,
     return max(3, int(nonpos[-1]) + 1)
 
 
+def detect_baseline_gradient(signal: np.ndarray, *, fallback: int = 10,
+                             skip: int = 3, **_: object) -> int:
+    """Butterworth low-pass + gradient walk-back — the legacy p-Brain
+    ``find_baseline_point_advanced`` on the mean high-signal curve.
+
+    Low-pass filters the curve (Butterworth), differentiates it, finds the major
+    gradient peak (the bolus rise), and walks back to the frame **just before** that
+    rise — i.e. the *last* pre-contrast baseline frame before Gd arrives (which the
+    minimum-before-onset ``auto`` method can undershoot on noisy baselines). Falls
+    back to the derivative method, then ``fallback``, if the filter can't run.
+    """
+    S = np.asarray(signal, dtype=float)
+    curve = _mean_high_signal_curve(S, skip=skip)
+    if curve is None or curve.size < 6 or not np.isfinite(curve).any():
+        return max(3, int(fallback))
+    try:
+        from pbrain.models._baseline_shift import find_baseline_point_advanced
+        bp = find_baseline_point_advanced(np.nan_to_num(curve, nan=0.0))
+    except Exception:
+        bp = None
+    if bp is None or not np.isfinite(bp):
+        return detect_baseline_derivative(S, fallback=fallback, skip=skip)
+    return max(3, int(bp))
+
+
 #: Pluggable baseline detectors. Add an entry to extend.
 BASELINE_METHODS: dict[str, Callable[..., int]] = {
     "auto": detect_baseline_frames,
     "derivative": detect_baseline_derivative,
+    "gradient": detect_baseline_gradient,
+    "advanced": detect_baseline_gradient,          # alias — the interactive default
     "fixed": lambda signal, *, fallback=10, **_: max(3, int(fallback)),
 }
 

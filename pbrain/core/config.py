@@ -48,6 +48,14 @@ class Config:
     # honour this; pure-numpy plug-ins ignore it. See pbrain.core.devices.
     device: str = "cpu"
 
+    # ── Interactive review (--mode) ──────────────────────────────────
+    # "auto"   — run straight through (default).
+    # "verify" — at each decision checkpoint (AIF, baseline, tissue ROIs) open a
+    #            web review of the suggested choice to confirm or nudge.
+    # "manual" — draw/pick them yourself in the browser.
+    # Stages read this and call pbrain._checkpoints; a non-interactive run ignores it.
+    mode: str = "auto"
+
     # ── Acquisition (paper §4.2 defaults) ────────────────────────────
     tr_s: float = 0.01118        # TR = 11.18 ms (3D T1 reference)
     te_s: float = 0.00193        # TE = 1.93 ms (DCE)

@@ -965,6 +965,25 @@ class TikhonovModel:
         }
         offsets_s = opts.pop("offsets_s", None)
 
+        # Optional temporal up-sampling before the deconvolution. Coarsely
+        # sampled data (e.g. the mouse DCE at dt≈9 s) truncates the sharp early
+        # peak of the residue → CBF is under-estimated. Refining the AIF+tissue
+        # onto a finer grid (shape-preserving PCHIP, as in inverse_gaussian; the
+        # knot vector then follows the finer dt) recovers the peak. h_factor=1
+        # (the default) is a strict no-op, so the human path stays byte-identical.
+        h_factor = int(opts.pop("h_factor", 1))
+        if h_factor > 1:
+            from scipy.interpolate import PchipInterpolator
+            n0 = int(min(t_s.size, c_a.shape[0], c_t.shape[0]))
+            t0 = np.asarray(t_s[:n0], dtype=float)
+            t_s = np.linspace(float(t0[0]), float(t0[-1]), (n0 - 1) * h_factor + 1)
+            c_a = PchipInterpolator(t0, np.nan_to_num(c_a[:n0]),
+                                    extrapolate=True)(t_s)
+            c_t = PchipInterpolator(t0, np.nan_to_num(c_t[:n0, :]), axis=0,
+                                    extrapolate=True)(t_s)
+            if "f_win" in solver_opts:   # keep the CBF search window fixed in time
+                solver_opts["f_win"] = int(solver_opts["f_win"]) * h_factor
+
         # Apply brain mask: only solve for masked voxels, leave the rest NaN.
         # Legacy convention is NaN outside the brain (vs the previous behaviour
         # of running deconvolution on ~5× more voxels including air, getting
@@ -1027,6 +1046,15 @@ class TikhonovModel:
             units=units,
             aux={"cbv_vd": cbv_aux},
         )
+
+    def review(self, inputs: CurveInputs, result: ModelResult, **_kw) -> dict | None:
+        """`--mode verify` view: the whole-brain mean tissue curve with its
+        gamma-residue reconstruction (predict) and the model's endpoints
+        (CBF / MTT / CTH medians). Declarative spec → interactive plot."""
+        from ._review import curve_fit_review
+        return curve_fit_review(self, inputs, result,
+                                title="Tikhonov · residue deconvolution",
+                                fit_label="gamma-residue fit", show=("cbf", "mtt", "cth"))
 
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:

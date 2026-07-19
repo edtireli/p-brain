@@ -29,6 +29,35 @@ def _pars(subject_dir: Path) -> list[Path]:
     return sorted(subject_dir.glob("*.PAR")) + sorted(subject_dir.glob("*.par"))
 
 
+def series_table(subject_dir: Path | str) -> list[dict]:
+    """A compact header row per PAR series — protocol name + key acquisition params.
+    Fed to the optional LLM assist for role identification (never to computation)."""
+    subject_dir = Path(subject_dir)
+    rows: list[dict] = []
+    for par in _pars(subject_dir):
+        try:
+            txt = par.read_text(errors="replace")
+        except Exception:
+            continue
+
+        def field(name: str) -> str:
+            m = re.search(rf"\.\s*{re.escape(name)}[^:]*:\s*(.+)", txt)
+            return m.group(1).strip() if m else ""
+
+        ser = re.search(r"_(\d+)_(\d+)\.par$", par.name, re.I)
+        rows.append({
+            "id": f"{ser.group(1)}_{ser.group(2)}" if ser else par.stem,
+            "file": par.name,
+            "protocol": protocol_name(par),
+            "technique": field("Technique"),
+            "mode": field("Scan mode"),
+            "dynamics": field("Max. number of dynamics"),
+            "slices": field("Max. number of slices/locations"),
+            "tr_s": field("Repetition time"),
+        })
+    return rows
+
+
 def protocol_name(par: Path) -> str:
     """Read the Philips ``Protocol name`` header field (case/format tolerant)."""
     try:

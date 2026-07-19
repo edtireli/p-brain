@@ -19,10 +19,12 @@ stages exist or their order — pass the stages you want. The default
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import _clock
 from .config import Config
 from .logs import get_logger
 from .manifest import Manifest
@@ -30,6 +32,28 @@ from .path_scheme import PathScheme
 from .stage import Stage, StageContext, StageOutput
 
 _log = get_logger("pipeline")
+
+
+class CheckpointAbort(Exception):
+    """Raised by a stage's interactive checkpoint (``--mode verify``/``manual``)
+    when the user rejects the review. The orchestrator catches it and stops the
+    run cleanly — completed stages stay cached — instead of marking a failure."""
+
+
+def _plan_label(stage, config) -> str:
+    """The plug-in name shown for a stage in the cockpit. Resolved from the config
+    — a stage's static ``plugin_key`` is ``''`` or ``'multi'`` before it runs, so
+    the kinetic row would otherwise read the unhelpful 'multi'."""
+    return {
+        "load": "loader",
+        "t1_m0": config.t1_m0_fitter,
+        "signal_to_conc": config.signal_to_conc,
+        "aif": config.aif_extractor,
+        "tissue_roi": config.tissue_roi_provider,
+        "normalisation": config.normaliser,
+        "kinetic": " · ".join(config.kinetic_models),
+        "diffusion": " · ".join(config.diffusion_models) or "—",
+    }.get(stage.name, getattr(stage, "plugin_key", ""))
 
 
 def _provenance(config: Config) -> dict[str, Any]:
@@ -83,7 +107,7 @@ class Pipeline:
     path_scheme: PathScheme
 
     def run(self, subject_dir: Path, config: Config,
-            *, force: bool = False) -> dict[str, StageRunRecord]:
+            *, force: bool = False, reporter: Any = None) -> dict[str, StageRunRecord]:
         """Run the pipeline.
 
         Resume semantics: a stage is **skipped** when its manifest already
@@ -101,6 +125,9 @@ class Pipeline:
         prov = _provenance(config)
         dirty: set[str] = set()
 
+        if reporter is not None:
+            reporter.plan([(s.name, _plan_label(s, config)) for s in self.stages])
+
         for stage in self.stages:
             plugin_key = getattr(stage, "plugin_key", "<stage>")
             manifest_path = self.path_scheme.manifest_path(
@@ -115,7 +142,10 @@ class Pipeline:
                     # "pass" or "warn" both mean the stage completed (warn = a
                     # QC flag, not an error); only "fail" forces a recompute.
                     if (existing.qc or {}).get("status") in ("pass", "warn"):
-                        _log.info("  %-18s skip (cached)", stage.name)
+                        if reporter is not None:
+                            reporter.skip(stage.name)
+                        else:
+                            _log.info("  %-18s skip (cached)", stage.name)
                         records[stage.name] = StageRunRecord(
                             name=stage.name,
                             output=StageOutput(
@@ -149,16 +179,38 @@ class Pipeline:
             manifest = Manifest.now(stage=stage.name, plugin=plugin_key)
             manifest.config = prov              # provenance stamp
 
+            if reporter is not None:
+                reporter.start(stage.name)
+            t_stage = time.perf_counter()
+            _pause0 = _clock.paused_total()   # exclude interactive-review wait from elapsed
             try:
                 output = stage.run(ctx)
+            except CheckpointAbort:
+                # user rejected an interactive checkpoint → stop cleanly
+                if reporter is not None and hasattr(reporter, "aborted"):
+                    reporter.aborted()
+                _log.info("run stopped at the %s review", stage.name)
+                break
             except Exception as exc:
                 manifest.qc = {"status": "fail", "messages": [str(exc)]}
                 manifest.finish().write(manifest_path)
+                if reporter is not None:
+                    reporter.end(stage.name, "fail",
+                                 max(0.0, time.perf_counter() - t_stage
+                                     - (_clock.paused_total() - _pause0)),
+                                 detail=str(exc)[:48])
                 raise
 
             manifest.outputs = {k: str(v) for k, v in output.artefacts.items()}
             manifest.metadata = dict(output.metadata)
             manifest.qc = dict(output.qc) if output.qc else {"status": "pass"}
+            if reporter is not None:
+                _qc = manifest.qc
+                _msg = (_qc.get("messages") or [""])[0] if isinstance(_qc, dict) else ""
+                reporter.end(stage.name, _qc.get("status", "pass"),
+                             max(0.0, time.perf_counter() - t_stage
+                                 - (_clock.paused_total() - _pause0)),
+                             detail=str(_msg)[:48])
             manifest.inputs = {
                 name: str(rec.manifest_path) for name, rec in records.items()
                 if name in stage.requires

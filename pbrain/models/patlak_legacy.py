@@ -51,6 +51,11 @@ class _PatlakLegacy:
         opts.setdefault("aif_floor_double_bolus", False)
         return _SMART.fit(inputs, **opts)
 
+    def review(self, inputs, result, **_kw):
+        """--mode verify view — the Patlak plot for the whole-brain mean curve."""
+        from ._review import patlak_plot_review
+        return patlak_plot_review(inputs, result, title="Patlak (legacy) · whole-brain mean")
+
     def predict(self, maps: dict[str, Any], c_input: np.ndarray,
                 t_s: np.ndarray) -> np.ndarray:
         return _SMART.predict(maps, c_input, t_s)

@@ -70,6 +70,7 @@ class _CnnSssShiftedAIF:
         max_shift_s: float = 20.0,
         rot90_k: int = -1,
         curve_method: str = "max_voxel",
+        with_lica: bool = False,          # also extract left ICA (flipped rICA) for review
         rica_opts: dict | None = None,
         sss_opts: dict | None = None,
         **_: Any,
@@ -95,11 +96,27 @@ class _CnnSssShiftedAIF:
                             t1_map=t1_map, m0_map=m0_map,
                             concentration_data=concentration_data,
                             source="sss", **sss_opts)
+        # Left ICA = the rICA model on the L-R-flipped volume (source="lica" sets
+        # flip_lr). Opt-in (an extra CNN pass) — the AIF stage enables it in review.
+        lica = (_CNN.extract(dce_data, t_s, dce_affine, t1_map=t1_map, m0_map=m0_map,
+                             concentration_data=concentration_data, source="lica", **rica_opts)
+                if with_lica else None)
 
         aligned, shift_s, factor = backshift_sss_to_rica(
             sss.c_a, ica.c_a, t_s, num_peaks=num_peaks, peak_radius=peak_separation,
             rescale=rescale, max_shift_s=max_shift_s,
         )
+
+        def _fl(a):
+            return [float(x) for x in np.asarray(a, dtype=float)]
+        _cand_curves = {"rica": _fl(ica.c_a), "sss": _fl(sss.c_a),
+                        "sss_shifted_to_rica": _fl(aligned)}
+        _cand_masks = {"rica": ica.meta.get("full_roi_coords"),
+                       "sss": sss.meta.get("full_roi_coords"),
+                       "sss_shifted_to_rica": sss.meta.get("full_roi_coords")}
+        if lica is not None:
+            _cand_curves["lica"] = _fl(lica.c_a)
+            _cand_masks["lica"] = lica.meta.get("full_roi_coords")
 
         return InputFunction(
             c_a=aligned,
@@ -114,6 +131,11 @@ class _CnnSssShiftedAIF:
                 "sss_meta": sss.meta,
                 "rica_mask_voxels": int(ica.mask.sum()),
                 "sss_mask_voxels": int(sss.mask.sum()),
+                # candidate curves + full vessel ROIs for the --mode verify review:
+                # the AIF page shows rICA / SSS / (lICA) / the shifted result, lets
+                # you switch vessel, and highlights each one's whole ROI.
+                "candidate_curves": _cand_curves,
+                "candidate_masks": _cand_masks,
             },
         )
 

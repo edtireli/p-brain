@@ -18,6 +18,7 @@ protocol.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -107,7 +108,12 @@ class _SaturationRecovery:
             # Baseline-correct (skip first 2 frames; mean of frames 3..nbf) so
             # C(baseline)=0, then zero the baseline window — matches old turboflash().
             if C.ndim >= 1 and C.shape[-1] >= nbf:
-                base = np.nanmean(C[..., 2:nbf], axis=-1, keepdims=True)
+                # Background/air voxels are all-NaN across the baseline window, so
+                # np.nanmean warns "Mean of empty slice" — expected here; the
+                # np.where below already substitutes 0 for those non-finite means.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
+                    base = np.nanmean(C[..., 2:nbf], axis=-1, keepdims=True)
                 C = C - np.where(np.isfinite(base), base, 0.0)
                 C[..., :nbf] = 0.0
         # Old pipeline zeroes NaN/±inf at the very end.
