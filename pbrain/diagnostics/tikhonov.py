@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from pbrain._numpy_compat import trapezoid
 from .base import Diagnostic, DiagnosticContext
 
 import matplotlib
@@ -210,7 +211,7 @@ class _TikhonovDiagnostic:
         with np.errstate(divide="ignore", invalid="ignore"):
             h = -np.diff(R_mono) / np.diff(t)
         h = np.where(np.isfinite(h), np.maximum(h, 0.0), 0.0)
-        area = float(np.trapezoid(h, t_mid))
+        area = float(trapezoid(h, t_mid))
         if area > 0:
             h = h / area
 

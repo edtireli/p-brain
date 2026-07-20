@@ -404,7 +404,14 @@ def _montage(maps_dir: Path, subject_dir: Path) -> None:
                 name = nii.stem.replace(".nii", "")
                 out = maps_dir / f"{namespace}_{model_dir.name}__{name}.png"
                 montage_volume(arr, out, title=f"{namespace}/{model_dir.name} — {name}")
-                print(f"    wrote {out.relative_to(DEMO_ROOT.parent)}")
+                # Repo-relative when the maps live under it (the default --out),
+                # absolute otherwise — a --out elsewhere must not abort the montage
+                # on the way to printing its own name.
+                try:
+                    shown: Path = out.relative_to(DEMO_ROOT.parent)
+                except ValueError:
+                    shown = out
+                print(f"    wrote {shown}")
 
 
 # ───────────────────────────── main ────────────────────────────────────

@@ -7,12 +7,13 @@ from .run import main as run_main
 
 def _help() -> int:
     print(
-        "usage: python -m pbrain <command> [options]\n\n"
+        "usage: pbrain <command> [options]\n\n"
         "commands:\n"
         "  run                 Run the DCE-MRI pipeline on a single subject (--assist for optional LLM help).\n"
         "  methods             Draft the Methods paragraph from a run's provenance (needs Ollama).\n"
         "  assist [--vision]   Set up the local model backend (install Ollama, pull models for your hardware).\n"
         "  plan                Show the resolved pipeline for a run without computing (run --dry-run).\n"
+        "  layout <path>       Preview what's detected at a path: subject vs cohort, layout, and inputs.\n"
         "  run-cohort          Run the pipeline over many subjects (parallel, resumable).\n"
         "  list                Overview of registered plug-ins (every plug-point).\n"
         "  list <plug-point>   Detailed contract for one plug-point (e.g. `list models`).\n"

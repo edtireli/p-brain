@@ -21,6 +21,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.signal import lfilter
 
+from pbrain._numpy_compat import trapezoid
 from .base import CurveInputs, ModelResult
 
 
@@ -65,7 +66,7 @@ def forward(
     else:
         # Irregular-grid fallback
         for i in range(n):
-            I[i] = float(np.trapezoid(
+            I[i] = float(trapezoid(
                 Cp[: i + 1] * np.exp(-(t[i] - t[: i + 1]) * kep),
                 x=t[: i + 1],
             ))

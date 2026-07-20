@@ -39,6 +39,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 from scipy.linalg import cho_factor, cho_solve, qr, solve_triangular, svd
 
+from pbrain._numpy_compat import trapezoid
 from .base import CurveInputs, ModelResult
 
 
@@ -344,13 +345,13 @@ def _cth_from_rf(time_s: np.ndarray, rf: np.ndarray, *, f: float, peak_idx: int)
         h = -dR / dt
     h = np.where(np.isfinite(h), np.maximum(h, 0.0), 0.0)
 
-    area = float(np.trapezoid(h, t_mid))
+    area = float(trapezoid(h, t_mid))
     if not np.isfinite(area) or area <= 0:
         return 0.0
     h = h / area
 
-    mean = float(np.trapezoid(t_mid * h, t_mid))
-    second = float(np.trapezoid((t_mid ** 2) * h, t_mid))
+    mean = float(trapezoid(t_mid * h, t_mid))
+    second = float(trapezoid((t_mid ** 2) * h, t_mid))
     var = max(second - mean * mean, 0.0)
     return float(math.sqrt(var))
 
@@ -389,7 +390,7 @@ def _residue_metrics_batch(
     if enforce_monotone:
         np.minimum.accumulate(working, axis=0, out=working)
 
-    mtt = np.trapezoid(working, dx=dt, axis=0)
+    mtt = trapezoid(working, dx=dt, axis=0)
 
     h = np.empty_like(working)
     h[1:-1] = -(working[2:] - working[:-2]) / (2.0 * dt)
@@ -397,13 +398,13 @@ def _residue_metrics_batch(
     h[-1] = (-working[-3] + 4.0 * working[-2] - 3.0 * working[-1]) / (2.0 * dt)
     np.clip(h, 0.0, None, out=h)
 
-    s = np.trapezoid(h, dx=dt, axis=0)
+    s = trapezoid(h, dx=dt, axis=0)
     bad = (~np.isfinite(s)) | (s <= 1e-12)
     with np.errstate(divide="ignore", invalid="ignore"):
         h = h / s
     time_col = (np.arange(n_time, dtype=float) * dt).reshape(-1, 1)
-    mu = np.trapezoid(time_col * h, dx=dt, axis=0)
-    variance = np.trapezoid((time_col - mu) ** 2 * h, dx=dt, axis=0)
+    mu = trapezoid(time_col * h, dx=dt, axis=0)
+    variance = trapezoid((time_col - mu) ** 2 * h, dx=dt, axis=0)
     cth = np.sqrt(np.clip(variance, 0.0, None))
 
     mtt = np.where(bad, np.nan, mtt)
@@ -694,7 +695,7 @@ def build_tikhonov_solver(
                 )
                 continue
 
-            denom = float(np.trapezoid(ca_shift))
+            denom = float(trapezoid(ca_shift))
             if denom == 0.0 or not np.isfinite(denom):
                 denom = 1.0
 
@@ -782,7 +783,7 @@ def build_tikhonov_solver(
                             f_peak = 0.0
 
                         ct_curve = ct_batch[row, :]
-                        vd = float(np.trapezoid(ct_curve) / denom)
+                        vd = float(trapezoid(ct_curve) / denom)
                         if not np.isfinite(vd) or vd < 0:
                             vd = 0.0
 

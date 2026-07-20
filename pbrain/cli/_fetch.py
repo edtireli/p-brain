@@ -152,13 +152,16 @@ def fetch_data(dest: Path | None = None, *, force: bool = False) -> int:
         # PowerShell/cmd do not understand the POSIX "\" line-continuation, so we
         # print a single line there; POSIX shells get the readable multi-line form.
         parts = [
-            "python -m pbrain run",
+            "pbrain run",
             f'--subject-dir "{sub}"',
             f'--dce "{sub / "sub-01_dce.nii.gz"}" --relax "{sub / "sub-01_ir.nii.gz"}"',
             f'--aif curve_file --opt aif.curve_file.curve_path="{sub / "sub-01_aif.npy"}"',
             f'--tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path='
             f'"{sub / "sub-01_parcellation.nii.gz"}"',
-            "--models patlak,tikhonov --aggregations region,parcel,voxelwise",
+            # median_curve is not optional here: expected_outputs/ carries a
+            # pooled-curve Ki reference, which only that aggregation produces.
+            "--models patlak,tikhonov "
+            "--aggregations median_curve,region,parcel,voxelwise",
         ]
         print("\nRun it now (weights-free: no CNN weights and no FreeSurfer/SynthSeg needed):\n")
         if os.name == "nt":

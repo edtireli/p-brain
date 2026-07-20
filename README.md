@@ -89,6 +89,54 @@ pbrain run --subject-dir /data/20230403x2
 pbrain run-cohort --cohort /data/patients /data/controls --workers 4
 ```
 
+## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Try it: the example subject
+
+The quickest way to confirm _p_-Brain works end-to-end, on **Linux, macOS, or
+Windows**, with no CNN weights and no FreeSurfer or SynthSeg. The example ships
+its own AIF curve and parcellation, so nothing extra is downloaded.
+
+```bash
+pip install p-brain
+pbrain fetch-data          # downloads sub-01 (~99 MB), then prints the exact run command
+```
+
+`pbrain fetch-data` locates the data and prints a ready-to-run, weights-free
+command with the correct paths for your machine, formatted for your shell (a
+single line on Windows, so it pastes into PowerShell as-is). Copy, paste, run.
+It has the form:
+
+```bash
+pbrain run \
+  --subject-dir <data>/sub-01 \
+  --dce  <data>/sub-01/sub-01_dce.nii.gz  --relax <data>/sub-01/sub-01_ir.nii.gz \
+  --aif  curve_file      --opt aif.curve_file.curve_path=<data>/sub-01/sub-01_aif.npy \
+  --tissue-roi preloaded --opt tissue_roi.preloaded.parcellation_path=<data>/sub-01/sub-01_parcellation.nii.gz \
+  --models patlak,tikhonov --aggregations median_curve,region,parcel,voxelwise
+```
+
+`--dce` and `--relax` may be omitted — the subject directory is auto-discovered
+— but they are spelled out here so the command is unambiguous about what it read.
+
+Results are written under `sub-01/derivatives/`. Compare
+`07_kinetic/patlak/region/ki.csv` (BBB Ki and vb) and
+`07_kinetic/tikhonov/region/cbf.json` (CBF and MTT) against the bundled
+`expected_outputs/`. The values should agree to within about 2 percent.
+
+> **Windows.** The command runs the same way in PowerShell or `cmd`. Put it on
+> one line, or replace each trailing backslash with a backtick:
+>
+> ```powershell
+> pbrain run --subject-dir data\sub-01 `
+>   --dce data\sub-01\sub-01_dce.nii.gz --relax data\sub-01\sub-01_ir.nii.gz `
+>   --models patlak,tikhonov --aggregations median_curve,region,parcel,voxelwise
+> ```
+>
+> You do not need dcm2niix, FreeSurfer, or the CNN weights to run the example.
+
+**No download at all.** `python -m pbrain.demo` synthesises a small phantom and
+runs the entire pipeline in seconds — a self-contained check that your install
+works, on any operating system.
+
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Example run
 
 On an interactive terminal, `pbrain run` opens a live cockpit — the brain draws
@@ -310,6 +358,22 @@ without setting anything.
 
 The list is meant to be extended — see [Add your own](#add-your-own). The
 diffusion track (`--diffusion`) adds FA, MD, and tractography via dipy.
+
+### Aggregation levels
+
+Every model is fitted once and then summarised at whichever levels you ask for
+with `--aggregations` (comma-separated, any combination):
+
+| level | writes | use it for |
+|---|---|---|
+| `voxelwise` | one NIfTI per output map | maps, figures, further voxel analysis |
+| `parcel` | one CSV per map, one row per parcel label | per-structure tables |
+| `region` | parcels collapsed into broader regions | the headline GM / WM / cerebellum numbers |
+| `median_curve` | one fit of the pooled ROI curve | the article's ROI-curve method; less noise-sensitive than averaging voxel fits |
+| `slice_wise` | per-slice distributions | slice-direction trends and QC (paper Fig. 7) |
+
+`pbrain list` prints every registered plug-in — models, aggregations, AIF
+extractors, and the rest — for the version you actually have installed.
 
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Principles
 
