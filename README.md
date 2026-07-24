@@ -45,6 +45,13 @@ and is given diagnostics automatically.
 
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Install
 
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/demo-install.gif" alt="pip install p-brain, then the p-Brain command menu" width="680"/>
+</p>
+
+<p align="center"><sub>A real recording into a fresh virtualenv: <code>pip install p-brain</code>, then
+<code>pbrain</code> draws its banner and lists the commands. Dependency downloads are cached.</sub></p>
+
 ```bash
 pip install p-brain
 pbrain --help
@@ -143,24 +150,12 @@ On an interactive terminal, `pbrain run` opens a live cockpit — the brain draw
 itself in, then an analysis panel tracks the pipeline while log lines scroll
 above it and a status line shows where it is:
 
-```
-  ⢀⣴⣿⣿⣿⣷⣦⡀
-  ⠈⢻⣿⣿⣿⣿⣿⠿   p-Brain
-  ⠀⠀⠉⠉⠹⣿⠟⠀   perfusion & permeability
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/demo-run.gif" alt="a recorded pbrain run: the live cockpit stepping through every stage to completion" width="720"/>
+</p>
 
-  reading DCE … dcm2niix
-  DCE shape · 256×256×10 · 250 frames
-  fitting T1 map … median 1642 ms
-╭──────────────────────── analysis ────────────────────────╮
-│  ✓ load            DCE 256×256×10·250, IR 8 TIs           │
-│  ✓ t1_m0           T1 median 1642 ms                      │
-│  ✓ signal_to_conc  saturation_recovery                    │
-│  ◆ aif             extracting … ROI 704 vox · peak 3.2 mM │
-│  ○ tissue_roi      synthseg                               │
-│  ○ kinetic         patlak · tikhonov                      │
-╰───────────────────────────────────────────────────────────╯
- ⠴ p-Brain · aif · 22s · CNN rICA, 3 slices        auto ⇥
-```
+<p align="center"><sub>A real recording — <code>pbrain run</code> on the example subject (sub-01), Patlak model,
+weights-free. The brain draws in, then each stage ticks through to the run-complete summary.</sub></p>
 
 Piped or redirected (`| tee`, `> log`, `--quiet`), the cockpit is suppressed and
 you get plain, greppable log lines instead — the numeric results are identical
