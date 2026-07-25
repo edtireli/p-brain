@@ -28,7 +28,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from pbrain._banner import BRAIN
+from pbrain._banner import art as _banner_art
 from pbrain._palette import palette
 
 _PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -483,7 +483,7 @@ def review(payload: dict, *, port: int = 8731, open_browser: bool = True,
     base, deep, lite = palette()
     payload = dict(payload)
     payload["theme"] = {"accent": base, "deep": deep, "lite": lite}
-    payload.setdefault("braille", list(BRAIN))
+    payload.setdefault("braille", list(_banner_art()))
 
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
