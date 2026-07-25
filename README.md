@@ -89,11 +89,11 @@ pbrain fetch-data       # example subject sub-01 (Zenodo 10.5281/zenodo.20826857
 weights-free command. Then, on your own data:
 
 ```bash
-# One flag on raw Philips PAR/REC: inputs are auto-discovered by protocol name
-pbrain run --subject-dir /data/20230403x2
+# Point it at a subject — raw Philips PAR/REC inputs are auto-discovered by protocol
+pbrain run /data/20230403x2
 
-# A whole study: each sub-directory is a subject, run in parallel
-pbrain run-cohort --cohort /data/patients /data/controls --workers 4
+# …or at a folder of subjects — it detects the cohort and fans out, in parallel
+pbrain run /data/study --workers 4
 ```
 
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Try it: the example subject

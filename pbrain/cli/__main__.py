@@ -18,7 +18,7 @@ def _help() -> int:
         "  list                Overview of registered plug-ins (every plug-point).\n"
         "  list <plug-point>   Detailed contract for one plug-point (e.g. `list models`).\n"
         "  theme [name]        Show or set the colour theme (clay, teal, green, red, …).\n"
-        "  tone [single|two|three]  Shading of the banner brain glyph.\n"
+        "  tone [single|two|three]  Shading of the banner neuron glyph.\n"
         "  setup               Get everything ready to run: check + install deps, dcm2niix, FreeSurfer, GPU, Zenodo assets.\n"
         "  check-deps          Verify third-party Python deps; offer to pip-install missing ones.\n"
         "  fetch-weights       Download the CNN AIF weights from Zenodo (for the default 'cnn_sss_shifted' AIF).\n"
@@ -132,7 +132,7 @@ def _theme_cmd(rest) -> int:
 
 
 def _tone_cmd(rest) -> int:
-    """`pbrain tone [single|two|three]` — shading of the banner brain glyph."""
+    """`pbrain tone [single|two|three]` — shading of the banner neuron glyph."""
     from pbrain._ui import console
     from pbrain import _palette as P
     con = console(stderr=False)

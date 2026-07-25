@@ -151,8 +151,12 @@ def _dim(c: tuple) -> tuple:
 
 # ---- recording ---------------------------------------------------------------
 def record(argv: list[str], cwd: str, cols: int, rows: int, max_s: float,
-           env_extra: dict | None = None, tail: float = 4.0) -> list[tuple[float, bytes]]:
-    """Run the command in a real PTY and capture its byte stream with timing."""
+           env_extra: dict | None = None, tail: float = 4.0,
+           watch: str = "", reply: str = "", reply_delay: float = 1.6) -> list[tuple[float, bytes]]:
+    """Run the command in a real PTY and capture its byte stream with timing. If
+    ``watch`` text appears in the output, ``reply`` (+ Enter) is typed into the pty
+    ``reply_delay`` s later — for answering an interactive prompt like the --assist
+    'accept' checkpoint, so the echo shows up in the recording like a human did it."""
     master, slave = os.openpty()
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     # Hermetic env: drop the RECORDER's own venv markers so the recorded command
@@ -170,6 +174,8 @@ def record(argv: list[str], cwd: str, cols: int, rows: int, max_s: float,
     chunks: list[tuple[float, bytes]] = []
     t0 = time.monotonic()
     ended_at: float | None = None
+    seen_tail = b""
+    reply_at: float | None = None
     try:
         while True:
             t = time.monotonic() - t0
@@ -177,6 +183,10 @@ def record(argv: list[str], cwd: str, cols: int, rows: int, max_s: float,
                 break
             if ended_at is not None and t > ended_at + tail:
                 break
+            if reply_at is not None and t >= reply_at:
+                os.write(master, reply.encode() + b"\r")
+                reply_at = None
+                seen_tail = b""            # re-arm: forget the prompt we just answered
             r, _, _ = select.select([master], [], [], 0.03)
             if r:
                 try:
@@ -186,6 +196,10 @@ def record(argv: list[str], cwd: str, cols: int, rows: int, max_s: float,
                 if not data:
                     break
                 chunks.append((t, data))
+                if watch and reply_at is None:
+                    seen_tail = (seen_tail + data)[-4096:]
+                    if watch.encode() in seen_tail:
+                        reply_at = t + reply_delay
             elif proc.poll() is not None and ended_at is None:
                 ended_at = t
     finally:
@@ -336,11 +350,18 @@ def save_gif(imgs: list[Image.Image], durs: list[int], out: Path) -> None:
     from PIL import ImageChops
 
     w, h = imgs[0].size
-    step = max(1, len(imgs) // 6)
-    sample = Image.new("RGB", (w, h * min(6, len(imgs))))
-    for i, f in enumerate(imgs[::step][:6]):
-        sample.paste(f.convert("RGB"), (0, i * h))
-    pal = sample.quantize(colors=127, method=Image.Quantize.MEDIANCUT)
+    # Build the shared palette from frames spread across the WHOLE timeline,
+    # including the last — otherwise a colour that only appears briefly (the clay
+    # banner at the end of the install demo, a few frames out of fifty) is never
+    # sampled, and median-cut quantises it to the nearest grey. Sampling widely
+    # and keeping the full 255-colour table lets those rare accents survive.
+    n = len(imgs)
+    k = min(n, 24)
+    idxs = sorted({round(i * (n - 1) / (k - 1)) for i in range(k)}) if n > 1 else [0]
+    sample = Image.new("RGB", (w, h * len(idxs)))
+    for j, i in enumerate(idxs):
+        sample.paste(imgs[i].convert("RGB"), (0, j * h))
+    pal = sample.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
     qs = [f.convert("RGB").quantize(palette=pal, dither=Image.Dither.NONE) for f in imgs]
 
     first = qs[0].copy()
@@ -363,7 +384,8 @@ def save_gif(imgs: list[Image.Image], durs: list[int], out: Path) -> None:
 class Scene:
     def __init__(self, prompt: str, argv: list[str], cwd: str,
                  env_extra: dict | None = None, max_s: float = 240.0,
-                 max_frames: int = 0, warmup: bool = False):
+                 max_frames: int = 0, warmup: bool = False,
+                 watch: str = "", reply: str = ""):
         self.prompt = prompt
         self.argv = argv
         self.cwd = cwd
@@ -371,6 +393,8 @@ class Scene:
         self.max_s = max_s
         self.max_frames = max_frames  # 0 = keep all; else uniformly subsample
         self.warmup = warmup          # run once off-camera first (cold-start cost)
+        self.watch = watch            # when this text appears, type `reply` + Enter
+        self.reply = reply
 
 
 def _cap_frames(frames: list[tuple[Grid, int]], n: int) -> list[tuple[Grid, int]]:
@@ -426,7 +450,8 @@ def build(scenes: list[Scene], cols: int, rows: int, title: str,
             subprocess.run(sc.argv, cwd=sc.cwd, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL,
                            env={**os.environ, "PYTHONUNBUFFERED": "1"}, timeout=180)
-        chunks = record(sc.argv, sc.cwd, cols, rows, sc.max_s, env_extra=sc.env_extra)
+        chunks = record(sc.argv, sc.cwd, cols, rows, sc.max_s, env_extra=sc.env_extra,
+                        watch=sc.watch, reply=sc.reply)
         chunks = _redact(chunks)
         print(f"    captured {len(chunks)} chunks · {sum(len(c) for _, c in chunks)} bytes")
         frames = replay(chunks, cols, rows)
