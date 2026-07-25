@@ -146,16 +146,18 @@ works, on any operating system.
 
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/mark.svg" width="20" alt=""/> Example run
 
-On an interactive terminal, `pbrain run` opens a live cockpit — the brain draws
-itself in, then an analysis panel tracks the pipeline while log lines scroll
-above it and a status line shows where it is:
+On an interactive terminal, `pbrain run` opens a live cockpit — the neuron draws
+itself in (a spiral or a sparkle dissolve, radiating from the nucleus), then an
+analysis panel tracks the pipeline while log lines scroll above it and a status
+line shows where it is:
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@main/assets/demo-run.gif" alt="a recorded pbrain run: the live cockpit stepping through every stage to completion" width="720"/>
 </p>
 
-<p align="center"><sub>A real recording — <code>pbrain run</code> on the example subject (sub-01), Patlak model,
-weights-free. The brain draws in, then each stage ticks through to the run-complete summary.</sub></p>
+<p align="center"><sub>A real recording — a live <code>pbrain run … --assist</code> on a Philips PAR/REC subject: the local
+model auto-resolves the DCE, T1 and multi-TI IR series, then every stage (CNN AIF, SynthSeg, Patlak) ticks
+through to the run-complete summary. The neuron spirals in first.</sub></p>
 
 Piped or redirected (`| tee`, `> log`, `--quiet`), the cockpit is suppressed and
 you get plain, greppable log lines instead — the numeric results are identical
