@@ -122,9 +122,11 @@ TIK_LEGACY_GOLDEN = {"cbf": 36.53212040210995, "mtt": 2.2158203604973923,
 
 
 def test_tikhonov_legacy_reproduces_golden():
-    """``tikhonov_legacy`` reproduces the byte-frozen legacy-production CBF/MTT/CTH."""
+    """``tikhonov`` under ``preset="legacy"`` reproduces the byte-frozen
+    legacy-production CBF/MTT/CTH (was the separate ``tikhonov_legacy`` model)."""
     c_t, c_a, t = _synthetic_phantom(ki_true=0.20, vb_true=2.0, seed=7)
-    new = REGISTRY["tikhonov_legacy"].fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t))
+    new = REGISTRY["tikhonov"].fit(CurveInputs(c_tissue=c_t, c_input=c_a, t_s=t),
+                                   preset="legacy")
     for k, golden in TIK_LEGACY_GOLDEN.items():
         assert float(new.maps[k]) == pytest.approx(golden, rel=1e-6, abs=1e-9)
 

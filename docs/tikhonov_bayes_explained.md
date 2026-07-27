@@ -1,10 +1,14 @@
 # "Tikhonov Bayes" in p-Brain — what it does, and how it relates to Larsson-style DCE-MRI deconvolution
 
-*Based on reading `pbrain/models/tikhonov_bayes.py`, `pbrain/models/tikhonov.py`, and `pbrain/diagnostics/tikhonov_bayes.py`.*
+*Based on reading `pbrain/models/tikhonov.py` and `pbrain/diagnostics/tikhonov_bayes.py`.*
+
+> **Note.** There is now a single `tikhonov` plug-in. What this document calls
+> `tikhonov_bayes` is the `bayes` preset:
+> `--models tikhonov --opt models.tikhonov.preset=bayes`.
 
 ## 1. What the code actually is
 
-`tikhonov_bayes` is **not a separate solver**. It is a thin plugin wrapper (`pbrain/models/tikhonov_bayes.py`, ~90 lines) that delegates to the existing `tikhonov` solver (`build_tikhonov_solver` in `pbrain/models/tikhonov.py`) with three option defaults flipped:
+The Bayes mode is **not a separate solver**. It is the `bayes` entry in `PRESETS` (`pbrain/models/tikhonov.py`) — the same `build_tikhonov_solver` with these option defaults flipped:
 
 ```python
 opts.setdefault("lambda_selection", "evidence")   # vs "gcv"/"lcurve"

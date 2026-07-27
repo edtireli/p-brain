@@ -5,7 +5,8 @@ Dependency-free (raw ANSI truecolour, stdlib only) and TTY-gated. On an
 interactive terminal the neuron draws itself in with one of two reveal orders
 picked at random each launch — a spiral, or a sparkle dissolve — both radiating
 from the nucleus. Colour is theme-aware and, optionally, two- or three-tone using
-the active palette's deep/base/light trio.
+the active palette's deep/base/light trio. Art dimensions are per-creature, so the
+neuron (10x5) and the mouse (8x3) each animate at their own size.
 """
 from __future__ import annotations
 
@@ -36,13 +37,68 @@ NEURON_TONE = [
     "1111111111",
 ]
 
+# front-facing mouse head for `--animal mouse` — big round ears with hollow
+# insides, eyes and a snout. Drawn on the *same* 8x3 / 16x12-dot canvas as the
+# brain, so every reveal animation, tone mode and layout constant below applies
+# to it unchanged; only the art swaps.
+MOUSE = [
+    "⢠⠶⣄⠀⠀⣠⠶⡄",
+    "⠘⢶⡟⣿⣿⢻⡶⠃",
+    "⠀⠸⣿⣟⣻⣿⠇⠀",
+]
+MOUSE_TONE = [
+    "11111111",
+    "11111111",
+    "11111111",
+]
+
+#: The creature whose art the banner draws. Same canvas for every entry.
+CREATURES: dict[str, tuple[list[str], list[str]]] = {
+    "human": (NEURON, NEURON_TONE),
+    "mouse": (MOUSE, MOUSE_TONE),
+}
+_CREATURE = "human"
+
+
+def set_creature(name: str | None) -> str:
+    """Select the banner art (``human`` | ``mouse``). Unknown names fall back to
+    human, so a new ``--animal`` value can never break the banner."""
+    global _CREATURE
+    _CREATURE = name if name in CREATURES else "human"
+    return _CREATURE
+
+
+def active_creature() -> str:
+    return _CREATURE
+
+
 def art() -> list[str]:
-    """The neuron braille rows (used by the banner and the web review)."""
-    return NEURON
+    """The active creature's braille rows (used by the banner and the web review)."""
+    return CREATURES[_CREATURE][0]
 
 
 def _tone() -> list[str]:
-    return NEURON_TONE
+    return CREATURES[_CREATURE][1]
+
+
+def creature_from_argv(argv: list[str] | None = None) -> str:
+    """Sniff ``--animal <x>`` / ``--profile <x>`` straight out of argv.
+
+    The banner prints before the sub-command parses its flags, so it reads the
+    raw argv rather than the parsed args. Accepts both ``--flag x`` and
+    ``--flag=x``; anything unrecognised leaves the default (human)."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    for flag in ("--animal", "--profile"):
+        for i, tok in enumerate(argv):
+            if tok == flag and i + 1 < len(argv):
+                val = argv[i + 1]
+            elif tok.startswith(flag + "="):
+                val = tok.split("=", 1)[1]
+            else:
+                continue
+            if val in CREATURES:
+                return val
+    return "human"
 
 
 TAGLINE = "perfusion & permeability"
@@ -56,7 +112,8 @@ _BRAILLE_BASE = 0x2800
 _DOT = {(0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
         (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80}
 def _dims(art_rows: list[str]) -> tuple[int, int, int, int]:
-    """(rows, cols, dot-height, dot-width) for the neuron braille art."""
+    """(rows, cols, dot-height, dot-width) for a braille art — computed per
+    creature so the neuron (10x5) and the mouse (8x3) animate at their own size."""
     r, c = len(art_rows), len(art_rows[0])
     return r, c, r * 4, c * 2
 

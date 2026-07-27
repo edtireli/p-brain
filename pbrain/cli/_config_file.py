@@ -14,7 +14,7 @@ command. Example (TOML)::
     t1m0          = "preloaded"
     aif           = "cnn_sss_shifted"
     tissue_roi    = "preloaded"
-    models        = ["patlak", "tikhonov_bayes"]
+    models        = ["patlak", "tikhonov"]
     diffusion     = "default"
     aggregations  = ["region", "parcel"]
     path_scheme   = "bids_like"
@@ -26,7 +26,8 @@ command. Example (TOML)::
 
     # Per-plug-in options — the same keys as --opt <plug-point>.<plugin>.<key>
     [options]
-    "models.tikhonov_bayes.uncertainty_samples" = 200
+    "models.tikhonov.preset" = "bayes"
+    "models.tikhonov.uncertainty_samples" = 200
     "t1_m0.preloaded.t1_ms_path" = "/data/sub-01/t1_map.nii.gz"
 
 The equivalent YAML is accepted too (requires ``pyyaml``). CLI flags

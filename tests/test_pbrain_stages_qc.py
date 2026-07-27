@@ -188,3 +188,54 @@ def test_rsi_fractions_sum_to_one():
     total = sum(res.maps[k] for k in
                 ("restricted_fraction", "hindered_fraction", "free_fraction"))
     assert np.allclose(total[mask], 1.0, atol=1e-6)
+
+
+# ── input-function plausibility QC ──────────────────────────────────────
+
+def test_dose_mixed_plasma_concentration():
+    """Body weight cancels: mixed [Gd] = dose / (blood volume x (1 - Hct))."""
+    from pbrain.stages._builtin import _dose_mixed_mM
+    mixed, desc = _dose_mixed_mM({"mmol_per_kg": 0.31, "blood_volume_ml_per_kg": 72.0,
+                                  "hematocrit": 0.45})
+    assert mixed == pytest.approx(0.31 / (0.072 * 0.55), rel=1e-9)
+    assert mixed == pytest.approx(7.8, abs=0.2)
+    assert "0.31 mmol/kg" in desc
+
+
+def test_dose_check_is_opt_in():
+    from pbrain.stages._builtin import _dose_mixed_mM
+    assert _dose_mixed_mM({})[0] is None
+    assert _dose_mixed_mM({"mmol_per_kg": 0})[0] is None
+    assert _dose_mixed_mM({"mmol_per_kg": "not a number"})[0] is None
+
+
+def test_washout_silent_for_a_curve_that_clears():
+    """A real bolus peaks and comes back down; that must not warn."""
+    from pbrain.stages._builtin import _aif_washout
+    t = np.arange(60.0)
+    c = 10.0 * np.exp(-((t - 8) ** 2) / 40.0) + 3.5 * np.exp(-t / 90.0)
+    assert _aif_washout(c, 7.8) is None
+
+
+def test_washout_flags_a_curve_pinned_at_a_bound():
+    """Rises and stays: the signature of a conversion hitting its bracket."""
+    from pbrain.stages._builtin import _aif_washout
+    c = np.concatenate([np.linspace(0, 10.5, 10), np.full(50, 10.5)])
+    out = _aif_washout(c, 7.8)
+    assert out is not None
+    frac, msg = out
+    assert frac == pytest.approx(1.0, abs=0.02)
+    assert "does not" not in msg          # the caller supplies that phrasing
+    assert "fully-mixed" in msg, "should cite the dose when one is given"
+
+
+def test_washout_message_omits_the_dose_when_none_given():
+    from pbrain.stages._builtin import _aif_washout
+    c = np.concatenate([np.linspace(0, 10.5, 10), np.full(50, 10.5)])
+    _, msg = _aif_washout(c, None)
+    assert "tail is" in msg and "mixed" not in msg
+
+
+def test_washout_needs_enough_samples():
+    from pbrain.stages._builtin import _aif_washout
+    assert _aif_washout(np.array([1.0, 2.0, 3.0]), 7.8) is None

@@ -275,7 +275,8 @@ def main() -> int:
     from pbrain._console import ensure_utf8_console
     ensure_utf8_console()
 
-    from pbrain._banner import print_banner
+    from pbrain._banner import creature_from_argv, print_banner, set_creature
+    set_creature(creature_from_argv())   # --animal/--profile mouse → the mouse banner
     print_banner()
 
     argv = sys.argv[1:]

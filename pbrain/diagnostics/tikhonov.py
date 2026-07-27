@@ -169,7 +169,20 @@ class _TikhonovDiagnostic:
     model_key: ClassVar[str] = "tikhonov"
 
     def plot(self, ctx: DiagnosticContext) -> None:
-        from pbrain.models.tikhonov import build_tikhonov_solver
+        from pbrain.models.tikhonov import build_tikhonov_solver, PRESETS
+
+        # Now that there is a single ``tikhonov`` plug-in, diagnostics resolve by
+        # model key alone — so dispatch on the mode the run actually used. The
+        # evidence path has its own figure (log-evidence Z(λ) with the interior
+        # maximum, posterior SD bars) that this plot cannot show.
+        _o = dict(ctx.model_opts or {})
+        _sel = _o.get("lambda_selection")
+        if _sel is None and _o.get("preset"):
+            _sel = PRESETS.get(str(_o["preset"]).lower(), {}).get("lambda_selection")
+        if _sel == "evidence":
+            from pbrain.diagnostics.tikhonov_bayes import PLUGIN as _BAYES
+            _BAYES.plot(ctx)
+            return
 
         c_t = np.asarray(ctx.c_tissue, dtype=float).ravel()
         c_a = np.asarray(ctx.c_input, dtype=float).ravel()

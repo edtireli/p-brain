@@ -33,7 +33,7 @@ from pathlib import Path
 from pbrain.core import configure_logging, get_logger, level_from_flags
 
 # Raw-scanner cohort defaults (overridable with --models / --aggregations).
-COHORT_MODELS = "patlak,tikhonov,gamma,mittag_leffler,inverse_gaussian,stieltjes,extended_tofts"
+COHORT_MODELS = "patlak,tikhonov,extended_tofts"
 COHORT_AGGS = "region,parcel"
 
 

@@ -893,6 +893,59 @@ def build_tikhonov_solver(
 # ────────────────────────────────────────────────────────────────────────
 
 
+#: Named option-sets for :meth:`TikhonovModel.fit`. One plug-in covers every
+#: mode; these are conveniences, not separate models. Select with
+#: ``--opt models.tikhonov.preset=<name>``; any option you pass alongside a
+#: preset overrides it.
+#:
+#: * ``default`` — GCV λ, log grid, native (time-based) knots, central-volume
+#:   MTT. Regularised and dimensionally consistent; the shipped default.
+#: * ``bayes`` — empirical-Bayes evidence λ with a closed-form CBF SD. The λ
+#:   optimum is guaranteed interior, so unlike L-curve/GCV it cannot collapse to
+#:   the λ floor. Was the ``tikhonov_bayes`` model. Add
+#:   ``uncertainty_samples=N`` for posterior MTT/CTH SDs.
+#: * ``legacy`` — the legacy *Python production* solver: L-curve λ on a linear
+#:   grid over [0.05, 40], native knots, residue-integral MTT. Was the
+#:   ``tikhonov_legacy`` model; frozen golden values pin it.
+#: * ``matlab`` — bit-parity with the supervisor's MATLAB ``perffit``: MATLAB
+#:   knot vector, GSVD standard-form solve, MATLAB L-curve. Use only for parity
+#:   checks. Its knot count is ``floor(n_frames / (5·dt)) + 1``, which divides a
+#:   frame count by a time step — the resulting basis spans a fraction of the
+#:   acquisition, and its L-curve tends to sit on the λ floor (λ≈λ_min), i.e.
+#:   effectively unregularised. Faithful to the reference, not recommended for
+#:   new analyses.
+PRESETS: dict[str, dict[str, Any]] = {
+    "default": {
+        "lambda_selection": "gcv",
+        "lambda_spacing": "log",
+        "legacy_exact": False,
+        "mtt_cth_method": "central_volume",
+    },
+    "bayes": {
+        "lambda_selection": "evidence",
+        "lambda_spacing": "log",
+        "legacy_exact": False,
+        "mtt_cth_method": "central_volume",
+        "compute_cbf_sd": True,
+    },
+    "legacy": {
+        "lambda_selection": "lcurve",
+        "lambda_spacing": "linear",
+        "lambda_min": 0.05,
+        "lambda_max": 40.0,
+        "n_lambdas": 121,
+        "legacy_exact": False,
+        "mtt_cth_method": "residue_integral",
+    },
+    "matlab": {
+        "lambda_selection": "matlab_gsvd",
+        "lambda_spacing": "linear",
+        "legacy_exact": True,
+        "mtt_cth_method": "residue_integral",
+    },
+}
+
+
 @dataclass(frozen=True, slots=True)
 class TikhonovModel:
     """Tikhonov-deconvolution perfusion model (the ``tikhonov`` plug-in).
@@ -942,7 +995,23 @@ class TikhonovModel:
         solves per voxel. ``**opts`` are forwarded to
         :func:`build_tikhonov_solver` (``n_lambdas``, ``lambda_selection``,
         ``legacy_exact``, …).
+
+        ``preset`` selects a named option-set before the explicit ``opts`` are
+        applied, so anything you pass alongside it still wins. See
+        :data:`PRESETS`. This is the single Tikhonov plug-in: the former
+        ``tikhonov_bayes`` and ``tikhonov_legacy`` models are the ``"bayes"``
+        and ``"legacy"`` presets.
         """
+        preset = opts.pop("preset", None)
+        if preset is not None:
+            name = str(preset).strip().lower()
+            if name not in PRESETS:
+                raise ValueError(
+                    f"unknown preset {preset!r}; choose from {sorted(PRESETS)}"
+                )
+            for k, v in PRESETS[name].items():
+                opts.setdefault(k, v)
+
         c_t = np.asarray(inputs.c_tissue, dtype=float)
         c_a = np.asarray(inputs.c_input, dtype=float)
         t_s = np.asarray(inputs.t_s, dtype=float)
@@ -962,8 +1031,17 @@ class TikhonovModel:
             if k in ("n_lambdas", "lambda_min", "lambda_max", "offset_grouping_s",
                      "f_win", "tissue_density", "hematocrit", "plasma_derived_aif",
                      "lambda_selection", "lambda_spacing", "mtt_cth_method",
-                     "compute_cbf_sd", "uncertainty_samples", "uncertainty_seed")
+                     "compute_cbf_sd", "uncertainty_samples", "uncertainty_seed",
+                     "legacy_exact")
         }
+        # MTT from the central-volume identity (CBV/CBF) rather than the residue
+        # integral. CBV = ∫cₜ/∫cₐ does not involve the deconvolution at all, so
+        # this is invariant to λ and to the knot vector. The residue integral is
+        # not: at the GCV-selected λ (≈1.15 here) the residue tail is smoothed
+        # and ∫R under-estimates, putting MTT at 0.59× CBV/CBF — a ~41% breach
+        # of an identity that must hold. Central volume restores it (0.91×, the
+        # median-of-ratios ceiling) without needing to under-regularise.
+        solver_opts.setdefault("mtt_cth_method", "central_volume")
         offsets_s = opts.pop("offsets_s", None)
 
         # Optional temporal up-sampling before the deconvolution. Coarsely

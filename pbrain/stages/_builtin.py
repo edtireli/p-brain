@@ -88,6 +88,128 @@ def _save_npy(arr: np.ndarray, path: Path) -> Path:
     return path
 
 
+def _dose_mixed_mM(opts: dict) -> tuple[float | None, str]:
+    """Fully-mixed plasma [Gd] implied by the injected dose::
+
+        mixed [Gd] = dose·weight / (weight · blood_volume · (1 − Hct))
+                   = dose / (blood_volume · (1 − Hct))
+
+    Body weight cancels, so only the dose and two population constants are needed.
+
+    **This bounds the recirculation tail, NOT the first-pass peak.** During first pass
+    the bolus occupies only part of the circulation, so local arterial concentration
+    legitimately runs well above the mixed value — comparing a peak against this
+    number produces false alarms. Once mixing is complete the tail must instead fall
+    *below* it, and keep falling, as the agent distributes into peripheral
+    extracellular space and clears renally. An input function whose tail sits at or
+    above the mixed value never washed out, which is the signature of a curve pinned
+    by its conversion rather than one tracking a bolus.
+
+    The value is soft: mouse blood volume spans ~58-80 mL/kg and Hct ~0.40-0.50, so
+    the result carries roughly ±30 %. Used only to flag a tail that fails to clear,
+    which is a large effect, not to validate an amplitude. Extracellular agents only
+    (Gd-DOTA and friends), hence the plasma rather than whole-blood volume.
+
+    Configure with ``--opt qc.dose.mmol_per_kg=0.3`` and, if the defaults do not suit,
+    ``qc.dose.blood_volume_ml_per_kg`` / ``qc.dose.hematocrit``. Returns
+    ``(None, "")`` when no dose is given, so this is opt-in and never blocks a run.
+    """
+    try:
+        dose = float(opts.get("mmol_per_kg", 0) or 0)
+    except (TypeError, ValueError):
+        return None, ""
+    if dose <= 0:
+        return None, ""
+    try:
+        bv = float(opts.get("blood_volume_ml_per_kg", 72.0))   # mouse ~72, human ~70
+        hct = float(opts.get("hematocrit", 0.45))
+    except (TypeError, ValueError):
+        return None, ""
+    plasma_l_per_kg = (bv / 1000.0) * max(1e-6, 1.0 - hct)
+    if plasma_l_per_kg <= 0:
+        return None, ""
+    return (dose / plasma_l_per_kg,
+            f"{dose:g} mmol/kg into {1000*plasma_l_per_kg:.0f} mL/kg plasma")
+
+
+def _aif_washout(c_a: np.ndarray, mixed_mM: float | None) -> tuple[float, str] | None:
+    """Check that the input function actually comes back down.
+
+    A bolus peaks and clears; a curve pinned by its conversion rises to a bound and
+    stays. That is visible without any dose information — the tail relative to the
+    peak — and the dose, when given, says how far it should have fallen in absolute
+    terms. Returns ``(tail_fraction, message)`` when the curve fails to wash out.
+    """
+    c = np.asarray(c_a, dtype=float)
+    c = c[np.isfinite(c)]
+    if c.size < 12:
+        return None
+    peak = float(np.nanmax(c))
+    if peak <= 0:
+        return None
+    tail = float(np.nanmedian(c[-max(3, c.size // 5):]))
+    frac = tail / peak
+    if frac < 0.6:                       # came down; nothing to say
+        return None
+    msg = f"tail is {100*frac:.0f}% of peak"
+    if mixed_mM and tail >= mixed_mM:
+        msg += (f", and sits at {tail:.1f} mM against a fully-mixed {mixed_mM:.1f} mM "
+                f"— it cannot still be there after redistribution and clearance")
+    return frac, msg
+
+
+def _aif_saturation(signal: np.ndarray, mask: np.ndarray, stc_manifest: Any, *,
+                    baseline_frames: int) -> tuple[float | None, str]:
+    """Fraction of the AIF's own voxels that enhance past the converter's ceiling.
+
+    The signal→conc stage persists ``metadata.saturation.ceiling_ratio`` — the largest
+    S/S₀ its model can represent. Comparing the selected vessel voxels against that
+    number answers directly whether the input function was drawn from voxels the
+    conversion could not handle. Returns ``(None, "")`` when no ceiling was reported,
+    so the caller can fall back.
+    """
+    try:
+        meta = getattr(stc_manifest, "metadata", None) or {}
+        ceiling = float((meta.get("saturation") or {}).get("ceiling_ratio"))
+    except (TypeError, ValueError):
+        return None, ""
+    if not np.isfinite(ceiling) or ceiling <= 0 or not mask.any():
+        return None, ""
+
+    S = np.asarray(signal, dtype=float)
+    if S.ndim != 4 or S.shape[:3] != mask.shape:
+        return None, ""
+    curves = S[mask]                                   # (N, T)
+    nbf = max(2, min(int(baseline_frames), curves.shape[1] - 1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        S0 = np.nanmedian(curves[:, :nbf], axis=1)
+        peak = np.nanmax(curves / np.where(S0 > 0, S0, np.nan)[:, None], axis=1)
+    peak = peak[np.isfinite(peak)]
+    if not peak.size:
+        return None, ""
+    return float(np.mean(peak > ceiling)), f"peak S/S0 > {ceiling:.2f}x ceiling"
+
+
+def _clipped_fraction(c: np.ndarray, *, rel_tol: float = 1e-3) -> float:
+    """Fraction of a curve's samples pinned at its own maximum.
+
+    A bolus peaks and comes back down; it does not sit at exactly one value for many
+    frames. So a large flat top means the conversion hit a bound, and the curve's
+    amplitude is a lower bound rather than a measurement. Scale-free (the tolerance is
+    relative to the curve's own range), so it needs no knowledge of which converter
+    produced it or what its bound was.
+    """
+    c = np.asarray(c, dtype=float)
+    c = c[np.isfinite(c)]
+    if c.size < 4:
+        return 0.0
+    hi, lo = float(np.max(c)), float(np.min(c))
+    span = hi - lo
+    if not np.isfinite(span) or span <= 0:
+        return 0.0
+    return float(np.mean(c >= hi - rel_tol * span))
+
+
 def _save_json(payload: dict, path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +292,7 @@ class LoadStage:
 
     def run(self, ctx: StageContext) -> StageOutput:
         dce_path = _resolve_input(ctx, "dce", required=True)
-        _log.info("load: reading DCE %s (dcm2niix converts PAR/REC)",
+        _log.info("load: reading DCE %s",
                   Path(dce_path).name)
         dce = load_4d(dce_path)
         _log.info("load: DCE %s · %d frames", "×".join(str(s) for s in dce.data.shape[:3]),
@@ -295,7 +417,9 @@ class T1M0Stage:
             )
         n_ti = int(np.asarray(ti_s).size) if ti_s is not None else 0
         _log.info("t1_m0: fitting %s%s", plugin_key,
-                  f" from {n_ti} inversion times" if n_ti else "")
+                  # VFA fits consume flip angles, not TIs — name what was actually read
+                  (f" from {n_ti} {'flip angles' if 'vfa' in plugin_key else 'inversion times'}"
+                   if n_ti else ""))
         result = fitter.fit(ir_data, ti_s, **opts)
         try:
             _t1 = np.asarray(result.t1_map_ms, dtype=float)
@@ -414,6 +538,43 @@ class AIFStage:
                       ifn.source, int(np.asarray(ifn.mask).sum()), _peak)
         except Exception:
             pass
+
+        # Is the input function built out of SATURATED voxels? This matters more than
+        # it looks: every absolutely-scaled output (CBF, and Ki in absolute units) is
+        # inversely proportional to the AIF amplitude, so an AIF that saturated low
+        # silently rescales them all — which is exactly how an out-of-range CBF can
+        # appear with a perfectly sensible-looking curve.
+        #
+        # The converter already measured its own ceiling upstream, so ask the exact
+        # question — what fraction of THESE voxels exceed it — rather than guessing
+        # from the curve. Falls back to a shape test (a bolus peaks and washes out; a
+        # flat top means a bound was hit) for converters that report no ceiling.
+        sat_frac, how = _aif_saturation(
+            dce_signal, np.asarray(ifn.mask), stc_mf,
+            baseline_frames=int(opts.get("baseline_frames", ctx.config.baseline_frames)))
+        if sat_frac is None:
+            sat_frac, how = _clipped_fraction(np.asarray(ifn.c_a, dtype=float)), "clipped curve"
+        if sat_frac > 0.10:
+            _log.warning(
+                "aif: %.0f%% of the input function is saturated (%s) — its amplitude "
+                "is a LOWER BOUND, so absolutely-scaled maps (CBF, Ki) are biased by "
+                "an unknown factor. Curve shape and relative measures are unaffected.",
+                100 * sat_frac, how)
+        ifn.meta["saturated_fraction"] = float(sat_frac)
+        ifn.meta["saturation_test"] = how
+
+        # Independent of any signal model: did the bolus wash out? A conversion pinned
+        # at a bound produces a curve that rises and stays, which no tracer does.
+        mixed_mM, dose_desc = _dose_mixed_mM(dict(ctx.config.options_for("qc", "dose")))
+        washout = _aif_washout(np.asarray(ifn.c_a, dtype=float), mixed_mM)
+        if washout is not None:
+            frac, why = washout
+            _log.warning("aif: the input function does not wash out — %s. A bolus "
+                         "clears; a curve pinned by its conversion does not.", why)
+            ifn.meta["tail_fraction_of_peak"] = float(frac)
+        if mixed_mM:
+            ifn.meta["dose_mixed_plasma_mM"] = float(mixed_mM)
+            ifn.meta["dose_basis"] = dose_desc
 
         # Interactive review (--mode verify/manual): confirm the AIF, nudge the
         # max voxel, or draw the ROI in the browser. No-op in auto / headless.
@@ -673,6 +834,35 @@ class SignalToConcStage:
         )
         _save_nifti(C, np.asarray(dce_img.affine, dtype=float), ct_out)
 
+        # Domain QC. A converter may expose `saturation()` to report how much of the
+        # series it could not represent — enhancement past the signal model's ceiling
+        # is clamped to a physiological-looking number that is not a measurement, so
+        # without this the only symptom is an out-of-range Ki several stages later.
+        # Optional by design: converters without it are unaffected.
+        sat: dict[str, float] = {}
+        report = getattr(conv, "saturation", None)
+        if callable(report):
+            try:
+                sat = report(S, T1, M0, **opts)
+            except Exception:              # noqa: BLE001 — QC must never fail a run
+                sat = {}
+        if sat.get("foreground_voxels"):
+            frac = float(sat.get("over_ceiling_fraction", 0.0))
+            wrapped = float(sat.get("wrapped_fraction", 0.0))
+            head = ("signal_to_conc: %.0f%% of foreground voxels enhance past the "
+                    "%s ceiling of %.2fx (median peak %.2fx)")
+            args = [100 * frac, plugin_key, sat.get("ceiling_ratio", float("nan")),
+                    sat.get("peak_ratio_median", float("nan"))]
+            # Only converters that can cross the pole have a wrapped population; for a
+            # monotone inversion the tail saturates instead, which is a bound not a bug.
+            if np.isfinite(sat.get("wrap_ratio", float("inf"))):
+                head += (", and %.0f%% exceed %.2fx and wrap to ~0 mM — "
+                         "those curves are not measurements")
+                args += [100 * wrapped, sat.get("wrap_ratio")]
+            else:
+                head += " — those saturate at the R1 bound, so they are lower bounds"
+            (_log.warning if frac > 0.05 else _log.info)(head, *args)
+
         return StageOutput(
             artefacts={"concentration": ct_out},
             metadata={
@@ -680,6 +870,7 @@ class SignalToConcStage:
                 "flip_angle_deg": opts["flip_angle_deg"],
                 "tr_s": opts["tr_s"],
                 "ct_peak_mM": float(np.nanmax(C)),
+                **({"saturation": sat} if sat else {}),
             },
         )
 

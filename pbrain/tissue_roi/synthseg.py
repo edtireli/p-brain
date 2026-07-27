@@ -85,6 +85,49 @@ _REGION_MAP_FS = {
 }
 
 
+# The brain mask is ``parcellation > 0``, so any label left in the volume is
+# fitted. SynthSeg also returns ventricles (4, 5, 14, 15, 43, 44) and CSF (24),
+# which are not perfusable tissue: leaving them in put ~34k CSF voxels into
+# every map (a saturated rim around the cortex and filled-in ventricles) and
+# made a native run disagree with a ``preloaded`` run on the same subject.
+# Restricting to the labels the region map actually groups keeps the two
+# providers on one voxel set. Override with
+# ``--opt tissue_roi.synthseg.include_labels=...`` (empty = keep everything).
+#
+# Ventricles are kept: they are well-defined anatomy, useful context in a
+# voxelwise map, and only ~2k voxels. Extracerebral/sulcal CSF (24) is the one
+# that has to go — it is ~30k voxels wrapping the cortex and dominates every
+# colour scale. Ventricles belong to no entry in _REGION_MAP_FS, so they appear
+# in the voxelwise and per-label parcel maps but do not fold into any tissue
+# class; add a group here if you want them summarised as their own region.
+_VENTRICLE_LABELS_FS: tuple[int, ...] = (4, 5, 14, 15, 43, 44)
+
+_TISSUE_LABELS_FS: tuple[int, ...] = tuple(
+    sorted({int(l) for labs in _REGION_MAP_FS.values() for l in labs}
+           | set(_VENTRICLE_LABELS_FS))
+)
+
+
+def _restrict_to_tissue(parc: np.ndarray,
+                        include_labels: object = None) -> np.ndarray:
+    """Restrict the parcellation to ``include_labels``; default keeps everything.
+
+    Nothing is dropped by default. With ventricles kept, label 24 is the only
+    label a tissue-only set would remove — and in a DCE slab that label is not
+    really CSF: the basal cisterns carry the circle of Willis, so 19% of its
+    voxels sit above the tissue 99th percentile of v_b (median v_b 7.6 vs 2.9 in
+    tissue, concentrated in the inferior slices). Dropping it deletes the major
+    arteries from every map. Callers who want parenchyma only can pass
+    ``include_labels=_TISSUE_LABELS_FS`` (or set it on the command line).
+    """
+    if include_labels is None or include_labels is False:
+        return parc
+    keep = tuple(int(x) for x in include_labels)                   # type: ignore[union-attr]
+    if not keep:
+        return parc
+    return np.where(np.isin(parc, keep), parc, 0).astype(parc.dtype)
+
+
 def _read_freesurfer_lut() -> dict[int, str]:
     """Minimal FreeSurfer label LUT for region naming. Sourced from
     FreeSurferColorLUT.txt; here we ship the subset p-Brain needs."""
@@ -141,6 +184,7 @@ class _SynthSegTissue:
         threads: int = 0,
         max_concurrent: int = 1,
         reuse_existing: bool = True,
+        include_labels: Any = None,
         **_: Any,
     ) -> TissueROI:
         import nibabel as nib
@@ -148,15 +192,23 @@ class _SynthSegTissue:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         parc_path = out_dir / "parcellation.nii.gz"
+        # mri_synthseg's untouched output. The stage writes the *restricted*
+        # parcellation back over ``parc_path``, so caching from that file alone
+        # is lossy: widening ``include_labels`` later could never recover a
+        # label already zeroed. Keep the raw map beside it and always restrict
+        # from the raw one.
+        parc_raw_path = out_dir / "parcellation_raw.nii.gz"
 
         # Reuse an existing segmentation verbatim. Segmentation is
         # deterministic and expensive (~2 min/subject), so a ``--force`` re-run
         # of the kinetic chain must NOT re-segment. Disable with
         # ``--opt tissue_roi.synthseg.reuse_existing=false``.
-        if reuse_existing and parc_path.exists() and parc_path.stat().st_size > 2048:
+        _cache = parc_raw_path if parc_raw_path.exists() else parc_path
+        if reuse_existing and _cache.exists() and _cache.stat().st_size > 2048:
             try:
-                _img = nib.load(str(parc_path))
+                _img = nib.load(str(_cache))
                 _parc = np.asarray(_img.dataobj, dtype=np.int32)
+                _parc = _restrict_to_tissue(_parc, include_labels)
                 if _parc.ndim == 3 and int(_parc.max()) > 0:
                     _present = sorted(int(x) for x in np.unique(_parc) if int(x) > 0)
                     _lut = _read_freesurfer_lut()
@@ -228,6 +280,12 @@ class _SynthSegTissue:
 
         parc_img = nib.load(str(parc_path))
         parc = np.asarray(parc_img.dataobj, dtype=np.int32)
+        # Preserve mri_synthseg's output before the stage overwrites parc_path.
+        try:
+            shutil.copyfile(parc_path, parc_raw_path)
+        except OSError:
+            pass
+        parc = _restrict_to_tissue(parc, include_labels)
         present_labels = sorted(int(x) for x in np.unique(parc) if int(x) > 0)
         lut = _read_freesurfer_lut()
         labels = {lab: lut.get(lab, f"label_{lab}") for lab in present_labels}

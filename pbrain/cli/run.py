@@ -132,11 +132,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Bundled preset of plug-ins + acquisition params for a data "
                         "class (e.g. 'mouse'). CLI flags and --config override it; the "
                         "human default (no --profile) is unchanged.")
-    p.add_argument("--animal", default="human", choices=["human", "mouse"],
-                   help="Target species. 'human' (default) applies no overlay — the "
-                        "paper defaults are untouched. 'mouse' natively applies the "
-                        "mouse profile (equivalent to --profile mouse); the two flags "
-                        "are mutually exclusive.")
+    p.add_argument("--animal", default="human", choices=["human"],
+                   help="Target species. Only 'human' is available in this release; "
+                        "non-human overlays ship separately. Kept so that scripts and "
+                        "configs passing --animal human keep working.")
     # Not required at the parser level — may be supplied by --config.
     p.add_argument("--subject-dir", type=Path, default=None,
                    help="Subject root directory (raw scans live here; outputs land "
@@ -324,6 +323,11 @@ def main(argv: list[str]) -> int:
                 "--animal and --profile are mutually exclusive; pass only one."
             )
         args.profile = args.animal
+
+    # Banner + web-review art follow the species. Set from the parsed args too (not
+    # just the argv sniff in __main__) so a direct `run` entry point still matches.
+    from pbrain._banner import set_creature
+    set_creature(args.animal if args.animal != "human" else (args.profile or "human"))
 
     # A --profile preset supplies defaults for a whole acquisition class (e.g.
     # mouse). Same merge rule as --config: applied only where the CLI is silent,

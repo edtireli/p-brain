@@ -58,7 +58,15 @@ class _PatlakDiagnostic:
 
         # Tail window (same algorithm the kinetic stage used)
         opts = ctx.model_opts or {}
+        # ``tail_mode`` in the model opts selects the *fit path* (legacy /
+        # legacy_vectorised / patlak3) — not a tail-window algorithm. Those paths all
+        # regress over the x_max/3 window, so map anything find_patlak_tail doesn't
+        # know onto x_max_fraction rather than raising and losing the diagnostic.
+        _WINDOW_MODES = {"curvature", "x_max_fraction", "peak_decay",
+                         "changepoint", "fixed", "smart"}
         tail_mode = opts.get("tail_mode", "x_max_fraction")
+        if tail_mode not in _WINDOW_MODES:
+            tail_mode = "x_max_fraction"
         tail_start, tail_end = find_patlak_tail(
             c_a, t,
             mode=tail_mode,

@@ -10,8 +10,9 @@ its uncertainty:
   (1,1) CBF / MTT / CTH bar chart with ± posterior SD error bars
         (λ-marginalised sampling on this single curve)
 
-Auto-discovered by ``model_key = "tikhonov_bayes"`` so it runs in the
-voxel / tissue / parcel diagnostic loop wherever the model is configured.
+There is only one ``tikhonov`` plug-in now, so this is not reached by key
+lookup: ``diagnostics/tikhonov.py`` delegates here when the run used
+``lambda_selection="evidence"`` (i.e. ``preset="bayes"``).
 """
 
 from __future__ import annotations

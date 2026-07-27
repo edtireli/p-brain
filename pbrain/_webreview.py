@@ -483,7 +483,7 @@ def review(payload: dict, *, port: int = 8731, open_browser: bool = True,
     base, deep, lite = palette()
     payload = dict(payload)
     payload["theme"] = {"accent": base, "deep": deep, "lite": lite}
-    payload.setdefault("braille", list(_banner_art()))
+    payload.setdefault("braille", list(_banner_art()))   # mouse art on --animal mouse
 
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)

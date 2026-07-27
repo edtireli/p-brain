@@ -112,3 +112,31 @@ def _run():
 
 if __name__ == "__main__":
     raise SystemExit(_run())
+
+
+def test_banner_creature_switches_to_mouse():
+    """`--animal/--profile mouse` swaps the banner art to the mouse. Dimensions are
+    per-creature (the neuron is 10x5, the mouse 8x3), so the reveal machinery must
+    size itself to whichever art is active rather than to a shared constant."""
+    from pbrain import _banner as B
+    assert B.creature_from_argv(["run", "x", "--animal", "mouse"]) == "mouse"
+    assert B.creature_from_argv(["run", "x", "--animal=mouse"]) == "mouse"
+    assert B.creature_from_argv(["run", "x", "--profile", "mouse"]) == "mouse"
+    assert B.creature_from_argv(["run", "x", "--profile=mouse"]) == "mouse"
+    assert B.creature_from_argv(["run", "x"]) == "human"
+    assert B.creature_from_argv(["run", "x", "--animal"]) == "human"
+    assert B.creature_from_argv(["run", "x", "--profile", "nope"]) == "human"
+    try:
+        # each creature's art is internally consistent (all rows the same width)
+        for art in (B.NEURON, B.MOUSE):
+            assert len({len(r) for r in art}) == 1
+        B.set_creature("mouse")
+        assert B.art() == B.MOUSE and B.active_creature() == "mouse"
+        grid = B._decode()                       # sized to the mouse (8x3), not the neuron
+        assert (len(grid), len(grid[0])) == (len(B.MOUSE) * 4, len(B.MOUSE[0]) * 2)
+        for name in B._MIX:                      # every reveal ends on the exact art
+            tmap = B._reveal_map(name, grid)
+            assert B._encode(B._reveal(grid, tmap, 1.0)) == B.MOUSE
+        assert B.set_creature("giraffe") == "human"      # unknown never breaks it
+    finally:
+        B.set_creature("human")

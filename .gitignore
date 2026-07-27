@@ -73,3 +73,7 @@ site/
 
 # Python build / editable-install artifacts
 *.egg-info/
+dist_check/
+*.prev
+PLAN_mouse.md
+HANDOFF_mouse.md

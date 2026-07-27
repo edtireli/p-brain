@@ -44,8 +44,11 @@ from .base import TissueROI, TissueROIProvider
 # Matches the union of cortical_gm + subcortical_gm + wm + brainstem +
 # cerebellum (GM+WM) + wm_cc in modules/AI_tissue_functions.py.
 _LEGACY_TISSUE_LABELS_FREESURFER = (
-    # Cortical GM (DKT cortical parcels, both hemispheres)
-    *range(1000, 1036), *range(2000, 2036),
+    # Cortical GM (DKT cortical parcels, both hemispheres). 3/42 = aseg
+    # cerebral cortex, the fallback labels a SynthSeg run without --parc emits;
+    # mutually exclusive with the DKT ranges, so listing both is safe and stops
+    # cortex being dropped on non-parcellated input.
+    3, 42, *range(1000, 1036), *range(2000, 2036),
     # Subcortical GM
     10, 11, 12, 13, 17, 18, 26,        # left
     49, 50, 51, 52, 53, 54, 58,        # right
@@ -55,6 +58,14 @@ _LEGACY_TISSUE_LABELS_FREESURFER = (
     16,
     # Cerebellum
     7, 8, 46, 47,
+    # VentralDC (28/60). Listed in _LEGACY_REGION_MAP_FS below as deep GM but
+    # historically missing here, so those parcels were grouped and then masked
+    # away — subcortical_GM silently lost them. Kept now so this set matches
+    # synthseg's _TISSUE_LABELS_FS and the two providers yield one voxel set.
+    28, 60,
+    # Ventricles (see synthseg._VENTRICLE_LABELS_FS): kept as anatomical
+    # context; they group into no region. Extracerebral CSF (24) stays out.
+    4, 5, 14, 15, 43, 44,
 )
 
 _LEGACY_REGION_MAP_FS = {
@@ -118,10 +129,17 @@ class _PreloadedTissue:
             parc_full = np.asarray(img.dataobj, dtype=np.int32)
             affine = np.asarray(img.affine, dtype=float)
 
-            labels_to_keep = (set(include_labels) if include_labels is not None
-                              else set(_LEGACY_TISSUE_LABELS_FREESURFER))
-            keep_mask = np.isin(parc_full, list(labels_to_keep))
-            parc = np.where(keep_mask, parc_full, 0).astype(np.int32)
+            # Default: keep the supplied parcellation as-is, so this provider is
+            # a faithful pass-through and agrees voxel-for-voxel with a native
+            # ``synthseg`` run on the same subject. Pass ``include_labels``
+            # (e.g. ``_LEGACY_TISSUE_LABELS_FREESURFER``) to restrict to
+            # parenchyma — see synthseg._restrict_to_tissue for why label 24 is
+            # not dropped by default.
+            if include_labels:
+                keep_mask = np.isin(parc_full, list(set(include_labels)))
+                parc = np.where(keep_mask, parc_full, 0).astype(np.int32)
+            else:
+                parc = parc_full.astype(np.int32)
             present = sorted(int(x) for x in np.unique(parc) if int(x) > 0)
             labels = {lab: f"label_{lab}" for lab in present}
 
@@ -134,7 +152,7 @@ class _PreloadedTissue:
                     "algorithm": "preloaded_parcellation",
                     "path": str(path),
                     "labels_kept": len(present),
-                    "voxels_kept": int(keep_mask.sum()),
+                    "voxels_kept": int((parc > 0).sum()),
                 },
             )
 

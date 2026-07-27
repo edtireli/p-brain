@@ -82,7 +82,6 @@ class ParRecLayout:
         return discover_subject_inputs(subject, assemble=False)
 
 
-# ---------------------------------------------------------------- flat NIfTI
 def _first(subject: Path, *patterns: str) -> Path | None:
     """First file matching any glob (case-insensitive), skipping output folders."""
     for pat in patterns:
@@ -239,7 +238,8 @@ def write_frozen(root: str | Path, proposal: dict) -> Path:
 
 
 # ---------------------------------------------------------------- registry + resolve
-ADAPTERS: list[LayoutAdapter] = [FrozenLayout(), ParRecLayout(), FlatNiftiLayout(), BidsLayout()]
+ADAPTERS: list[LayoutAdapter] = [FrozenLayout(), ParRecLayout(),
+                                 FlatNiftiLayout(), BidsLayout()]
 
 
 def _adapter(name: str) -> LayoutAdapter | None:
