@@ -392,9 +392,29 @@ extractors, and the rest — for the version you actually have installed.
 
 ## <img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@b430fe5ec9f06b48a3d2f8b2843ce8928dff87c5/assets/mark.svg" width="20" alt=""/> Citation
 
-If p-Brain contributes to your work, please cite the accompanying paper (Tireli
-et al.) and this repository. See
-[`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
+If you use p-Brain in a publication, please cite the paper:
+
+> E. D. Tireli, S. P. Cramer, U. Lindberg, D. Tireli, M. B. Vestergaard, and
+> H. B. W. Larsson, “p-Brain: A Modular Open-Source Framework for Automated
+> Quantitative DCE-MRI of Cerebral Perfusion, Microvasculature, and Blood–Brain
+> Barrier Permeability,” *Magnetic Resonance in Medicine* (2026): 1–14,
+> <https://doi.org/10.1002/mrm.70554>.
+
+```bibtex
+@article{Tireli2026pBrain,
+  author  = {Tireli, Edis D. and Cramer, Stig P. and Lindberg, Ulrich and
+             Tireli, Derya and Vestergaard, Mark B. and Larsson, Henrik B. W.},
+  title   = {{p-Brain}: A Modular Open-Source Framework for Automated
+             Quantitative {DCE-MRI} of Cerebral Perfusion, Microvasculature,
+             and Blood--Brain Barrier Permeability},
+  journal = {Magnetic Resonance in Medicine},
+  year    = {2026},
+  pages   = {1--14},
+  doi     = {10.1002/mrm.70554}
+}
+```
+
+See [`LICENSE`](https://github.com/edtireli/p-brain/blob/main/LICENSE) for terms.
 
 <p align="center"><img src="https://cdn.jsdelivr.net/gh/edtireli/p-brain@b430fe5ec9f06b48a3d2f8b2843ce8928dff87c5/assets/divider.svg" width="520" alt=""/></p>
 
